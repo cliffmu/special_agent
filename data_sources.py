@@ -48,6 +48,7 @@ def execute_ha_command(command, hass=None):
     Actually call hass.services.call if it's a dict with 'service' and 'data'.
     Otherwise, log and do nothing.
     """
+    log_to_file(f"[DataSources] Executing command: {command}")
 
     return True
     

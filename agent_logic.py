@@ -19,7 +19,7 @@ from .entity_refinement import filter_irrelevant_entities, rerank_and_filter_doc
 
 DOMAIN = "special_agent"
 
-def process_conversation_input(user_text, context, hass):
+def process_conversation_input(user_text, device_id, hass):
     """
     Updated flow with additional logging:
       1) Classify intent
@@ -41,13 +41,16 @@ def process_conversation_input(user_text, context, hass):
     spotify_client_id = config_data.get("spotify_client_id", "")
     spotify_client_secret = config_data.get("spotify_client_secret", "")
 
+    # pending = hass.data.get("special_agent", {}).get("pending")
+    pending_dict = hass.data.setdefault("special_agent_pending", {})
+    pending = pending_dict.get(device_id)
+    if pending and pending.get("status") == "awaiting_confirmation":
+        # return handle_confirmation_phase(user_text, hass, pending)
+        return handle_confirmation_phase(user_text, hass, pending, device_id)
+
     # 1) Classify intent
     intent_type = classify_intent(user_text, api_key=openai_api_key)
     log_to_file(f"[AgentLogic] Intent => {intent_type}")  # NEW LOG
-
-
-
-
 
     if intent_type == "control":
         log_to_file("[AgentLogic] 'control' branch entered.")  # NEW LOG
@@ -70,7 +73,7 @@ def process_conversation_input(user_text, context, hass):
         top_docs = query_vector_index((matrix, docs, dim), refined_text, k=50, openai_api_key=openai_api_key)
         final_docs = rerank_and_filter_docs(refined_text, top_docs, filter_qty=20)
 
-        # BUILD COMINED CONTEXT
+        # BUILD COMBINED CONTEXT
         aggregated_context = []
         if spotify_uri:
             aggregated_context.append(f"The user wants music, please play on media player using spotify URI => {spotify_uri}")
@@ -105,17 +108,46 @@ def process_conversation_input(user_text, context, hass):
 
             log_to_file(f"[AgentLogic] commands_list => {commands_list}")  # NEW LOG
 
-            success_flag = True
+            # Instead of executing, store pending
+            pending_dict[device_id] = {
+                "commands_list": commands_list,
+                "status": "awaiting_confirmation"
+            }
+            # Return a prompt for user confirmation
+            all_entities = []
             for cmd in commands_list:
-                # You might want more logging here
-                log_to_file(f"[AgentLogic] About to execute cmd => {cmd}")  # NEW LOG
-                ok = execute_ha_command(cmd, hass=hass)
-                log_to_file(f"[AgentLogic] Command => {cmd}, success => {ok}")  # NEW LOG
-                if not ok:
-                    success_flag = False
+                ent_list = cmd["data"].get("entity_id", [])
+                # could be a single str or list
+                if isinstance(ent_list, str):
+                    ent_list = [ent_list]
+                all_entities.extend(ent_list)
 
-            log_to_file("[AgentLogic] DONE with control flow.")
-            return commands_list, success_flag
+            # # Trying to get user verification
+            # hass.data.setdefault("special_agent", {})
+            # hass.data["special_agent"]["pending"] = {
+            #     "commands_list": commands_list,
+            #     "status": "awaiting_confirmation"
+            # }
+
+            return (
+                "I found these devices to control: "
+                + ", ".join(str(cmd["data"].get("entity_id", [])) for cmd in commands_list)
+                + ". Shall I proceed?",
+                False
+            )
+
+
+            # success_flag = True
+            # for cmd in commands_list:
+            #     # You might want more logging here
+            #     log_to_file(f"[AgentLogic] About to execute cmd => {cmd}")  # NEW LOG
+            #     ok = execute_ha_command(cmd, hass=hass)
+            #     log_to_file(f"[AgentLogic] Command => {cmd}, success => {ok}")  # NEW LOG
+            #     if not ok:
+            #         success_flag = False
+
+            # log_to_file("[AgentLogic] DONE with control flow.")
+            # return commands_list, success_flag
 
         except Exception as e:
             log_to_file(f"[AgentLogic] JSON parse error => {e}")
@@ -208,8 +240,64 @@ async def do_full_rebuild(hass):
         log_to_file(f"[AgentLogic] do_full_rebuild: error => {e}")
         raise
 
+def handle_confirmation_phase(user_text, hass, pending, device_id):
+    """
+    If user says "yes", we execute pending commands for this device.
+    If "no", we discard them.
+    """
+    lowered = user_text.strip().lower()
+    pending_dict = hass.data.setdefault("special_agent_pending", {})
 
+    if lowered in ["yes", "yep", "yeah", "sure", "go ahead"]:
+        commands_list = pending["commands_list"]
+        success_flag = True
+        for cmd in commands_list:
+            ok = execute_ha_command(cmd, hass=hass)
+            if not ok:
+                success_flag = False
 
+        # Clear the pending state for this device
+        pending_dict.pop(device_id, None)
+        return ("Commands executed.", success_flag)
+
+    elif lowered in ["no", "nope", "nah"]:
+        # Discard
+        pending_dict.pop(device_id, None)
+        return ("Alright, I'll cancel the request.", True)
+    else:
+        return ("Sorry, please say 'yes' or 'no'.", False)
+
+# def handle_confirmation_phase(user_text, hass, pending, device_id):
+#     """
+#     If the user_text is "yes", we finalize and run the pending commands.
+#     If "no", we can discard or ask for clarifications.
+#     Otherwise, do more advanced checks.
+#     """
+#     # Simplest approach: yes/no check
+#     lowered = user_text.strip().lower()
+#     pending_dict = hass.data.setdefault("special_agent_pending", {})
+#     if lowered in ["yes", "yep", "yeah", "sure", "go ahead"]:
+#         # Execute the pending commands
+#         commands_list = pending["commands_list"]
+#         success_flag = True
+#         for cmd in commands_list:
+#             ok = execute_ha_command(cmd, hass=hass)
+#             if not ok:
+#                 success_flag = False
+        
+#         # Clear the pending state
+#         hass.data["special_agent"].pop("pending", None)
+#         return ("Commands executed.", success_flag)
+
+#     elif lowered in ["no", "nope", "nah"]:
+#         # Discard the pending
+#         hass.data["special_agent"].pop("pending", None)
+#         return ("Alright, I'll cancel the request.", True)
+
+#     else:
+#         # Maybe the user asked for partial changes or more info
+#         # For now, we just ask them for a yes/no again:
+#         return ("Sorry, please say 'yes' or 'no'.", False)
 
 
 

@@ -7,7 +7,6 @@ from homeassistant.components.conversation import (
 from homeassistant.helpers import intent
 from .agent_logic import process_conversation_input
 from .logger_helper import log_to_file
-from .data_sources import get_devices_by_area
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,16 +58,20 @@ class TestConversationAgent(ConversationEntity, AbstractConversationAgent):
 
 
     async def async_process(self, conversation_input, context=None) -> ConversationResult:
+        """Main entry point when the user speaks to this conversation device."""
         user_text = conversation_input.text
         log_to_file(f"[Conversation] Received user text: {user_text}")
 
+        # We'll treat self.entity_id as the unique "device_id" for this microphone/speaker device.
+        device_id = self.entity_id
+
         try:
-            # Because process_conversation_input is synchronous
+            # Because process_conversation_input is synchronous, run it in the executor
             command, success = await self.hass.async_add_executor_job(
-                process_conversation_input, user_text, context, self.hass
+                process_conversation_input, user_text, device_id, self.hass
             )
             if command:
-                response_text = f"{command}"
+                response_text = str(command)
                 if success:
                     response_text += " (executed successfully)"
                 else:
@@ -82,6 +85,52 @@ class TestConversationAgent(ConversationEntity, AbstractConversationAgent):
         result = intent.IntentResponse(language=conversation_input.language)
         result.async_set_speech(response_text)
         return ConversationResult(conversation_id=None, response=result)
+
+        # user_text = conversation_input.text
+        # log_to_file(f"[Conversation] Received user text: {user_text}")
+
+        # try:
+        #     # Because process_conversation_input is synchronous
+        #     command, success = await self.hass.async_add_executor_job(
+        #         process_conversation_input, user_text, context, self.hass
+        #     )
+        #     if command:
+        #         response_text = f"{command}"
+        #         if success:
+        #             response_text += " (executed successfully)"
+        #         else:
+        #             response_text += " (execution failed)"
+        #     else:
+        #         response_text = "No command generated."
+        # except Exception as e:
+        #     _LOGGER.error("Error processing input '%s': %s", user_text, e, exc_info=True)
+        #     response_text = f"Error: {e}"
+
+        # result = intent.IntentResponse(language=conversation_input.language)
+        # result.async_set_speech(response_text)
+        # return ConversationResult(conversation_id=None, response=result)
+    
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(self.unique_id,)},
+            "name": self.name,
+            "manufacturer": "Custom",
+            "model": "Special Agent",
+        }
+
+async def async_setup_entry(hass, config_entry, async_add_entities):
+    log_to_file("[Conversation] async_setup_entry called.")
+    agent = TestConversationAgent()
+    async_add_entities([agent])
+    from homeassistant.components.conversation import async_set_agent
+    async_set_agent(hass, config_entry, agent)
+    log_to_file("[Conversation] Special Agent setup complete.")
+    return True
+
+
+
+
 
 
     # async def async_process(self, conversation_input, context=None):
@@ -170,21 +219,3 @@ class TestConversationAgent(ConversationEntity, AbstractConversationAgent):
     #         response = intent.IntentResponse(language=conversation_input.language)
     #         response.async_set_speech("Sorry, an error occurred.")
     #         return ConversationResult(conversation_id=None, response=response)
-    
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(self.unique_id,)},
-            "name": self.name,
-            "manufacturer": "Custom",
-            "model": "Special Agent",
-        }
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
-    log_to_file("[Conversation] async_setup_entry called.")
-    agent = TestConversationAgent()
-    async_add_entities([agent])
-    from homeassistant.components.conversation import async_set_agent
-    async_set_agent(hass, config_entry, agent)
-    log_to_file("[Conversation] Special Agent setup complete.")
-    return True
