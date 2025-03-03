@@ -60,10 +60,17 @@ class TestConversationAgent(ConversationEntity, AbstractConversationAgent):
     async def async_process(self, conversation_input, context=None) -> ConversationResult:
         """Main entry point when the user speaks to this conversation device."""
         user_text = conversation_input.text
-        log_to_file(f"[Conversation] Received user text: {user_text}")
-
-        # We'll treat self.entity_id as the unique "device_id" for this microphone/speaker device.
-        device_id = self.entity_id
+        
+        # Get the conversation_id from the context if available (for multi-turn conversations)
+        # And determine the device_id from the context or entity_id
+        conversation_id = getattr(context, "conversation_id", None) if context else None
+        
+        # Extract device ID from conversation_input - this will be different for each device
+        source_entity_id = getattr(conversation_input, "source_entity_id", None)
+        # Fallback to entity_id if source not available (for backward compatibility)
+        device_id = source_entity_id or self.entity_id
+        
+        log_to_file(f"[Conversation] Received user text: '{user_text}' from device_id: '{device_id}'")
 
         try:
             # Because process_conversation_input is synchronous, run it in the executor
@@ -84,7 +91,8 @@ class TestConversationAgent(ConversationEntity, AbstractConversationAgent):
 
         result = intent.IntentResponse(language=conversation_input.language)
         result.async_set_speech(response_text)
-        return ConversationResult(conversation_id=None, response=result)
+        # Pass conversation_id to maintain session across interactions
+        return ConversationResult(conversation_id=conversation_id, response=result)
 
         # user_text = conversation_input.text
         # log_to_file(f"[Conversation] Received user text: {user_text}")
