@@ -1,0 +1,6 @@
+{
+    "name": "Special Agent",
+    "content_in_root": true,
+    "domains": ["special_agent"],
+    "integration_type": "integration"
+  }  
