@@ -4,6 +4,8 @@
 # MAYBE CHECK HISTORY OF DEVICES IN HOME AND GENERATE PROFILE AUTOMATICALLY?
 # IF PLAYLIST ISN'T MATCH USE LLM TO TRY AGAIN
 
+import datetime
+
 from .data_sources import get_ha_states, execute_ha_command, get_devices_by_area
 from .vector_index import build_vector_index, query_vector_index, load_vector_index
 from .gpt_commands import (
@@ -17,7 +19,33 @@ from .spotify_integration import get_spotify_access_token, search_spotify
 from .logger_helper import log_to_file
 from .entity_refinement import filter_irrelevant_entities, rerank_and_filter_docs
 
+# Session timeout in seconds (5 minutes)
+SESSION_TIMEOUT = 300
+
 DOMAIN = "special_agent"
+
+def check_and_cleanup_sessions(pending_dict):
+    """
+    Check for timed-out sessions and clean them up to prevent memory leaks
+    """
+    now = datetime.datetime.now()
+    expired_sessions = []
+    
+    # Find all expired sessions
+    for device_id, session in pending_dict.items():
+        if "timestamp" in session:
+            session_time = session["timestamp"]
+            # Calculate session age in seconds
+            age = (now - session_time).total_seconds()
+            if age > SESSION_TIMEOUT:
+                expired_sessions.append(device_id)
+    
+    # Remove expired sessions
+    for device_id in expired_sessions:
+        log_to_file(f"[AgentLogic] Cleaning up expired session for device_id='{device_id}'")
+        pending_dict.pop(device_id, None)
+    
+    return len(expired_sessions)
 
 def process_conversation_input(user_text, device_id, hass):
     """
@@ -32,7 +60,7 @@ def process_conversation_input(user_text, device_id, hass):
       3) If 'weather' or 'question', placeholders
     """
 
-    log_to_file(f"[AgentLogic] START process_conversation_input: user_text='{user_text}'")
+    log_to_file(f"[AgentLogic] START process_conversation_input: device_id='{device_id}', user_text='{user_text}'")
 
     # Retrieve config
     config_entries = hass.data.get("special_agent", {})
@@ -41,11 +69,15 @@ def process_conversation_input(user_text, device_id, hass):
     spotify_client_id = config_data.get("spotify_client_id", "")
     spotify_client_secret = config_data.get("spotify_client_secret", "")
 
-    # pending = hass.data.get("special_agent", {}).get("pending")
+    # Get or create sessions dictionary and clean up expired sessions
     pending_dict = hass.data.setdefault("special_agent_pending", {})
+    cleaned_count = check_and_cleanup_sessions(pending_dict)
+    if cleaned_count > 0:
+        log_to_file(f"[AgentLogic] Cleaned up {cleaned_count} expired sessions")
+    
+    # Check for existing session for this device
     pending = pending_dict.get(device_id)
     if pending and pending.get("status") == "awaiting_confirmation":
-        # return handle_confirmation_phase(user_text, hass, pending)
         return handle_confirmation_phase(user_text, hass, pending, device_id)
 
     # 1) Classify intent
@@ -108,12 +140,18 @@ def process_conversation_input(user_text, device_id, hass):
 
             log_to_file(f"[AgentLogic] commands_list => {commands_list}")  # NEW LOG
 
-            # Instead of executing, store pending
+            # Store pending commands in device-specific session
+            timestamp = datetime.datetime.now()
             pending_dict[device_id] = {
                 "commands_list": commands_list,
-                "status": "awaiting_confirmation"
+                "status": "awaiting_confirmation",
+                "timestamp": timestamp,
+                "entity_id": device_id
             }
-            # Return a prompt for user confirmation
+            
+            log_to_file(f"[AgentLogic] Created pending session for device_id='{device_id}' with {len(commands_list)} commands")
+            
+            # Build list of entities to display to user
             all_entities = []
             for cmd in commands_list:
                 ent_list = cmd["data"].get("entity_id", [])
@@ -122,16 +160,10 @@ def process_conversation_input(user_text, device_id, hass):
                     ent_list = [ent_list]
                 all_entities.extend(ent_list)
 
-            # # Trying to get user verification
-            # hass.data.setdefault("special_agent", {})
-            # hass.data["special_agent"]["pending"] = {
-            #     "commands_list": commands_list,
-            #     "status": "awaiting_confirmation"
-            # }
-
+            # Return confirmation prompt to user
             return (
                 "I found these devices to control: "
-                + ", ".join(str(cmd["data"].get("entity_id", [])) for cmd in commands_list)
+                + ", ".join(str(entity) for entity in all_entities)
                 + ". Shall I proceed?",
                 False
             )
@@ -247,6 +279,8 @@ def handle_confirmation_phase(user_text, hass, pending, device_id):
     """
     lowered = user_text.strip().lower()
     pending_dict = hass.data.setdefault("special_agent_pending", {})
+    
+    log_to_file(f"[AgentLogic] handle_confirmation_phase for device_id='{device_id}', user_text='{user_text}'")
 
     if lowered in ["yes", "yep", "yeah", "sure", "go ahead"]:
         commands_list = pending["commands_list"]
@@ -257,14 +291,17 @@ def handle_confirmation_phase(user_text, hass, pending, device_id):
                 success_flag = False
 
         # Clear the pending state for this device
+        log_to_file(f"[AgentLogic] Executing commands and clearing session for device_id='{device_id}'")
         pending_dict.pop(device_id, None)
         return ("Commands executed.", success_flag)
 
     elif lowered in ["no", "nope", "nah"]:
         # Discard
+        log_to_file(f"[AgentLogic] Canceling request and clearing session for device_id='{device_id}'")
         pending_dict.pop(device_id, None)
         return ("Alright, I'll cancel the request.", True)
     else:
+        log_to_file(f"[AgentLogic] Unrecognized confirmation response for device_id='{device_id}': '{user_text}'")
         return ("Sorry, please say 'yes' or 'no'.", False)
 
 # def handle_confirmation_phase(user_text, hass, pending, device_id):
