@@ -12,7 +12,7 @@ from collections import defaultdict
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.location import async_detect_location_info
+# Use constant imports for location
 from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE, CONF_LATITUDE, CONF_LONGITUDE
 
 from .entity_refinement import filter_irrelevant_entities, rerank_and_filter_docs
@@ -146,21 +146,27 @@ async def get_location_info(hass: HomeAssistant) -> dict:
         if latitude and longitude:
             location_info["latitude"] = latitude
             location_info["longitude"] = longitude
-            
-            # Try to get location metadata (city, state, etc.)
-            location_data = await async_detect_location_info(hass)
-            if location_data:
-                location_info["city"] = location_data.city
-                location_info["region"] = location_data.region_code
-                location_info["country"] = location_data.country_code
-                location_info["postal_code"] = location_data.postal_code
-            
-        # Check for a custom zip code setting in our config
+        
+        # Get location from config
         config_entries = hass.data.get("special_agent", {})
         config_data = next(iter(config_entries.values())) if config_entries else {}
         
+        # Use ZIP code from config if available
         if "zip_code" in config_data:
             location_info["postal_code"] = config_data["zip_code"]
+            
+            # If we have a ZIP code but no coordinates, we could potentially
+            # look up the coordinates using an external service here
+            
+        # Check for other location data in HA configuration
+        if hasattr(hass.config, "city"):
+            location_info["city"] = hass.config.city
+        
+        if hasattr(hass.config, "state"):
+            location_info["region"] = hass.config.state
+            
+        if hasattr(hass.config, "country"):
+            location_info["country"] = hass.config.country
             
         log_to_file(f"[DataSources] Location info: {location_info}")
         return location_info
