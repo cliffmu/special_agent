@@ -50,33 +50,33 @@ def execute_ha_command(command, hass=None):
     """
     log_to_file(f"[DataSources] Executing command: {command}")
 
-    return True
+    # return True
     
-    # if isinstance(command, dict) and "service" in command and "data" in command:
-    #     # Example: command["service"] = "light.turn_on"
-    #     #          command["data"] = {"entity_id": "light.office_outdoor_spotlight_right", "xy_color": [0.55, 0.41]}
-    #     service_parts = command["service"].split(".")
-    #     if len(service_parts) == 2:
-    #         domain, service_name = service_parts
+    if isinstance(command, dict) and "service" in command and "data" in command:
+        # Example: command["service"] = "light.turn_on"
+        #          command["data"] = {"entity_id": "light.office_outdoor_spotlight_right", "xy_color": [0.55, 0.41]}
+        service_parts = command["service"].split(".")
+        if len(service_parts) == 2:
+            domain, service_name = service_parts
 
-    #         if hass is None:
-    #             log_to_file("[execute_ha_command] Error: No hass instance provided.")
-    #             return False
+            if hass is None:
+                log_to_file("[execute_ha_command] Error: No hass instance provided.")
+                return False
 
-    #         try:
-    #             # Call the Home Assistant service
-    #             hass.services.call(domain, service_name, command["data"], blocking=True)
-    #             log_to_file(f"[execute_ha_command] Called service {domain}.{service_name} with {command['data']}")
-    #             return True
-    #         except Exception as e:
-    #             log_to_file(f"[execute_ha_command] Error calling {domain}.{service_name}: {str(e)}")
-    #             return False
-    #     else:
-    #         log_to_file(f"[execute_ha_command] Invalid service format: {command['service']}")
-    #         return False
-    # else:
-    #     log_to_file(f"[execute_ha_command] Command not recognized format: {command}")
-    #     return False
+            try:
+                # Call the Home Assistant service
+                hass.services.call(domain, service_name, command["data"], blocking=True)
+                log_to_file(f"[execute_ha_command] Called service {domain}.{service_name} with {command['data']}")
+                return True
+            except Exception as e:
+                log_to_file(f"[execute_ha_command] Error calling {domain}.{service_name}: {str(e)}")
+                return False
+        else:
+            log_to_file(f"[execute_ha_command] Invalid service format: {command['service']}")
+            return False
+    else:
+        log_to_file(f"[execute_ha_command] Command not recognized format: {command}")
+        return False
 
 
 _LOGGER = logging.getLogger(__name__)

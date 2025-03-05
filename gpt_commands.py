@@ -1,6 +1,99 @@
 from openai import OpenAI
 from .logger_helper import log_to_file
 
+def generate_user_friendly_confirmation(user_text, commands_list, api_key=None):
+    """
+    Generate a user-friendly confirmation message for the voice assistant to speak.
+    This summarizes what devices will be controlled and how, in natural language.
+    
+    Args:
+        user_text: The original user request
+        commands_list: List of commands to be executed
+        api_key: OpenAI API key
+        
+    Returns:
+        A concise, friendly confirmation message
+    """
+    if not api_key:
+        # Fallback if no API key
+        return f"I found {len(commands_list)} devices to control. Shall I proceed?"
+    
+    try:
+        # Extract entity information for the prompt
+        entities = []
+        for cmd in commands_list:
+            service = cmd.get("service", "unknown")
+            entities_list = cmd.get("data", {}).get("entity_id", [])
+            if isinstance(entities_list, str):
+                entities_list = [entities_list]
+                
+            # Get relevant attributes if available
+            attributes = {}
+            for key, value in cmd.get("data", {}).items():
+                if key != "entity_id":
+                    attributes[key] = value
+                    
+            entities.append({
+                "service": service,
+                "entities": entities_list,
+                "attributes": attributes
+            })
+            
+        # Create the prompt
+        system_prompt = """
+        Create a very concise confirmation message for a voice assistant to speak.
+        Focus on:
+        1. What devices will be controlled (general description, not IDs)
+        2. What will happen to them (on/off, brightness level, etc.)
+        
+        Your response must be:
+        - EXTREMELY concise (under 15 words)
+        - Clear enough for verbal confirmation
+        - End with "Shall I proceed?" or "OK to proceed?"
+        
+        DO NOT include:
+        - Entity IDs (like light.office_lamp)
+        - Technical details
+        - Long explanations
+        
+        EXAMPLES:
+        For commands to turn on office lights at 20%:
+        "Turn on office lights at 20%. Proceed?"
+        
+        For commands to play jazz music in bedroom:
+        "Play jazz in bedroom. Proceed?"
+        """
+        
+        # Create the content with command details
+        user_prompt = f"""
+        Original request: "{user_text}"
+        
+        Commands to execute:
+        {entities}
+        
+        Generate a very short and clear confirmation request.
+        """
+        
+        # Make the API call
+        client = OpenAI(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+        )
+        
+        friendly_confirmation = completion.choices[0].message.content.strip()
+        log_to_file(f"[GPTCommands] Generated friendly confirmation: {friendly_confirmation}")
+        return friendly_confirmation
+        
+    except Exception as e:
+        log_to_file(f"[GPTCommands] Error generating friendly confirmation: {e}")
+        # Fallback to simpler message if LLM call fails
+        return f"Control {len(commands_list)} devices? Proceed?"
+
 def classify_intent(user_text, api_key=None):
     """
     Return ONLY one of the following:

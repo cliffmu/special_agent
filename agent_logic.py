@@ -13,7 +13,8 @@ from .gpt_commands import (
     ask_gpt_for_refined_query,
     ask_gpt_if_user_wants_music,
     ask_gpt_for_spotify_query,
-    ask_gpt_for_rest_command
+    ask_gpt_for_rest_command,
+    generate_user_friendly_confirmation
 )
 from .spotify_integration import get_spotify_access_token, search_spotify
 from .logger_helper import log_to_file
@@ -151,22 +152,15 @@ def process_conversation_input(user_text, device_id, hass):
             
             log_to_file(f"[AgentLogic] Created pending session for device_id='{device_id}' with {len(commands_list)} commands")
             
-            # Build list of entities to display to user
-            all_entities = []
-            for cmd in commands_list:
-                ent_list = cmd["data"].get("entity_id", [])
-                # could be a single str or list
-                if isinstance(ent_list, str):
-                    ent_list = [ent_list]
-                all_entities.extend(ent_list)
-
-            # Return confirmation prompt to user
-            return (
-                "I found these devices to control: "
-                + ", ".join(str(entity) for entity in all_entities)
-                + ". Shall I proceed?",
-                False
+            # Generate a user-friendly confirmation message using LLM
+            friendly_confirmation = generate_user_friendly_confirmation(
+                user_text, 
+                commands_list, 
+                api_key=openai_api_key
             )
+            
+            # Return the user-friendly confirmation prompt
+            return friendly_confirmation, False
 
 
             # success_flag = True
