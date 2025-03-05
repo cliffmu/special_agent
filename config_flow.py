@@ -22,6 +22,8 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional("openai_api_key", default=""): str,
                 vol.Optional("spotify_client_id", default=""): str,
                 vol.Optional("spotify_client_secret", default=""): str,
+                vol.Optional("zip_code", default=""): str,
+                vol.Optional("weather_station_id", default="washington_weather_station"): str,
             }),
             errors={}
         )
@@ -53,6 +55,14 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(
                 "spotify_client_secret",
                 default=current.get("spotify_client_secret", self.config_entry.data.get("spotify_client_secret", ""))
+            ): str,
+            vol.Optional(
+                "zip_code",
+                default=current.get("zip_code", self.config_entry.data.get("zip_code", ""))
+            ): str,
+            vol.Optional(
+                "weather_station_id",
+                default=current.get("weather_station_id", self.config_entry.data.get("weather_station_id", "washington_weather_station"))
             ): str,
         })
         return self.async_show_form(step_id="init", data_schema=schema)

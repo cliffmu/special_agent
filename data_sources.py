@@ -4,19 +4,21 @@ import asyncio
 import os
 import json
 import logging
-from typing import Tuple, Dict, List
+import aiohttp
+import datetime
+from typing import Tuple, Dict, List, Optional, Any
 from collections import defaultdict
 
-# from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.location import async_detect_location_info
+from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE, CONF_LATITUDE, CONF_LONGITUDE
 
 from .entity_refinement import filter_irrelevant_entities, rerank_and_filter_docs
 from .vector_index import build_vector_index, query_vector_index
 from .logger_helper import log_to_file
 
-from .logger_helper import log_to_file
 from homeassistant.core import HomeAssistant
 
 def get_ha_states(hass):
@@ -127,6 +129,195 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
 
     summary_dict = defaultdict(lambda: defaultdict(int))
     devices_detail_list = []
+    
+    
+async def get_location_info(hass: HomeAssistant) -> dict:
+    """
+    Get the location information for this Home Assistant instance.
+    Returns coordinates, postal code, and other location details if available.
+    """
+    location_info = {}
+    
+    try:
+        # Try to get location from HA configuration
+        latitude = hass.config.latitude
+        longitude = hass.config.longitude
+        
+        if latitude and longitude:
+            location_info["latitude"] = latitude
+            location_info["longitude"] = longitude
+            
+            # Try to get location metadata (city, state, etc.)
+            location_data = await async_detect_location_info(hass)
+            if location_data:
+                location_info["city"] = location_data.city
+                location_info["region"] = location_data.region_code
+                location_info["country"] = location_data.country_code
+                location_info["postal_code"] = location_data.postal_code
+            
+        # Check for a custom zip code setting in our config
+        config_entries = hass.data.get("special_agent", {})
+        config_data = next(iter(config_entries.values())) if config_entries else {}
+        
+        if "zip_code" in config_data:
+            location_info["postal_code"] = config_data["zip_code"]
+            
+        log_to_file(f"[DataSources] Location info: {location_info}")
+        return location_info
+        
+    except Exception as e:
+        log_to_file(f"[DataSources] Error getting location info: {e}")
+        return {"error": str(e)}
+
+
+async def get_local_weather_sensors(hass: HomeAssistant) -> dict:
+    """
+    Get readings from local weather-related sensors.
+    Specifically looks for weather station sensors.
+    """
+    weather_data = {}
+    
+    try:
+        # Look for predefined device/station IDs
+        config_entries = hass.data.get("special_agent", {})
+        config_data = next(iter(config_entries.values())) if config_entries else {}
+        weather_station_id = config_data.get("weather_station_id", "washington_weather_station")
+        
+        # Get all states
+        all_states = hass.states.all()
+        
+        # Find weather-related sensors
+        for state in all_states:
+            if not state.entity_id.startswith(('sensor.', 'weather.', 'binary_sensor.')):
+                continue
+                
+            # Look for weather station by ID
+            if weather_station_id and weather_station_id in state.entity_id.lower():
+                sensor_type = _determine_sensor_type(state)
+                if sensor_type:
+                    weather_data[sensor_type] = {
+                        "value": state.state,
+                        "unit": state.attributes.get("unit_of_measurement", ""),
+                        "entity_id": state.entity_id
+                    }
+            
+            # Also look for common weather sensor keywords
+            if any(keyword in state.entity_id.lower() for keyword in 
+                  ['temperature', 'humidity', 'pressure', 'wind', 'rain', 'weather']):
+                sensor_type = _determine_sensor_type(state)
+                if sensor_type and sensor_type not in weather_data:
+                    weather_data[sensor_type] = {
+                        "value": state.state,
+                        "unit": state.attributes.get("unit_of_measurement", ""),
+                        "entity_id": state.entity_id
+                    }
+                    
+        # Also check for integrated weather platforms
+        for state in all_states:
+            if state.entity_id.startswith('weather.'):
+                weather_data["weather_platform"] = {
+                    "condition": state.state,
+                    "temperature": state.attributes.get("temperature"),
+                    "humidity": state.attributes.get("humidity"),
+                    "pressure": state.attributes.get("pressure"),
+                    "wind_speed": state.attributes.get("wind_speed"),
+                    "wind_bearing": state.attributes.get("wind_bearing"),
+                    "entity_id": state.entity_id
+                }
+                break
+                
+        log_to_file(f"[DataSources] Found {len(weather_data)} local weather sensors")
+        return weather_data
+        
+    except Exception as e:
+        log_to_file(f"[DataSources] Error getting local weather sensors: {e}")
+        return {"error": str(e)}
+        
+        
+async def get_online_weather_data(hass: HomeAssistant) -> dict:
+    """
+    Get weather data from online sources using the Open-Meteo API.
+    Uses the location from Home Assistant config.
+    """
+    try:
+        location = await get_location_info(hass)
+        
+        if not location.get("latitude") or not location.get("longitude"):
+            return {"error": "No location coordinates available"}
+            
+        latitude = location["latitude"]
+        longitude = location["longitude"]
+        
+        # Use Open-Meteo API (free, no API key required)
+        url = (f"https://api.open-meteo.com/v1/forecast?"
+               f"latitude={latitude}&longitude={longitude}"
+               f"&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m"
+               f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum"
+               f"&timeformat=unixtime&timezone=auto")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    log_to_file(f"[DataSources] Retrieved online weather data")
+                    return {
+                        "source": "open-meteo",
+                        "data": data
+                    }
+                else:
+                    error_text = await response.text()
+                    log_to_file(f"[DataSources] Error fetching weather: {response.status} - {error_text}")
+                    return {"error": f"API error: {response.status}"}
+                    
+    except Exception as e:
+        log_to_file(f"[DataSources] Error getting online weather: {e}")
+        return {"error": str(e)}
+
+
+def _determine_sensor_type(state) -> Optional[str]:
+    """
+    Determine the type of weather sensor based on entity ID and attributes.
+    Returns a standardized sensor type name or None if not weather-related.
+    """
+    entity_id = state.entity_id.lower()
+    
+    # Quick check if it's likely a weather sensor
+    if not any(keyword in entity_id for keyword in 
+              ['temp', 'humid', 'pressure', 'wind', 'rain', 'precip', 'weather']):
+        return None
+        
+    # Map entity to sensor type
+    if 'temperature' in entity_id:
+        return 'temperature'
+    elif 'humidity' in entity_id:
+        return 'humidity'
+    elif 'pressure' in entity_id or 'barometer' in entity_id:
+        return 'pressure'
+    elif 'wind_speed' in entity_id:
+        return 'wind_speed'
+    elif 'wind_direction' in entity_id or 'wind_bearing' in entity_id:
+        return 'wind_direction'
+    elif 'rain' in entity_id or 'precip' in entity_id:
+        return 'precipitation'
+    elif 'weather' in entity_id:
+        return 'weather_condition'
+        
+    # Check units to guess type
+    unit = state.attributes.get("unit_of_measurement", "").lower()
+    if unit in ['°c', '°f', 'c', 'f']:
+        return 'temperature'
+    elif unit in ['%', 'rh']:
+        return 'humidity'
+    elif unit in ['hpa', 'mbar', 'inhg']:
+        return 'pressure'
+    elif unit in ['m/s', 'mph', 'km/h', 'kn']:
+        return 'wind_speed'
+    elif unit in ['°', 'deg']:
+        return 'wind_direction'
+    elif unit in ['mm', 'in', 'mm/h', 'in/h']:
+        return 'precipitation'
+        
+    return None
 
     for device_id, device_entry in devices.items():
         area_name = area_map.get(device_entry.area_id, "Unassigned")
