@@ -1,4 +1,5 @@
 import logging
+import datetime
 from homeassistant.components.conversation import (
     AbstractConversationAgent,
     ConversationEntity,
@@ -7,6 +8,7 @@ from homeassistant.components.conversation import (
 from homeassistant.helpers import intent
 from .agent_logic import process_conversation_input
 from .logger_helper import log_to_file
+from .command_history import log_command
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,21 +111,57 @@ class TestConversationAgent(ConversationEntity, AbstractConversationAgent):
             device_id = f"{device_id}|{conversation_id}"
 
         try:
+            # Record start time for performance logging
+            start_time = datetime.datetime.now()
+            
             # Because process_conversation_input is synchronous, run it in the executor
             command, success = await self.hass.async_add_executor_job(
                 process_conversation_input, user_text, device_id, self.hass
             )
+            
+            # Calculate processing time
+            processing_time = (datetime.datetime.now() - start_time).total_seconds()
+            
             if command:
+                # Just use the command response directly without adding status text
                 response_text = str(command)
-                if success:
-                    response_text += " (executed successfully)"
-                else:
-                    response_text += " (execution failed)"
             else:
-                response_text = "No command generated."
+                response_text = "I couldn't process that request."
+                
+            # Only log commands that aren't confirmations or part of the session flow
+            # Commands are logged separately in agent_logic.py during confirmation/execution
+            # This only logs initial commands and errors
+            if not any(word in user_text.lower() for word in ["yes", "no", "yep", "nope", "yeah", "sure", "proceed"]):
+                # Get metadata about the request
+                metadata = {
+                    "processing_time": processing_time,
+                    "source_entity": source_entity_id,
+                    "conversation_id": conversation_id
+                }
+                
+                # Log to command history (for initial commands)
+                log_command(
+                    user_text=user_text,
+                    device_id=device_id,
+                    session_id=device_id,
+                    command_response=response_text,
+                    success=success,
+                    metadata=metadata
+                )
+                
         except Exception as e:
             _LOGGER.error("Error processing input '%s': %s", user_text, e, exc_info=True)
-            response_text = f"Error: {e}"
+            response_text = f"Sorry, I encountered an error processing that request."
+            
+            # Log the error
+            log_command(
+                user_text=user_text,
+                device_id=device_id,
+                session_id=device_id,
+                command_response=response_text,
+                success=False,
+                metadata={"error": str(e)}
+            )
 
         result = intent.IntentResponse(language=conversation_input.language)
         result.async_set_speech(response_text)

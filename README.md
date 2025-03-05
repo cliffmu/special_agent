@@ -15,7 +15,8 @@ Special Agent integrates advanced AI capabilities with Home Assistant, allowing 
 - **Multi-Device Support**: Handles requests from multiple voice input devices simultaneously
 - **Smart Device Control**: Controls lights, media players, climate devices, and more
 - **Music Integration**: Searches and plays music through Spotify based on natural requests
-- **Confirmation System**: Asks for confirmation before executing commands
+- **Room-Aware Confirmations**: Asks for clear, room-specific confirmation before executing commands
+- **Command History**: Maintains a detailed log of all commands, responses, and execution results
 - **Seamless Integration**: Works with Home Assistant's conversation interface
 
 ## Installation
@@ -49,9 +50,22 @@ Configure through the Home Assistant UI:
 3. Enter your OpenAI API key
 4. Optionally add Spotify credentials for music integration
 
+## Command History
+
+Special Agent maintains a detailed history of all user interactions in a JSON file located in the component directory:
+
+- **What's recorded**: User requests, device IDs, responses, command execution status, timestamps
+- **Purpose**: Troubleshooting, improving performance, understanding usage patterns
+- **Location**: `command_history.json` in the component directory
+- **Format**: Structured JSON that can be read with any text editor or parsed programmatically
+
+The history is limited to the most recent 1000 interactions to manage file size.
+
 ## Privacy & Data Security
 
 All voice processing happens locally in Home Assistant before being sent to external APIs. Only the text of your commands is sent to OpenAI/Claude for processing. No audio is recorded or transmitted.
+
+The command history is stored locally on your Home Assistant server and is not sent to any external services.
 
 ## Support & Contribution
 

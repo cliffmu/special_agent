@@ -41,27 +41,36 @@ def generate_user_friendly_confirmation(user_text, commands_list, api_key=None):
             
         # Create the prompt
         system_prompt = """
-        Create a very concise confirmation message for a voice assistant to speak.
+        Create a concise confirmation message for a voice assistant to speak.
+        
         Focus on:
-        1. What devices will be controlled (general description, not IDs)
-        2. What will happen to them (on/off, brightness level, etc.)
+        1. What rooms/areas are affected (VERY IMPORTANT - always mention rooms)
+        2. What devices will be controlled in each room
+        3. What will happen to them (on/off, brightness level, etc.)
         
         Your response must be:
-        - EXTREMELY concise (under 15 words)
-        - Clear enough for verbal confirmation
+        - Concise (under 20 words if possible)
+        - Clear about which rooms will be affected
+        - Mention specific rooms like office, bedroom, nursery, kitchen, etc.
         - End with "Shall I proceed?" or "OK to proceed?"
         
         DO NOT include:
         - Entity IDs (like light.office_lamp)
         - Technical details
-        - Long explanations
+        - Anything not important for user confirmation
         
         EXAMPLES:
         For commands to turn on office lights at 20%:
-        "Turn on office lights at 20%. Proceed?"
+        "Turn on all office lights at 20%. Proceed?"
         
         For commands to play jazz music in bedroom:
-        "Play jazz in bedroom. Proceed?"
+        "Play jazz in the bedroom. Proceed?"
+        
+        For commands affecting multiple rooms:
+        "Turn on lights in kitchen and living room. Proceed?"
+        
+        For commands with sensitive rooms (nursery):
+        "Play music in the nursery. Proceed?"
         """
         
         # Create the content with command details
