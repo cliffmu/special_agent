@@ -1,5 +1,25 @@
 # Ignore Python cache files
 __pycache__/
+*.py[cod]
+*$py.class
 
 # Ignore the data folder (generated at runtime)
 data/
+
+# Ignore command history and logs
+command_history.json
+special_agent_log.txt
+
+# Ignore Claude instruction file and other development notes
+CLAUDE.md
+notes.md
+
+# Ignore test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ignore distribution packages
+dist/
+build/
+*.egg-info/

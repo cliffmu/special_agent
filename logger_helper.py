@@ -1,11 +1,20 @@
 import asyncio
 import os
+import sys
 
 # Get the directory where the current file (logger_helper.py) is located
 COMPONENT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(COMPONENT_DIR, "special_agent_log.txt")
 
+# Check if we're running in a test environment
+IN_TESTING = os.environ.get('SPECIAL_AGENT_TESTING') == 'true'
+
 def log_to_file(message):
+    # When testing, just print to stdout instead of file operations
+    if IN_TESTING:
+        print(f"[LOG] {message}")
+        return
+        
     try:
         # Try to get the current running event loop.
         loop = asyncio.get_running_loop()

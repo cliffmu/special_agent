@@ -7,6 +7,9 @@ from .logger_helper import log_to_file
 COMPONENT_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(COMPONENT_DIR, "command_history.json")
 
+# Check if we're running in a test environment
+IN_TESTING = os.environ.get('SPECIAL_AGENT_TESTING') == 'true'
+
 def log_command(
     user_text: str,
     device_id: str = "",
@@ -60,6 +63,11 @@ def log_command(
                     simplified_commands.append(simplified_cmd)
             entry["commands"] = simplified_commands
         
+        # If we're in a test environment, don't try to read/write files
+        if IN_TESTING:
+            log_to_file(f"[CommandHistory] Test mode - would log command: {user_text}")
+            return
+            
         # Load existing history if it exists
         history = []
         if os.path.exists(HISTORY_FILE):
