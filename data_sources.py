@@ -289,7 +289,7 @@ def _determine_sensor_type(state) -> Optional[str]:
     
     # Quick check if it's likely a weather sensor
     if not any(keyword in entity_id for keyword in 
-              ['temp', 'humid', 'pressure', 'wind', 'rain', 'precip', 'weather']):
+              ['temp', 'humid', 'pressure', 'wind', 'rain', 'precip', 'weather', 'uv']):
         return None
         
     # Map entity to sensor type
@@ -305,6 +305,8 @@ def _determine_sensor_type(state) -> Optional[str]:
         return 'wind_direction'
     elif 'rain' in entity_id or 'precip' in entity_id:
         return 'precipitation'
+    elif 'uv' in entity_id or 'ultraviolet' in entity_id:
+        return 'uv_index'
     elif 'weather' in entity_id:
         return 'weather_condition'
         
@@ -322,6 +324,10 @@ def _determine_sensor_type(state) -> Optional[str]:
         return 'wind_direction'
     elif unit in ['mm', 'in', 'mm/h', 'in/h']:
         return 'precipitation'
+    elif unit in ['uv', 'index', '']:
+        # UV index often has no unit or simply 'index'
+        if 'uv' in entity_id or 'index' in entity_id:
+            return 'uv_index'
         
     return None
 
