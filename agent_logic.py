@@ -102,7 +102,7 @@ def process_conversation_input(user_text, device_id, hass):
 
         # FIND RELATED DEVICES
         matrix, docs, dim = load_vector_index(openai_api_key)
-        top_docs = query_vector_index((matrix, docs, dim), refined_text, k=50, openai_api_key=openai_api_key)
+        top_docs = query_vector_index((matrix, docs, dim), refined_text, k=50, openai_api_key=openai_api_key, hass=hass)
         final_docs = rerank_and_filter_docs(refined_text, top_docs, filter_qty=20)
 
         # BUILD COMBINED CONTEXT
@@ -210,6 +210,45 @@ def process_conversation_input(user_text, device_id, hass):
     else:
         log_to_file("[AgentLogic] Unknown intent => no action.")
         return None, False
+
+def sync_do_rebuild(hass):
+    """
+    Synchronous version of the rebuild function that can be called within the same thread.
+    Less comprehensive than full async version but works for basic cases.
+    """
+    log_to_file("[AgentLogic] sync_do_rebuild: START")
+    
+    try:
+        config_entries = hass.data.get("special_agent", {})
+        config_data = next(iter(config_entries.values())) if config_entries else {}
+        openai_api_key = config_data.get("openai_api_key", "")
+        
+        from .data_sources import get_ha_states
+        from .entity_refinement import filter_irrelevant_entities
+        from .vector_index import build_vector_index
+        
+        # 1) Get all states synchronously
+        all_states = get_ha_states(hass)
+        refined_states = filter_irrelevant_entities(all_states)
+        log_to_file(f"[AgentLogic] sync_do_rebuild: got {len(refined_states)} refined states")
+        
+        # 2) Build docs
+        docs = []
+        for s in refined_states:
+            content = f"Entity: {s['entity_id']}\nName: {s['name']}\nAttributes: {s['attributes']}\n"
+            docs.append({"page_content": content, "metadata": {"entity_id": s["entity_id"]}})
+        
+        # 3) Build vector index
+        result = build_vector_index(
+            docs,
+            openai_api_key=openai_api_key,
+            force_rebuild=True
+        )
+        log_to_file("[AgentLogic] sync_do_rebuild: success")
+        return "done"
+    except Exception as e:
+        log_to_file(f"[AgentLogic] sync_do_rebuild: error => {e}")
+        return f"error: {e}"
 
 async def do_full_rebuild(hass):
     """

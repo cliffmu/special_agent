@@ -327,23 +327,55 @@ def build_vector_index(
 
 def load_vector_index(
     openai_api_key: str,
-    persist_dir: str = None
+    persist_dir: str = None,
+    hass=None,
+    auto_rebuild: bool = False
 ):
     """
     Try to load an existing vector index (embeddings + mapping).
     Return (embedding_matrix, doc_list, vector_dim) or (None, None, None) if missing.
+    
+    If auto_rebuild is True and hass is provided, will attempt to rebuild the index if none exists.
     """
     if persist_dir is None:
         base_dir = os.path.dirname(__file__)
         persist_dir = os.path.join(base_dir, "data", "vector_index")
+        # Make sure the directory exists
+        os.makedirs(persist_dir, exist_ok=True)
 
     embeddings_file = os.path.join(persist_dir, "embeddings.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
 
+    # Check if index exists
     if not os.path.exists(embeddings_file) or not os.path.exists(mapping_file):
         log_to_file("[VectorIndex] No existing index found on disk.")
+        
+        # If auto_rebuild is enabled and hass is provided, trigger rebuild
+        if auto_rebuild and hass:
+            log_to_file("[VectorIndex] Auto-rebuilding index...")
+            try:
+                # Use the synchronous rebuild function
+                from .agent_logic import sync_do_rebuild
+                result = sync_do_rebuild(hass)
+                log_to_file(f"[VectorIndex] Auto-rebuild completed: {result}")
+                
+                # Now try loading again after rebuild
+                if os.path.exists(embeddings_file) and os.path.exists(mapping_file):
+                    try:
+                        embedding_matrix = np.load(embeddings_file)
+                        with open(mapping_file, "r", encoding="utf-8") as f:
+                            docs = json.load(f)
+                        vector_dim = embedding_matrix.shape[1]
+                        log_to_file(f"[VectorIndex] Successfully loaded newly built index with {len(docs)} docs")
+                        return embedding_matrix, docs, vector_dim
+                    except Exception as e:
+                        log_to_file(f"[VectorIndex] Error loading newly built index: {e}")
+            except Exception as e:
+                log_to_file(f"[VectorIndex] Auto-rebuild failed: {e}")
+        
         return None, None, None
 
+    # Standard loading logic
     try:
         embedding_matrix = np.load(embeddings_file)
         with open(mapping_file, "r", encoding="utf-8") as f:
@@ -357,10 +389,45 @@ def load_vector_index(
         return None, None, None
 
 
-def query_vector_index(index_data, query_text, k=20, openai_api_key=None, model_name="text-embedding-ada-002"):
-    if not index_data:
-        log_to_file("[VectorIndex] No index data available for query.")
-        return []
+def query_vector_index(index_data, query_text, k=20, openai_api_key=None, model_name="text-embedding-ada-002", hass=None):
+    """
+    Query the vector index for documents similar to query_text.
+    
+    If index_data is missing (None values), and hass is provided, will attempt to rebuild
+    the index automatically before continuing.
+    """
+    # Handle case where index is missing
+    if not index_data or index_data[0] is None:
+        log_to_file("[VectorIndex] No valid index data available for query.")
+        if hass:
+            # Try rebuilding on-the-fly
+            log_to_file("[VectorIndex] Attempting auto-rebuild before query...")
+            try:
+                from .agent_logic import sync_do_rebuild
+                result = sync_do_rebuild(hass)
+                if result == "done":
+                    # Try loading again
+                    rebuilt_index = load_vector_index(openai_api_key)
+                    if rebuilt_index[0] is not None:
+                        log_to_file("[VectorIndex] Successfully rebuilt and loaded index, continuing with query")
+                        index_data = rebuilt_index
+                    else:
+                        log_to_file("[VectorIndex] Rebuilt index but still couldn't load it")
+                        # Return a special document that will handle the error feedback
+                        return [{"page_content": "Please say 'rebuild database' to refresh my device list.",
+                                "metadata": {"entity_id": "assistant.rebuild_request"}}]
+                else:
+                    log_to_file(f"[VectorIndex] Auto-rebuild failed: {result}")
+                    return [{"page_content": "I'm having trouble accessing my device database. Please say 'rebuild database'.",
+                            "metadata": {"entity_id": "assistant.rebuild_request"}}]
+            except Exception as e:
+                log_to_file(f"[VectorIndex] Error in auto-rebuild: {e}")
+                return [{"page_content": f"Error: {e}. Please say 'rebuild database' to refresh my device list.",
+                        "metadata": {"entity_id": "assistant.rebuild_request"}}]
+        else:
+            # No hass context, just return a helpful message as a document
+            return [{"page_content": "Please say 'rebuild database' to refresh my device list.",
+                    "metadata": {"entity_id": "assistant.rebuild_request"}}]
 
     embedding_matrix, documents, vector_dim = index_data
     
