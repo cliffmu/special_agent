@@ -1,4 +1,5 @@
 from openai import OpenAI
+import json
 from .logger_helper import log_to_file
 
 def generate_user_friendly_confirmation(user_text, commands_list, api_key=None):
@@ -103,10 +104,93 @@ def generate_user_friendly_confirmation(user_text, commands_list, api_key=None):
         # Fallback to simpler message if LLM call fails
         return f"Control {len(commands_list)} devices? Proceed?"
 
+def generate_weather_response(user_text, local_sensors, online_weather, location_info, api_key=None):
+    """
+    Generate a natural language response to a weather-related question,
+    using local sensor data and online weather forecasts.
+    
+    Args:
+        user_text: Original weather query from the user
+        local_sensors: Dict of local weather sensor readings
+        online_weather: Dict of online weather data
+        location_info: Dict with location details (city, zip, etc.)
+        api_key: OpenAI API key
+        
+    Returns:
+        A natural language response answering the weather query
+    """
+    if not api_key:
+        # Fallback response if no API key
+        if "error" in local_sensors or "error" in online_weather:
+            return "I'm sorry, but I couldn't access weather information at this time. Please try again later."
+            
+        # Basic response with available data
+        temp_info = local_sensors.get("temperature", {}).get("value", "unknown")
+        condition = local_sensors.get("weather_condition", {}).get("value", "unknown")
+        return f"The current temperature is {temp_info} and conditions are {condition}."
+    
+    try:
+        # Convert Python objects to strings for the prompt
+        local_json = json.dumps(local_sensors, indent=2)
+        online_json = json.dumps(online_weather, indent=2)
+        location_json = json.dumps(location_info, indent=2)
+        
+        # Create a prompt for the LLM
+        system_prompt = """
+        You are a helpful weather assistant integrated with a smart home system.
+        Use the provided weather data to answer the user's question in a natural, 
+        conversational way, as if you were providing a weather report.
+        
+        GUIDELINES:
+        1. Be conversational and friendly
+        2. Prioritize local sensor data when available
+        3. Use online forecast data for predictions
+        4. Include relevant details like temperature, conditions, and forecasts
+        5. Keep your response concise but informative
+        6. If data is unavailable, say so politely
+        7. Always include relevant units (F/C, mph/kmh, etc.) 
+        8. Mention the location when relevant (city name or "your area")
+        """
+        
+        user_prompt = f"""
+        USER QUESTION: "{user_text}"
+        
+        LOCAL WEATHER SENSOR DATA:
+        {local_json}
+        
+        ONLINE WEATHER DATA:
+        {online_json}
+        
+        LOCATION INFORMATION:
+        {location_json}
+        
+        Please provide a helpful, conversational response to the user's weather question.
+        """
+        
+        # Call the OpenAI API
+        client = OpenAI(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+        )
+        
+        response_text = completion.choices[0].message.content.strip()
+        log_to_file(f"[GPTCommands] Weather response generated: {response_text[:100]}...")
+        return response_text
+        
+    except Exception as e:
+        log_to_file(f"[GPTCommands] Error generating weather response: {e}")
+        return f"I'm sorry, I had trouble generating a weather report. Error: {e}"
+
+
 def classify_intent(user_text, api_key=None):
     """
     Return ONLY one of the following:
-      'control', 'question', or 'weather'
+      'control', 'question', 'weather', 'rebuild_database', or 'test'
     """
     if api_key:
         try:

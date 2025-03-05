@@ -6,7 +6,14 @@
 
 import datetime
 
-from .data_sources import get_ha_states, execute_ha_command, get_devices_by_area
+from .data_sources import (
+    get_ha_states, 
+    execute_ha_command, 
+    get_devices_by_area,
+    get_local_weather_sensors,
+    get_online_weather_data,
+    get_location_info
+)
 from .vector_index import build_vector_index, query_vector_index, load_vector_index
 from .gpt_commands import (
     classify_intent,
@@ -14,7 +21,8 @@ from .gpt_commands import (
     ask_gpt_if_user_wants_music,
     ask_gpt_for_spotify_query,
     ask_gpt_for_rest_command,
-    generate_user_friendly_confirmation
+    generate_user_friendly_confirmation,
+    generate_weather_response
 )
 from .spotify_integration import get_spotify_access_token, search_spotify
 from .logger_helper import log_to_file
@@ -192,8 +200,50 @@ def process_conversation_input(user_text, device_id, hass):
             return None, False
 
     elif intent_type == "weather":
-        log_to_file("[AgentLogic] Weather not implemented yet.")
-        return "Weather not implemented", True
+        log_to_file("[AgentLogic] Processing weather intent...")
+        
+        # Get local weather sensors
+        local_weather_sensors = await hass.async_add_executor_job(
+            lambda: asyncio.run(get_local_weather_sensors(hass))
+        )
+        log_to_file(f"[AgentLogic] Found {len(local_weather_sensors)} local weather sensors")
+        
+        # Get location information
+        location_info = await hass.async_add_executor_job(
+            lambda: asyncio.run(get_location_info(hass))
+        )
+        log_to_file(f"[AgentLogic] Retrieved location info: {location_info}")
+        
+        # Get online weather data
+        online_weather = await hass.async_add_executor_job(
+            lambda: asyncio.run(get_online_weather_data(hass))
+        )
+        log_to_file(f"[AgentLogic] Retrieved online weather data")
+        
+        # Generate weather response using LLM
+        weather_response = generate_weather_response(
+            user_text,
+            local_weather_sensors,
+            online_weather,
+            location_info,
+            api_key=openai_api_key
+        )
+        
+        # Log the command to history
+        log_command(
+            user_text=user_text,
+            device_id=device_id,
+            session_id=device_id,
+            command_response=weather_response,
+            success=True,
+            metadata={
+                "intent_type": "weather", 
+                "local_sensors": list(local_weather_sensors.keys()),
+                "location": location_info.get("city", "") or location_info.get("postal_code", "")
+            }
+        )
+        
+        return weather_response, True
     elif intent_type == "question":
         log_to_file("[AgentLogic] Q&A not implemented yet.")
         return "Question not implemented", True
