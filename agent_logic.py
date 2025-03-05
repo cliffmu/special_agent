@@ -5,6 +5,7 @@
 # IF PLAYLIST ISN'T MATCH USE LLM TO TRY AGAIN
 
 import datetime
+import asyncio
 
 from .data_sources import (
     get_ha_states, 
@@ -202,23 +203,28 @@ def process_conversation_input(user_text, device_id, hass):
     elif intent_type == "weather":
         log_to_file("[AgentLogic] Processing weather intent...")
         
-        # Get local weather sensors
-        local_weather_sensors = await hass.async_add_executor_job(
-            lambda: asyncio.run(get_local_weather_sensors(hass))
+        # Define a synchronous helper function to get weather data
+        def get_weather_data():
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # Run all async functions in the helper
+                local_sensors = loop.run_until_complete(get_local_weather_sensors(hass))
+                location = loop.run_until_complete(get_location_info(hass))
+                online_data = loop.run_until_complete(get_online_weather_data(hass))
+                
+                return local_sensors, location, online_data
+            finally:
+                loop.close()
+                
+        # Get all weather data in one executor call
+        local_weather_sensors, location_info, online_weather = hass.async_add_executor_job(
+            get_weather_data
         )
-        log_to_file(f"[AgentLogic] Found {len(local_weather_sensors)} local weather sensors")
         
-        # Get location information
-        location_info = await hass.async_add_executor_job(
-            lambda: asyncio.run(get_location_info(hass))
-        )
-        log_to_file(f"[AgentLogic] Retrieved location info: {location_info}")
-        
-        # Get online weather data
-        online_weather = await hass.async_add_executor_job(
-            lambda: asyncio.run(get_online_weather_data(hass))
-        )
-        log_to_file(f"[AgentLogic] Retrieved online weather data")
+        log_to_file(f"[AgentLogic] Retrieved weather data: {len(local_weather_sensors)} sensors")
         
         # Generate weather response using LLM
         weather_response = generate_weather_response(

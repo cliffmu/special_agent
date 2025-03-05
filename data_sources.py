@@ -183,8 +183,8 @@ async def get_local_weather_sensors(hass: HomeAssistant) -> dict:
         config_data = next(iter(config_entries.values())) if config_entries else {}
         weather_station_id = config_data.get("weather_station_id", "washington_weather_station")
         
-        # Get all states
-        all_states = hass.states.all()
+        # Get all states - use a sync method since we're running in our own async context
+        all_states = list(hass.states.async_all())
         
         # Find weather-related sensors
         for state in all_states:
