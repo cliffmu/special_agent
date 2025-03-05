@@ -19,6 +19,7 @@ from .gpt_commands import (
 from .spotify_integration import get_spotify_access_token, search_spotify
 from .logger_helper import log_to_file
 from .entity_refinement import filter_irrelevant_entities, rerank_and_filter_docs
+from .command_history import log_command
 
 # Session timeout in seconds (5 minutes)
 SESSION_TIMEOUT = 300
@@ -157,6 +158,17 @@ def process_conversation_input(user_text, device_id, hass):
                 user_text, 
                 commands_list, 
                 api_key=openai_api_key
+            )
+            
+            # Log the command to history
+            log_command(
+                user_text=user_text,
+                device_id=device_id,
+                session_id=device_id,
+                command_response=friendly_confirmation,
+                commands_list=commands_list,
+                success=None,  # Pending confirmation
+                metadata={"status": "awaiting_confirmation"}
             )
             
             # Return the user-friendly confirmation prompt
@@ -314,28 +326,74 @@ def handle_confirmation_phase(user_text, hass, pending, device_id):
     pending_dict = hass.data.setdefault("special_agent_pending", {})
     
     log_to_file(f"[AgentLogic] handle_confirmation_phase for device_id='{device_id}', user_text='{user_text}'")
+    commands_list = pending.get("commands_list", [])
 
     if lowered in ["yes", "yep", "yeah", "sure", "go ahead"]:
-        commands_list = pending["commands_list"]
+        # Track successful and failed commands
         success_flag = True
+        failed_cmds = []
+        
+        # Execute each command and record failures
         for cmd in commands_list:
+            service_name = cmd.get("service", "unknown")
+            entity_id = cmd.get("data", {}).get("entity_id", "unknown")
             ok = execute_ha_command(cmd, hass=hass)
+            
             if not ok:
                 success_flag = False
+                failed_cmds.append(f"{service_name} for {entity_id}")
 
         # Clear the pending state for this device
         log_to_file(f"[AgentLogic] Executing commands and clearing session for device_id='{device_id}'")
         pending_dict.pop(device_id, None)
-        return ("Commands executed.", success_flag)
+        
+        # Generate appropriate response based on success/failure
+        if success_flag:
+            response = "Done."
+        else:
+            # Create a more friendly error message
+            if len(failed_cmds) == len(commands_list):
+                response = "Sorry, I couldn't complete any of the requested actions."
+            else:
+                response = f"Completed some actions, but had trouble with: {', '.join(failed_cmds[:2])}"
+                if len(failed_cmds) > 2:
+                    response += f" and {len(failed_cmds) - 2} more"
+        
+        # Log to command history
+        log_command(
+            user_text=user_text,
+            device_id=device_id,
+            session_id=device_id,
+            command_response=response,
+            commands_list=commands_list,
+            success=success_flag,
+            metadata={"status": "executed", "failed_commands": failed_cmds if not success_flag else []}
+        )
+        
+        return (response, success_flag)
 
     elif lowered in ["no", "nope", "nah"]:
-        # Discard
+        # Discard the pending request
         log_to_file(f"[AgentLogic] Canceling request and clearing session for device_id='{device_id}'")
         pending_dict.pop(device_id, None)
-        return ("Alright, I'll cancel the request.", True)
+        
+        # Log to command history
+        log_command(
+            user_text=user_text,
+            device_id=device_id,
+            session_id=device_id,
+            command_response="Request canceled.",
+            commands_list=commands_list,
+            success=None,
+            metadata={"status": "canceled"}
+        )
+        
+        return ("Request canceled.", True)
     else:
+        # Unrecognized confirmation response
         log_to_file(f"[AgentLogic] Unrecognized confirmation response for device_id='{device_id}': '{user_text}'")
-        return ("Sorry, please say 'yes' or 'no'.", False)
+        
+        return ("Please say yes or no.", False)
 
 # def handle_confirmation_phase(user_text, hass, pending, device_id):
 #     """
