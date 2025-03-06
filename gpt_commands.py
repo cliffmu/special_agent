@@ -130,6 +130,18 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
         return f"The current temperature is {temp_info} and conditions are {condition}."
     
     try:
+        # Log raw data for debugging
+        log_to_file(f"[GPTCommands] Weather data - Local sensors: {list(local_sensors.keys())}")
+        
+        # Check if forecast data exists
+        if "weather_forecast" in local_sensors:
+            forecast = local_sensors["weather_forecast"].get("forecast", [])
+            log_to_file(f"[GPTCommands] Forecast data found: {len(forecast)} periods")
+            if forecast:
+                log_to_file(f"[GPTCommands] First forecast entry: {forecast[0]}")
+        else:
+            log_to_file("[GPTCommands] No weather_forecast found in local_sensors")
+        
         # Convert Python objects to strings for the prompt
         local_json = json.dumps(local_sensors, indent=2)
         online_json = json.dumps(online_weather, indent=2)
@@ -142,14 +154,14 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
         conversational way, as if you were providing a weather report.
         
         GUIDELINES:
-        1. Be conversational and friendly
+        1. Be friendly but informative and concise, this text will be spoken so needs to be absorbed by the user auditorily
         2. PRIORITIZATION ORDER for data sources:
            a. Home Assistant forecast data ("weather_forecast") is most reliable - use this first
            b. Local weather station outdoor sensors are second priority
            c. Use online API data only if other sources aren't available
         3. NEVER use indoor temperature or humidity readings
         4. Include relevant details like temperature, conditions, precipitation, and UV index
-        5. Keep your response concise but informative
+        5. If the user asks about future weather, check the forecast data under "weather_forecast"
         6. If data is unavailable, say so politely
         7. Always include relevant units (F/C, mph/kmh, etc.) 
         8. Mention the location when relevant (city name or "your area")
@@ -168,7 +180,11 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
         {location_json}
         
         Please provide a helpful, conversational response to the user's weather question.
+        Focus on today's weather unless they specifically ask about future dates.
         """
+        
+        # Log the user prompt to see exactly what data is being sent to the LLM
+        log_to_file(f"[GPTCommands] Weather user prompt: {user_prompt}")
         
         # Call the OpenAI API
         client = OpenAI(api_key=api_key)
