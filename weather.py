@@ -11,7 +11,7 @@ from typing import Dict, Any
 
 from .logger_helper import log_to_file
 
-async def fetch_weather_data(hass, api_key=None):
+async def fetch_weather_data(hass, api_key=None, location_query=None):
     """
     Fetches weather data from all available sources and returns a consolidated result.
     This is the main entry point for weather data retrieval.
@@ -19,6 +19,7 @@ async def fetch_weather_data(hass, api_key=None):
     Args:
         hass: Home Assistant instance
         api_key: OpenAI API key (for possible future use)
+        location_query: Optional location name to get weather for a specific location
         
     Returns:
         Dictionary containing weather data from all sources
@@ -31,10 +32,17 @@ async def fetch_weather_data(hass, api_key=None):
     # Get local weather data (sensors, forecast entities)
     local_weather = await get_local_weather_sensors(hass)
     
-    # Only get online data if we don't have forecast data from Home Assistant
+    # Always fetch online weather data for better forecast information
+    # and to handle non-local queries
     online_weather = {}
-    if not local_weather.get("weather_forecast"):
-        log_to_file("[Weather] No Home Assistant forecast found, fetching from online API")
+    
+    # If a specific location was requested, modify location_info for the API call
+    if location_query:
+        log_to_file(f"[Weather] Fetching weather for location: {location_query}")
+        # We'll use the online API with the location query
+        online_weather = await get_online_weather_data(hass, location_info, location_query)
+    else:
+        # Get online data for the user's location
         online_weather = await get_online_weather_data(hass, location_info)
     
     return {
@@ -220,21 +228,78 @@ async def get_local_weather_sensors(hass) -> dict:
         return {"error": str(e)}
 
 
-async def get_online_weather_data(hass, location_info=None) -> dict:
+async def get_online_weather_data(hass, location_info=None, location_query=None) -> dict:
     """
     Get weather data from online sources using the Open-Meteo API.
     Uses the location from Home Assistant config or provided location_info.
+    
+    Args:
+        hass: Home Assistant instance
+        location_info: Optional dictionary with location details
+        location_query: Optional string with location name to search for (e.g. "San Francisco")
+        
+    Returns:
+        Dictionary with weather data or error information
     """
     try:
         # If location_info not provided, get it
         if not location_info:
             location_info = await get_location_info(hass)
         
-        if not location_info.get("latitude") or not location_info.get("longitude"):
-            return {"error": "No location coordinates available"}
-            
-        latitude = location_info["latitude"]
-        longitude = location_info["longitude"]
+        latitude = None
+        longitude = None
+        
+        # If we have a location query, we need to geocode it
+        if location_query:
+            log_to_file(f"[Weather] Geocoding location query: {location_query}")
+            try:
+                # Make sure aiohttp is installed
+                try:
+                    import aiohttp
+                except ImportError:
+                    log_to_file("[Weather] aiohttp module not found, installing...")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp"])
+                    import aiohttp
+                    log_to_file("[Weather] Successfully installed aiohttp module")
+                
+                # Use OpenMeteo geocoding API to get coordinates
+                geocode_url = f"https://geocoding-api.open-meteo.com/v1/search?name={location_query}&count=1&language=en&format=json"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(geocode_url) as response:
+                        if response.status == 200:
+                            geocode_data = await response.json()
+                            
+                            if geocode_data.get("results") and len(geocode_data["results"]) > 0:
+                                result = geocode_data["results"][0]
+                                latitude = result.get("latitude")
+                                longitude = result.get("longitude")
+                                log_to_file(f"[Weather] Geocoded {location_query} to lat: {latitude}, lon: {longitude}")
+                                
+                                # Add location name to location_info for LLM context
+                                location_info["queried_location"] = {
+                                    "name": result.get("name"),
+                                    "country": result.get("country"),
+                                    "admin1": result.get("admin1"),  # state/province
+                                    "latitude": latitude,
+                                    "longitude": longitude
+                                }
+                            else:
+                                log_to_file(f"[Weather] Could not geocode location: {location_query}")
+                                return {"error": f"Could not find location: {location_query}"}
+                        else:
+                            log_to_file(f"[Weather] Geocoding API error: {response.status}")
+                            return {"error": f"Geocoding API error: {response.status}"}
+            except Exception as e:
+                log_to_file(f"[Weather] Error during geocoding: {e}")
+                return {"error": f"Error looking up location coordinates: {e}"}
+        else:
+            # Use coordinates from Home Assistant config
+            if not location_info.get("latitude") or not location_info.get("longitude"):
+                return {"error": "No location coordinates available"}
+                
+            latitude = location_info["latitude"]
+            longitude = location_info["longitude"]
         
         # Make sure aiohttp is installed
         try:
@@ -254,13 +319,20 @@ async def get_online_weather_data(hass, location_info=None) -> dict:
                f"latitude={latitude}&longitude={longitude}"
                f"&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m"
                f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum"
+               f"&hourly=temperature_2m,relative_humidity_2m,precipitation_probability,weather_code"
+               f"&forecast_days=7"
                f"&timeformat=unixtime&timezone=auto")
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
-                    log_to_file(f"[Weather] Retrieved online weather data")
+                    log_to_file(f"[Weather] Retrieved online weather data with {len(data.get('daily', {}).get('time', []))} daily forecasts")
+                    
+                    # Add location context if we have it from geocoding
+                    if location_query and "queried_location" in location_info:
+                        data["location"] = location_info["queried_location"]
+                    
                     return {
                         "source": "open-meteo",
                         "data": data

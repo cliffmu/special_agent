@@ -130,6 +130,22 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
         return f"The current temperature is {temp_info} and conditions are {condition}."
     
     try:
+        # First, let's check if this is a query about weather in a different location
+        # Simple location detection in the query
+        import re
+        location_query = None
+        location_patterns = [
+            r"(?:in|at|for|of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})",  # "weather in San Francisco"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})(?:'s|\s+weather)",    # "San Francisco's weather" or "San Francisco weather"
+        ]
+        
+        for pattern in location_patterns:
+            match = re.search(pattern, user_text)
+            if match:
+                location_query = match.group(1)
+                log_to_file(f"[GPTCommands] Detected location query: {location_query}")
+                break
+        
         # Log raw data for debugging
         log_to_file(f"[GPTCommands] Weather data - Local sensors: {list(local_sensors.keys())}")
         
@@ -141,6 +157,10 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
                 log_to_file(f"[GPTCommands] First forecast entry: {forecast[0]}")
         else:
             log_to_file("[GPTCommands] No weather_forecast found in local_sensors")
+            
+        # Check if we have online weather data
+        if online_weather and "data" in online_weather:
+            log_to_file(f"[GPTCommands] Online weather data found")
         
         # Convert Python objects to strings for the prompt
         local_json = json.dumps(local_sensors, indent=2)
@@ -156,32 +176,57 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
         GUIDELINES:
         1. Be friendly but informative and concise, this text will be spoken so needs to be absorbed by the user auditorily
         2. PRIORITIZATION ORDER for data sources:
-           a. Home Assistant forecast data ("weather_forecast") is most reliable - use this first
-           b. Local weather station outdoor sensors are second priority
-           c. Use online API data only if other sources aren't available
+           a. If user is asking about a specific location other than their home, use only online weather data
+           b. Home Assistant forecast data ("weather_forecast") is most reliable for local weather - use this first
+           c. Local weather station outdoor sensors are second priority
+           d. Use online API data if other sources aren't available
         3. NEVER use indoor temperature or humidity readings
         4. Include relevant details like temperature, conditions, precipitation, and UV index
-        5. If the user asks about future weather, check the forecast data under "weather_forecast"
+        5. HANDLE FORECAST REQUESTS:
+           - If the user asks for a forecast, weekly forecast, or future weather, check forecast data
+           - The "weather_forecast" should contain daily forecast entries with temperature and conditions
+           - If forecast data is empty, tell them you don't have forecast data available
         6. If data is unavailable, say so politely
         7. Always include relevant units (F/C, mph/kmh, etc.) 
         8. Mention the location when relevant (city name or "your area")
+        
+        IMPORTANT: If the user is asking about a different location than their home, make it clear that:
+        1. You're providing data from online weather sources, not local sensors
+        2. Specify the location name in your response
         """
         
-        user_prompt = f"""
-        USER QUESTION: "{user_text}"
-        
-        LOCAL WEATHER SENSOR DATA:
-        {local_json}
-        
-        ONLINE WEATHER DATA:
-        {online_json}
-        
-        LOCATION INFORMATION:
-        {location_json}
-        
-        Please provide a helpful, conversational response to the user's weather question.
-        Focus on today's weather unless they specifically ask about future dates.
-        """
+        # Prepare the user prompt based on whether this is a query for a different location
+        if location_query:
+            user_prompt = f"""
+            USER QUESTION: "{user_text}"
+            
+            The user appears to be asking about weather in: {location_query}
+            
+            ONLINE WEATHER DATA (from external API):
+            {online_json}
+            
+            LOCATION INFORMATION:
+            {location_json}
+            
+            Please provide a helpful, conversational response about the weather in {location_query}.
+            Make it clear you're providing information for {location_query}, not the user's local area.
+            """
+        else:
+            user_prompt = f"""
+            USER QUESTION: "{user_text}"
+            
+            LOCAL WEATHER SENSOR DATA:
+            {local_json}
+            
+            ONLINE WEATHER DATA:
+            {online_json}
+            
+            LOCATION INFORMATION:
+            {location_json}
+            
+            Please provide a helpful, conversational response to the user's weather question.
+            If they're asking about a forecast or future weather, be sure to check the forecast data.
+            """
         
         # Log the user prompt to see exactly what data is being sent to the LLM
         log_to_file(f"[GPTCommands] Weather user prompt: {user_prompt}")
