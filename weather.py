@@ -115,10 +115,36 @@ async def get_local_weather_sensors(hass) -> dict:
             if state.entity_id == "weather.forecast_home":
                 forecast_entity = state
                 log_to_file(f"[Weather] Found Home Assistant forecast entity: {state.entity_id}")
+                log_to_file(f"[Weather] Forecast attributes: {forecast_entity.attributes}")
+                
+                # Log the forecast data for debugging
+                forecast_data = forecast_entity.attributes.get("forecast", [])
+                if forecast_data:
+                    log_to_file(f"[Weather] Forecast data available: {len(forecast_data)} periods")
+                    log_to_file(f"[Weather] First forecast entry: {forecast_data[0]}")
+                else:
+                    log_to_file("[Weather] No forecast data found in entity attributes")
+                    
                 break
         
         # If we found the forecast entity, use it as our primary weather source
         if forecast_entity:
+            # Get all forecast data
+            forecast_data = forecast_entity.attributes.get("forecast", [])
+            
+            # Process to ensure proper JSON serialization (some HA forecast data might contain datetime objects)
+            processed_forecast = []
+            for entry in forecast_data:
+                # Make a copy to ensure we don't modify the original
+                processed_entry = dict(entry)
+                
+                # Convert any datetime objects to strings if needed
+                for key, value in processed_entry.items():
+                    if hasattr(value, 'isoformat'):  # Check if it's a datetime-like object
+                        processed_entry[key] = value.isoformat()
+                
+                processed_forecast.append(processed_entry)
+            
             weather_data["weather_forecast"] = {
                 "condition": forecast_entity.state,
                 "temperature": forecast_entity.attributes.get("temperature"),
@@ -126,7 +152,7 @@ async def get_local_weather_sensors(hass) -> dict:
                 "pressure": forecast_entity.attributes.get("pressure"),
                 "wind_speed": forecast_entity.attributes.get("wind_speed"),
                 "wind_bearing": forecast_entity.attributes.get("wind_bearing"),
-                "forecast": forecast_entity.attributes.get("forecast", []),
+                "forecast": processed_forecast,
                 "entity_id": forecast_entity.entity_id
             }
         
