@@ -205,184 +205,44 @@ def process_conversation_input(user_text, device_id, hass):
     elif intent_type == "weather":
         log_to_file("[AgentLogic] Processing weather intent...")
         
-        # Direct synchronous implementations to avoid event loop issues
+        from .weather import fetch_weather_data
         
-        # Get location info
-        location_info = {}
         try:
-            # Try to get location from HA configuration
-            latitude = hass.config.latitude
-            longitude = hass.config.longitude
+            # Create an asyncio task
+            loop = asyncio.get_event_loop()
+            weather_data = loop.run_until_complete(fetch_weather_data(hass))
             
-            if latitude and longitude:
-                location_info["latitude"] = latitude
-                location_info["longitude"] = longitude
+            log_to_file(f"[AgentLogic] Retrieved weather data: {len(weather_data.get('local_sensors', {}))} sensors")
             
-            # Get location from config
-            config_entries = hass.data.get("special_agent", {})
-            config_data = next(iter(config_entries.values())) if config_entries else {}
+            # Generate weather response using LLM
+            weather_response = generate_weather_response(
+                user_text,
+                weather_data.get('local_sensors', {}),
+                weather_data.get('online_weather', {}),
+                weather_data.get('location', {}),
+                api_key=openai_api_key
+            )
             
-            # Use ZIP code from config if available
-            if "zip_code" in config_data:
-                location_info["postal_code"] = config_data["zip_code"]
-                
-            # Check for other location data in HA configuration
-            if hasattr(hass.config, "country"):
-                location_info["country"] = hass.config.country
-                
-            log_to_file(f"[DataSources] Location info: {location_info}")
+            # Log the command to history
+            log_command(
+                user_text=user_text,
+                device_id=device_id,
+                session_id=device_id,
+                command_response=weather_response,
+                success=True,
+                metadata={
+                    "intent_type": "weather", 
+                    "local_sensors": list(weather_data.get('local_sensors', {}).keys()),
+                    "location": weather_data.get('location', {}).get("city", "") or 
+                               weather_data.get('location', {}).get("postal_code", "")
+                }
+            )
+            
+            return weather_response, True
+            
         except Exception as e:
-            log_to_file(f"[DataSources] Error getting location info: {e}")
-            location_info = {"error": str(e)}
-            
-        # Get local weather sensors
-        local_weather_sensors = {}
-        try:
-            # Look for predefined device/station IDs
-            config_entries = hass.data.get("special_agent", {})
-            config_data = next(iter(config_entries.values())) if config_entries else {}
-            weather_station_id = config_data.get("weather_station_id", "washington_weather_station")
-            log_to_file(f"[DataSources] Looking for weather station with ID: {weather_station_id}")
-            
-            # Get all states directly
-            all_states = list(hass.states.all())
-            
-            # Log all sensors for debugging
-            weather_related_entities = [state.entity_id for state in all_states 
-                                 if state.entity_id.startswith(('sensor.', 'weather.', 'binary_sensor.')) 
-                                 and any(keyword in state.entity_id.lower() for keyword in 
-                                   ['temp', 'humid', 'pressure', 'wind', 'rain', 'precip', 'weather', 'uv'])]
-            log_to_file(f"[DataSources] All weather-related entities: {', '.join(weather_related_entities)}")
-            
-            # Find weather-related sensors
-            for state in all_states:
-                if not state.entity_id.startswith(('sensor.', 'weather.', 'binary_sensor.')):
-                    continue
-                    
-                # Look for weather station by ID - use more flexible matching
-                if weather_station_id:
-                    # Try exact match first
-                    exact_match = weather_station_id in state.entity_id.lower()
-                    
-                    # Try partial matches for common patterns
-                    weather_parts = weather_station_id.lower().split('_')
-                    partial_match = all(part in state.entity_id.lower() for part in weather_parts)
-                    
-                    if exact_match or partial_match:
-                        from .data_sources import _determine_sensor_type
-                        sensor_type = _determine_sensor_type(state)
-                        if sensor_type:
-                            local_weather_sensors[sensor_type] = {
-                                "value": state.state,
-                                "unit": state.attributes.get("unit_of_measurement", ""),
-                                "entity_id": state.entity_id
-                            }
-                            log_to_file(f"[DataSources] Found weather station sensor: {state.entity_id} ({sensor_type})")
-                
-                # Also look for common weather sensor keywords
-                if any(keyword in state.entity_id.lower() for keyword in 
-                      ['temperature', 'humidity', 'pressure', 'wind', 'rain', 'weather', 'uv']):
-                    from .data_sources import _determine_sensor_type
-                    sensor_type = _determine_sensor_type(state)
-                    if sensor_type and sensor_type not in local_weather_sensors:
-                        local_weather_sensors[sensor_type] = {
-                            "value": state.state,
-                            "unit": state.attributes.get("unit_of_measurement", ""),
-                            "entity_id": state.entity_id
-                        }
-                        
-            # Also check for integrated weather platforms
-            for state in all_states:
-                if state.entity_id.startswith('weather.'):
-                    local_weather_sensors["weather_platform"] = {
-                        "condition": state.state,
-                        "temperature": state.attributes.get("temperature"),
-                        "humidity": state.attributes.get("humidity"),
-                        "pressure": state.attributes.get("pressure"),
-                        "wind_speed": state.attributes.get("wind_speed"),
-                        "wind_bearing": state.attributes.get("wind_bearing"),
-                        "entity_id": state.entity_id
-                    }
-                    break
-                    
-            log_to_file(f"[DataSources] Found {len(local_weather_sensors)} local weather sensors")
-        except Exception as e:
-            log_to_file(f"[DataSources] Error getting local weather sensors: {e}")
-            local_weather_sensors = {"error": str(e)}
-            
-        # Get online weather data
-        import aiohttp
-        import json
-        
-        online_weather = {}
-        try:
-            if location_info.get("latitude") and location_info.get("longitude"):
-                latitude = location_info["latitude"]
-                longitude = location_info["longitude"]
-                
-                # Make sure requests is installed
-                try:
-                    import requests
-                except ImportError:
-                    log_to_file("[DataSources] Requests module not found, installing...")
-                    try:
-                        subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
-                        import requests
-                        log_to_file("[DataSources] Successfully installed requests module")
-                    except Exception as e:
-                        log_to_file(f"[DataSources] Failed to install requests: {e}")
-                        return "Sorry, I couldn't access the weather service. Technical error: missing requests module.", False
-                
-                # Use Open-Meteo API (free, no API key required)
-                url = (f"https://api.open-meteo.com/v1/forecast?"
-                       f"latitude={latitude}&longitude={longitude}"
-                       f"&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m"
-                       f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum"
-                       f"&timeformat=unixtime&timezone=auto")
-                
-                response = requests.get(url)
-                if response.status_code == 200:
-                    online_weather = {
-                        "source": "open-meteo",
-                        "data": response.json()
-                    }
-                    log_to_file(f"[DataSources] Retrieved online weather data: {response.json()}")
-                else:
-                    log_to_file(f"[DataSources] Error fetching weather: {response.status_code} - {response.text}")
-                    online_weather = {"error": f"API error: {response.status_code}"}
-            else:
-                online_weather = {"error": "No location coordinates available"}
-                
-        except Exception as e:
-            log_to_file(f"[DataSources] Error getting online weather: {e}")
-            online_weather = {"error": str(e)}
-        
-        log_to_file(f"[AgentLogic] Retrieved weather data: {len(local_weather_sensors)} sensors")
-        
-        # Generate weather response using LLM
-        weather_response = generate_weather_response(
-            user_text,
-            local_weather_sensors,
-            online_weather,
-            location_info,
-            api_key=openai_api_key
-        )
-        
-        # Log the command to history
-        log_command(
-            user_text=user_text,
-            device_id=device_id,
-            session_id=device_id,
-            command_response=weather_response,
-            success=True,
-            metadata={
-                "intent_type": "weather", 
-                "local_sensors": list(local_weather_sensors.keys()),
-                "location": location_info.get("city", "") or location_info.get("postal_code", "")
-            }
-        )
-        
-        return weather_response, True
+            log_to_file(f"[AgentLogic] Error processing weather intent: {e}")
+            return f"I'm sorry, I had trouble retrieving the weather information. Please try again later.", False
     elif intent_type == "question":
         log_to_file("[AgentLogic] Q&A not implemented yet.")
         return "Question not implemented", True
