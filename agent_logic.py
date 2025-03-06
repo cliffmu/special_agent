@@ -12,10 +12,7 @@ import subprocess
 from .data_sources import (
     get_ha_states, 
     execute_ha_command, 
-    get_devices_by_area,
-    get_local_weather_sensors,
-    get_online_weather_data,
-    get_location_info
+    get_devices_by_area
 )
 from .vector_index import build_vector_index, query_vector_index, load_vector_index
 from .gpt_commands import (
@@ -208,8 +205,15 @@ def process_conversation_input(user_text, device_id, hass):
         from .weather import fetch_weather_data
         
         try:
-            # Create an asyncio task
-            loop = asyncio.get_event_loop()
+            # Handle the case where there's no event loop in the current thread
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                # Create a new event loop if one doesn't exist in this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Run the weather collection function
             weather_data = loop.run_until_complete(fetch_weather_data(hass))
             
             log_to_file(f"[AgentLogic] Retrieved weather data: {len(weather_data.get('local_sensors', {}))} sensors")
