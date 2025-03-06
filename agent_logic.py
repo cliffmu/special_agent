@@ -205,6 +205,21 @@ def process_conversation_input(user_text, device_id, hass):
         from .weather import fetch_weather_data
         
         try:
+            # Check if this is a query for weather in a specific location
+            import re
+            location_query = None
+            location_patterns = [
+                r"(?:in|at|for|of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})",  # "weather in San Francisco"
+                r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})(?:'s|\s+weather)",    # "San Francisco's weather" or "San Francisco weather"
+            ]
+            
+            for pattern in location_patterns:
+                match = re.search(pattern, user_text)
+                if match:
+                    location_query = match.group(1)
+                    log_to_file(f"[AgentLogic] Detected weather query for location: {location_query}")
+                    break
+            
             # Handle the case where there's no event loop in the current thread
             try:
                 loop = asyncio.get_event_loop()
@@ -213,8 +228,8 @@ def process_conversation_input(user_text, device_id, hass):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             
-            # Run the weather collection function
-            weather_data = loop.run_until_complete(fetch_weather_data(hass))
+            # Run the weather collection function with potential location query
+            weather_data = loop.run_until_complete(fetch_weather_data(hass, location_query=location_query))
             
             log_to_file(f"[AgentLogic] Retrieved weather data: {len(weather_data.get('local_sensors', {}))} sensors")
             
@@ -227,6 +242,16 @@ def process_conversation_input(user_text, device_id, hass):
                 api_key=openai_api_key
             )
             
+            # Location for log history
+            location = ""
+            if location_query:
+                # If there's a location query, use that in the log
+                location = location_query
+            else:
+                # Otherwise use Home Assistant location
+                location = weather_data.get('location', {}).get("city", "") or \
+                          weather_data.get('location', {}).get("postal_code", "")
+            
             # Log the command to history
             log_command(
                 user_text=user_text,
@@ -237,8 +262,9 @@ def process_conversation_input(user_text, device_id, hass):
                 metadata={
                     "intent_type": "weather", 
                     "local_sensors": list(weather_data.get('local_sensors', {}).keys()),
-                    "location": weather_data.get('location', {}).get("city", "") or 
-                               weather_data.get('location', {}).get("postal_code", "")
+                    "location": location,
+                    "has_forecast": "weather_forecast" in weather_data.get('local_sensors', {}) and \
+                                    len(weather_data.get('local_sensors', {}).get("weather_forecast", {}).get("forecast", [])) > 0
                 }
             )
             
