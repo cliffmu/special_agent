@@ -143,9 +143,12 @@ def generate_weather_response(user_text, local_sensors, online_weather, location
         
         GUIDELINES:
         1. Be conversational and friendly
-        2. Prioritize local sensor data when available
-        3. Use online forecast data for predictions
-        4. Include relevant details like temperature, conditions, and forecasts
+        2. PRIORITIZATION ORDER for data sources:
+           a. Home Assistant forecast data ("weather_forecast") is most reliable - use this first
+           b. Local weather station outdoor sensors are second priority
+           c. Use online API data only if other sources aren't available
+        3. NEVER use indoor temperature or humidity readings
+        4. Include relevant details like temperature, conditions, precipitation, and UV index
         5. Keep your response concise but informative
         6. If data is unavailable, say so politely
         7. Always include relevant units (F/C, mph/kmh, etc.) 

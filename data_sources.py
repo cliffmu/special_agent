@@ -21,6 +21,11 @@ from .logger_helper import log_to_file
 
 from homeassistant.core import HomeAssistant
 
+# Import weather-related functions from the weather module
+# This comment is to warn future developers that these functions should be 
+# considered deprecated in favor of using the weather module directly
+from .weather import get_location_info, get_local_weather_sensors, get_online_weather_data
+
 def get_ha_states(hass):
     """
     Retrieve the full list of Home Assistant device states that are exposed to the assistant.
