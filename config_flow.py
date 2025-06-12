@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant import config_entries
+from homeassistant.core import callback
 
 from . import DOMAIN
 
@@ -21,7 +22,9 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="user")
 
     @staticmethod
-    async def async_get_options_flow(config_entry):
+    @callback
+    def async_get_options_flow(config_entry):
+        """Return the options flow handler."""
         return SpecialAgentOptionsFlow(config_entry)
 
 
