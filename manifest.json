@@ -1,0 +1,10 @@
+{
+    "domain": "special_agent",
+    "name": "Special Agent",
+    "version": "0.0.1",
+    "documentation": "https://example.com",
+    "dependencies": ["conversation"],
+    "requirements": ["langchain", "openai", "langchain-community", "numpy", "tiktoken"],
+    "codeowners": ["@cliffmu"],
+    "config_flow": true
+}
