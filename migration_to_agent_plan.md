@@ -1,114 +1,235 @@
-# Migration to Agent‑Based Architecture – **Special Agent v3**
+# Special Agent — Agent‑Based Migration Plan (v4.0, **self‑contained**)
 
-## Quick Overview
+This document is the **single source of truth** for rebuilding the Special Agent
+Home Assistant custom component from a brittle, workflow‑driven prototype into a
+modular, tool‑empowered **LLM agent** that supports:
 
-1. Archive the existing workflow code under `/REFERENCE/` so the coding‑LLM can still inspect it.
-2. Create a clean, nested folder layout (`special_agent/…`) that follows HACS + Python best‑practice structure. ([docs.python-guide.org](https://docs.python-guide.org/writing/structure/))
-3. Incrementally rebuild the core as a **tool‑driven agent** using OpenAI JSON‑mode/function‑calling and the ReAct loop. ([community.openai.com](https://community.openai.com))
-4. After every milestone, run a manual "voice → LLM → HA → TTS" test to ensure we always have a working foundation.
+* **Dynamic scene generation**  
+  – e.g. “_living‑room cozy_” → dim accent lights to personal 7 %, start fireplace,
+  play a chill playlist.
+* **Whole‑home commands**  
+  – e.g. “_good night_” → turn off *all* lights, TVs, set thermostats to eco.
+* **Personal preference learning**  
+  – remembers brightness, playlist, and device selections per room & user.
+* **Scalable entity retrieval** for > 4 k Home Assistant entities without
+  drowning the LLM in tokens.
+* **Cost‑aware model routing** between OpenAI **o3‑mini** and the new
+  **o3‑pro** Responses API.
 
----
-
-## Repository Restructuring
-
-```
-repo-root/
-│
-├─ REFERENCE/ # frozen snapshot of legacy workflow code
-│  └─ (all current files stay here, READ-ONLY)
-│
-├─ custom_components/
-│  └─ special_agent/ # brand-new agentic implementation lives here
-│     ├─ __init__.py
-│     ├─ agent_core.py
-│     ├─ tool_specs/
-│     │  ├─ control_device.py
-│     │  ├─ search_devices.py
-│     │  ├─ get_weather.py
-│     │  └─ ...
-│     ├─ utils/
-│     │  ├─ vector_index.py
-│     │  ├─ data_sources.py
-│     │  └─ logging.py
-│     ├─ conversation.py
-│     └─ tests/
-│        └─ (pytest files)
-│
-└─ migration_to_agent_plan.md # this plan
-```
-
-**Why?** HACS integrations must live under `custom_components/<domain>` and contain **all runtime code** ([hacs.xyz](https://hacs.xyz/docs/publish/integration)), while archiving the old workflow in `/REFERENCE/` lets the coding assistant compare implementations.
+It merges every detail from earlier v3.x drafts, so nothing else is required.
 
 ---
 
-## Unified Naming & Coding Conventions
+## 0  High‑level goals & use‑cases
 
-| Element            | Convention                                        | Rationale                                                                                        |
-| ------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Python modules     | `snake_case.py`                                   | PEP‑8                                                                                            |
-| Tool files         | `tool_<verb>.py` (e.g., `tool_control_device.py`) | Self‑documenting                                                                                 |
-| Classes            | `PascalCase`                                      | PEP‑8                                                                                            |
-| Constants          | `SCREAMING_SNAKE`                                 | PEP‑8                                                                                            |
-| Tests              | `test_<module>.py` inside `tests/`                | pytest autodiscovery ([pytest.org](https://docs.pytest.org))                                     |
-| Voluptuous schemas | Defined in each `ToolSpec.parameters`             | Matches HA config style ([home-assistant.io](https://www.home-assistant.io/docs/configuration/)) |
+| Goal | Typical voice request | Expected behaviour |
+|------|----------------------|--------------------|
+| **G‑1** Dynamic scenes | “Make the living‑room cozy.” | Lights ≤ 10 %, fireplace on, ambient music. |
+| **G‑2** Global scenes | “Good night.” | All lights + AV off, thermostats eco. |
+| **G‑3** Preferences | “Set cozy brightness to 8 %.” | Persists; later “cozy” uses 8 %. |
+| **G‑4** Info queries | “What’s tomorrow’s weather?” | Spoken forecast using HA sensors + API. |
+| **G‑5** One‑shot controls | “Turn on the kitchen light.” | Confirmation → HA service call. |
 
 ---
 
-## Core Agent & Tool Schema
+## 1  Repository layout (HACS‑compatible)
+
+ROOT/
+│
+├── hacs.json # content_in_root = true
+├── manifest.json
+├── README.md # brief install + link to this plan
+├── init.py # HA entry point (registers service & conversation)
+├── conversation.py # ConversationAgent subclass
+│
+├── agent_core.py # Tool registry, plan(), execute_plan()
+│
+├── tool_specs/ # 1 file = 1 ToolSpec
+│ ├── control_device.py
+│ ├── search_devices.py
+│ ├── generate_scene.py
+│ ├── preference_manager.py
+│ ├── get_weather.py
+│ ├── search_spotify.py
+│ ├── confirm_action.py
+│ └── ask_user.py
+│
+├── utils/
+│ ├── openai_client.py # o3‑mini vs o3‑pro wrapper
+│ ├── vector_index.py # per‑area FAISS/LanceDB indexes
+│ ├── data_sources.py # HA helpers
+│ ├── logging.py
+│ └── constants.py
+│
+├── tests/ # pytest + pytest‑homeassistant‑custom‑component
+│ ├── test_preferences.py
+│ ├── test_scene.py
+│ └── ...
+│
+├── REFERENCE/ # frozen legacy workflow code (read‑only)
+└── migration_to_agent_plan.md # this file
+
+yaml
+Copy
+
+*`hacs.json` sets `"content_in_root": true`, so HACS treats `ROOT/` as the
+component package—no extra `custom_components/` folder needed.*
+
+---
+
+## 2  Coding & naming conventions
+
+| Item | Convention | Example |
+|------|------------|---------|
+| Modules | `snake_case.py` | `search_devices.py` |
+| Tool files | `tool_<verb>.py` recommended but not required | `tool_control.py` |
+| Classes | `PascalCase` | `Agent`, `ToolSpec` |
+| Voluptuous schemas | inside each ToolSpec.parameters | see `preference_manager.py` |
+| Tests | `tests/test_<module>.py` | `test_scene.py` |
+
+---
+
+## 3  Architecture summary
+
+### 3.1 Agent & tool schema
 
 ```python
 @dataclass
 class ToolSpec:
-    name: str
-    description: str
-    parameters: vol.Schema
-    returns: str | None
+    name: str                  # snake_case
+    description: str           # one‑liner
+    parameters: vol.Schema     # validated dict
+    returns: str | None        # human description
     func: Callable[..., Awaitable]
-```
+Agent.plan() renders a system prompt that lists tool_schema then asks
+OpenAI (JSON‑mode for mini, Responses for pro) to output:
 
-Each new capability = one `ToolSpec` in `tool_specs/` → `Agent.register_tool()` at load time.
+json
+Copy
+{
+  "steps": [
+    {"tool": "search_devices", "params": {"query": "kitchen lights"}, "save_as": "devices"},
+    {"tool": "confirm_action", "params": {"action": "turn on", "targets": "$devices"}},
+    {"tool": "control_device", "params": {"service": "light.turn_on", "data": {"entity_id": "$devices"}}}
+  ]
+}
+Agent.execute_plan() iterates steps, handles confirmation / clarification
+pauses, feeds each result back to the LLM (ReAct) until the plan yields
+tool == "respond" or a guard‑rail abort.
 
----
+3.2 Cost‑aware model routing
+python
+Copy
+def choose_model(user_text, first_tool):
+    if len(user_text) > 120 or first_tool == "generate_scene":
+        return "o3-pro-latest"   # Responses API
+    return "o3-mini"
+utils/openai_client.py hides the difference between Chat and Responses APIs.
 
-## Revised Phased Roadmap with Manual Test Points
+3.3 Entity retrieval strategy
+Build‑time filtering
+Keep only domains light, switch, media_player, climate, cover.
+RegEx skip patterns: *_led, *.bass_*, *.treble_*, *.color_*.
 
-| Phase | Deliverable            | Coding Tasks                                                                                                                                      | Manual Test (voice → action)                                                                    |
-| ----- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 0     | Repo bootstrap         | Move legacy code to `/REFERENCE/`<br>Scaffold new folder tree                                                                                     | Verify HACS still detects integration (legacy).                                                 |
-| 1     | Agent skeleton         | `agent_core.py` with Agent, ToolSpec, `plan()` (OpenAI JSON-mode) and `execute_plan()` (no loops yet).                                            | Speak: “Hello” → expect polite error message.                                                   |
-| 2     | Device-control MVP     | Implement tools: `search_devices`, `control_device`, `confirm_action`.<br>Wire `conversation.py` to new Agent.                                    | Speak: “Turn on kitchen light” → confirm & toggle HA light.                                     |
-| 3     | Information tools      | Add `get_weather`, `search_spotify`. Expand prompt examples.                                                                                      | Speak: “What’s the weather?” → verbal forecast.<br>“Play jazz in living room” → Spotify via HA. |
-| 4     | Clarification loop     | Implement `ask_user` tool.<br>Store `original_request` and re-plan after answer.                                                                  | Speak: “Turn on lights” → agent clarifies room, then executes.                                  |
-| 5     | Iterative ReAct loop   | Modify `execute_plan` for iterative reasoning (ReAct pattern). ([arxiv.org](https://arxiv.org/abs/2210.03629))                                    | Complex conditional voice command execution.                                                    |
-| 6     | Safety & multi-device  | 3-iteration limit, unknown tool handling.<br>Multi-device session isolation. ([community.home-assistant.io](https://community.home-assistant.io)) | Verify session isolation per MAC and `conversation_id`.                                         |
-| 7     | Test harness           | pytest setup with custom fixtures ([pytest-homeassistant](https://github.com/home-assistant/pytest-homeassistant-custom-component)).              | `pytest -q` locally & CI passing.                                                               |
-| 8     | Docs & extension guide | Add clear docs (`docs/adding_tool.md`). Update `README`.                                                                                          | Ensure copy-paste readiness.                                                                    |
-| 9     | Advanced tools         | Calendar, scenes, energy as standalone `ToolSpecs`.                                                                                               | Confirm tools auto-appear and function.                                                         |
+Per‑area sub‑indexes
+vector_index/<area_id>/ → FAISS index of ≤ 200 entities each.
 
----
+Hierarchical search
+For global requests iterate areas; for room‑specific pass area_id.
 
-## Multi-device Voice Sessions
+4  Tool inventory (initial + extended)
+Tool	Main duties
+search_devices	cosine search of (sub)index, returns list of entity_ids
+control_device	wraps hass.services.async_call
+generate_scene	build multi‑service scene or call scene.create
+preference_manager	get/set per‑user defaults JSON
+get_weather	sensor + API, formats speech
+search_spotify	fetch best URI
+confirm_action	yes/no confirmation
+ask_user	open‑ended clarification
+(future) calendar, energy, reminders…	drop‑in ToolSpec
 
-* Device-ID logic expanded: `f"{source_device_mac}|{conversation_id}"` ensures isolation per device.
-* Pending sessions stored: `hass.data[DOMAIN]["pending"][session_id]`.
+5  Prompt essentials (system)
+arduino
+Copy
+You are Special Agent, a smart‑home AI.
+TOOLS:
+{{tool_schema}}
+RULES:
+- If request implies "cozy", "movie", "good night", call generate_scene.
+- Use preference_manager.get for defaults, fall back to sensible presets.
+- For state changes ALWAYS insert confirm_action before control_device.
+- Ignore entities with IDs ending "_led" or containing ".bass_", ".treble_".
+- Output ONLY valid JSON per schema; no extra text.
+6  Implementation roadmap & smoke‑tests
+Phase	Deliverable	Coding tasks	Smoke‑test
+0 Repo bootstrap	Structure & REFERENCE	move legacy, scaffold folders	hacs.reload loads
+1 Agent skeleton	agent_core.py, no tools	“Hi” → “can’t help yet”	
+2 Control MVP	tools: search_devices, control_device, confirm_action; wire conversation	“Turn on kitchen light” → confirmation + action	
+3 Info tools	get_weather, search_spotify	“Weather?” spoken forecast	
+3b Preference mgr	preference_manager + UI helper	“Set cozy brightness 8 %” persists	
+4 Clarification loop	ask_user + handler	“Turn on lights” → asks room	
+4b Scene tool	generate_scene	“Living‑room cozy” dims to pref brightness	
+4c Global scene	hierarchical area loop	“Good night” shuts house down	
+5 ReAct loop	feed tool outputs back to LLM	Complex multi‑step request succeeds	
+5b o3‑pro router	wrapper & heuristic	Long prompt logs o3-pro	
+5c Sub‑index	build per‑area indexes	query latency < 150 ms	
+6 Safety & multi‑device	3‑iteration cap, session key `mac	conv_id`	two speakers run parallel confirmations
+7 Test harness	pytest + fixtures, CI	pytest -q passes	
+7b Extra tests	preference recall, LED exclusion, routing	automated	
+8 Docs & guide	/docs/adding_tool.md, README update	docs render	
+9 Advanced tools	calendar, scenes, energy stats	auto‑discovered by agent	
 
----
+7  Expanded test matrix
+ID	Scenario	Expected
+T‑1	Cozy preference recall	Stores & uses 8 % brightness
+T‑2	LED exclusion	“lights off” leaves speaker_led untouched
+T‑3	Whole‑home off	Good‑night plan ≤ 2 k tokens, executes all
+T‑4	Router	short vs long prompt model selection
+T‑5	Multi‑device	Device‑A confirmation doesn’t block Device‑B
+T‑6	ReAct loop depth	caps at 3 iterations then aborts politely
 
-## Confirmation & Clarification UX
+8  Persisted data formats
+jsonc
+Copy
+// config/.special_agent_prefs.json
+{
+  "user_id_abc": {
+    "living_room": {
+      "cozy_brightness": 8,
+      "cozy_playlist_uri": "spotify:playlist:123"
+    }
+  }
+}
+jsonc
+Copy
+// vector_index/living_room/index_meta.json
+{
+  "area_id": "living_room",
+  "created": "2025‑06‑12T14:00Z",
+  "entity_count": 185
+}
+9  OpenAI usage & cost estimate
+Model	Typical prompt	Token avg	Cost per req
+o3‑mini	one‑shot control	850	$0.001
+o3‑pro	scene / global	4 k	$0.015
 
-* `confirm_action` always asks yes/no before actions ([community.home-assistant.io](https://community.home-assistant.io)).
-* `ask_user` poses open questions; abort after 15 s timeout.
-* Future: actionable notifications, Assist pre-prompt.
+Router keeps monthly cost ≈ $4 for 500 control + 100 scene requests.
 
----
+10  References & inspirations
+HACS “content_in_root” spec (hacs.xyz)
 
-## Testing Checklist per Milestone
+Home Assistant Area registry & Scenes docs
 
-* Voice path: wake-word → STT → HA Assist → Agent → TTS.
-* Logs: `command_history.json` tracks interactions.
-* Unit tests (`pytest -q`): pass.
-* Service calls: verified in HA Developer Tools → Events.
-* Recovery: agent timeout upon mic disconnect.
+OpenAI o3‑pro Responses API docs (2025‑06)
+
+ReAct: Yao et al., ICLR 2023
+
+HA community posts on sub‑area light control & LED exclusion
+
+Saver custom component (example JSON state)
+
+pytest‑homeassistant‑custom‑component
 
 ---
 
