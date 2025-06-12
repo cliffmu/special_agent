@@ -29,7 +29,9 @@ class Agent:
         self.tools[spec.name] = spec
 
     async def plan(self, user_input: str) -> str:
-        return ""  # Not implemented yet
+        """Return a placeholder response until tools are added."""
+        return "I'm not ready to help yet."
 
     async def execute_plan(self, plan: str) -> str:
-        return ""  # Not implemented yet
+        """Execute a planned sequence of tool calls (stub)."""
+        return ""

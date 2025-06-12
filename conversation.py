@@ -10,11 +10,17 @@ from homeassistant.components.conversation import (
 )
 from homeassistant.helpers import intent
 
+from .agent_core import Agent
+
 _LOGGER = logging.getLogger(__name__)
 
 
 class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     """Minimal conversation agent stub."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.agent = Agent()
 
     @property
     def unique_id(self) -> str:
@@ -41,9 +47,15 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         return await self.async_process(conversation_input, context)
 
     async def async_process(self, conversation_input, context=None) -> ConversationResult:
+        user_text = getattr(conversation_input, "text", "")
+        result_text = await self.agent.plan(user_text)
+
         response = intent.IntentResponse(language=conversation_input.language)
-        response.async_set_speech("I'm not ready to help yet.")
-        return ConversationResult(conversation_id=conversation_input.conversation_id, response=response)
+        response.async_set_speech(result_text)
+        return ConversationResult(
+            conversation_id=conversation_input.conversation_id,
+            response=response,
+        )
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
