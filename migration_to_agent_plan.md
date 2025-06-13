@@ -1,245 +1,243 @@
-# Special Agent — Agent‑Based Migration Plan (v4.0, **self‑contained**)
+# Special Agent — Agent‑Based Migration Plan (v5.2, **self‑contained**)
 
-This document is the **single source of truth** for rebuilding the Special Agent
-Home Assistant custom component from a brittle, workflow‑driven prototype into a
-modular, tool‑empowered **LLM agent** that supports:
-
-* **Dynamic scene generation**  
-  – e.g. “_living‑room cozy_” → dim accent lights to personal 7 %, start fireplace,
-  play a chill playlist.
-* **Whole‑home commands**  
-  – e.g. “_good night_” → turn off *all* lights, TVs, set thermostats to eco.
-* **Personal preference learning**  
-  – remembers brightness, playlist, and device selections per room & user.
-* **Scalable entity retrieval** for > 4 k Home Assistant entities without
-  drowning the LLM in tokens.
-* **Cost‑aware model routing** between OpenAI **o3‑mini** and the new
-  **o3‑pro** Responses API.
-
-It merges every detail from earlier v3.x drafts, so nothing else is required.
+*This file supersedes every earlier draft (v4.0 and v5.1).  
+It preserves all content present in v4.0, retains the deeper tool specs from v5.0/5.1, **adds the new `learn_preferences` tool**, and relegates heavier ML features to a far‑future roadmap phase.*
 
 ---
 
-## 0  High‑level goals & use‑cases
+## 0  Project goals & use‑cases (unchanged)
 
-| Goal | Typical voice request | Expected behaviour |
-|------|----------------------|--------------------|
-| **G‑1** Dynamic scenes | “Make the living‑room cozy.” | Lights ≤ 10 %, fireplace on, ambient music. |
-| **G‑2** Global scenes | “Good night.” | All lights + AV off, thermostats eco. |
-| **G‑3** Preferences | “Set cozy brightness to 8 %.” | Persists; later “cozy” uses 8 %. |
-| **G‑4** Info queries | “What’s tomorrow’s weather?” | Spoken forecast using HA sensors + API. |
-| **G‑5** One‑shot controls | “Turn on the kitchen light.” | Confirmation → HA service call. |
+| ID | Goal | Typical voice request | Outcome |
+|----|------|----------------------|---------|
+| G‑1 | Dynamic room scenes | “Make the living‑room cozy.” | Dim lights to personal %; fireplace + playlist |
+| G‑2 | Whole‑home scenes | “Good night.” | House shut‑down across all areas |
+| G‑3 | Preference learning | “Set cozy brightness to 8 %.” or implicit fine‑tune | Stored; reused next time |
+| G‑4 | Info queries | “Weather tomorrow?” | Spoken forecast |
+| G‑5 | One‑shot controls | “Turn on the kitchen light.” | Confirmation → action |
 
 ---
 
 ## 1  Repository layout (HACS‑compatible)
 
+```
 ROOT/
+├─ hacs.json          # "content_in_root": true :contentReference[oaicite:0]{index=0}
+├─ manifest.json
+├─ README.md
+├─ __init__.py
+├─ conversation.py    # ConversationEntity subclass :contentReference[oaicite:1]{index=1}
 │
-├── hacs.json # content_in_root = true
-├── manifest.json
-├── README.md # brief install + link to this plan
-├── init.py # HA entry point (registers service & conversation)
-├── conversation.py # ConversationAgent subclass
+├─ agent_core.py
 │
-├── agent_core.py # Tool registry, plan(), execute_plan()
+├─ tool_specs/
+│   ├─ control_device.py
+│   ├─ search_devices.py
+│   ├─ generate_scene.py
+│   ├─ preference_manager.py
+│   ├─ confirm_action.py
+│   ├─ ask_user.py
+│   ├─ get_weather.py
+│   ├─ search_spotify.py
+│   ├─ learn_preferences.py     # ★ NEW
+│   ├─ area_iterator.py
+│   └─ build_vector_index.py
 │
-├── tool_specs/ # 1 file = 1 ToolSpec
-│ ├── control_device.py
-│ ├── search_devices.py
-│ ├── generate_scene.py
-│ ├── preference_manager.py
-│ ├── get_weather.py
-│ ├── search_spotify.py
-│ ├── confirm_action.py
-│ └── ask_user.py
+├─ utils/
+│   ├─ openai_client.py
+│   ├─ vector_index.py
+│   ├─ data_sources.py
+│   ├─ logging.py
+│   └── constants.py
 │
-├── utils/
-│ ├── openai_client.py # o3‑mini vs o3‑pro wrapper
-│ ├── vector_index.py # per‑area FAISS/LanceDB indexes
-│ ├── data_sources.py # HA helpers
-│ ├── logging.py
-│ └── constants.py
+├─ tests/                       # pytest‑homeassistant‑custom‑component :contentReference[oaicite:2]{index=2}
+│   ├─ test_preferences.py
+│   ├─ test_scene.py
+│   └─ ...
 │
-├── tests/ # pytest + pytest‑homeassistant‑custom‑component
-│ ├── test_preferences.py
-│ ├── test_scene.py
-│ └── ...
-│
-├── REFERENCE/ # frozen legacy workflow code (read‑only)
-└── migration_to_agent_plan.md # this file
-
-yaml
-Copy
-
-*`hacs.json` sets `"content_in_root": true`, so HACS treats `ROOT/` as the
-component package—no extra `custom_components/` folder needed.*
+├─ REFERENCE/
+└─ migration_to_agent_plan.md   # this file
+```
 
 ---
 
 ## 2  Coding & naming conventions
 
-| Item | Convention | Example |
-|------|------------|---------|
-| Modules | `snake_case.py` | `search_devices.py` |
-| Tool files | `tool_<verb>.py` recommended but not required | `tool_control.py` |
-| Classes | `PascalCase` | `Agent`, `ToolSpec` |
-| Voluptuous schemas | inside each ToolSpec.parameters | see `preference_manager.py` |
-| Tests | `tests/test_<module>.py` | `test_scene.py` |
+| Artifact | Convention | Example |
+|----------|------------|---------|
+| Modules  | `snake_case.py` | `search_devices.py` |
+| Classes  | `PascalCase` | `PreferenceManager` |
+| Tool files | optional `tool_<verb>.py` | `tool_control_device.py` |
+| Voluptuous schemas | inside each `ToolSpec.parameters` :contentReference[oaicite:3]{index=3} | `brightness_pct: vol.All(vol.Coerce(int), vol.Range(0,100))` |
+| Tests    | `tests/test_<module>.py` | `test_scene.py` |
 
 ---
 
 ## 3  Architecture summary
 
 ### 3.1 Agent & tool schema
-
 ```python
 @dataclass
 class ToolSpec:
-    name: str                  # snake_case
-    description: str           # one‑liner
-    parameters: vol.Schema     # validated dict
-    returns: str | None        # human description
+    name: str
+    description: str
+    parameters: vol.Schema
+    returns: str | None
     func: Callable[..., Awaitable]
-Agent.plan() renders a system prompt that lists tool_schema then asks
-OpenAI (JSON‑mode for mini, Responses for pro) to output:
+```
+*Plan* vs *Execute* (ReAct) loop retained :contentReference[oaicite:4]{index=4}.
 
-json
-Copy
-{
-  "steps": [
-    {"tool": "search_devices", "params": {"query": "kitchen lights"}, "save_as": "devices"},
-    {"tool": "confirm_action", "params": {"action": "turn on", "targets": "$devices"}},
-    {"tool": "control_device", "params": {"service": "light.turn_on", "data": {"entity_id": "$devices"}}}
-  ]
-}
-Agent.execute_plan() iterates steps, handles confirmation / clarification
-pauses, feeds each result back to the LLM (ReAct) until the plan yields
-tool == "respond" or a guard‑rail abort.
+### 3.2 Cost‑aware model routing  
+Heuristic unchanged; o3‑pro pricing: $20 /M in, $80 /M out vs $2 / $8 for o3‑mini :contentReference[oaicite:5]{index=5}.
 
-3.2 Cost‑aware model routing
-python
-Copy
-def choose_model(user_text, first_tool):
-    if len(user_text) > 120 or first_tool == "generate_scene":
-        return "o3-pro-latest"   # Responses API
-    return "o3-mini"
-utils/openai_client.py hides the difference between Chat and Responses APIs.
+### 3.3 Entity retrieval & vector indexes  
+Global + per‑area FAISS sub‑indexes; auto‑refresh via `build_vector_index` :contentReference[oaicite:6]{index=6}.
 
-3.3 Entity retrieval strategy
-Build‑time filtering
-Keep only domains light, switch, media_player, climate, cover.
-RegEx skip patterns: *_led, *.bass_*, *.treble_*, *.color_*.
+---
 
-Per‑area sub‑indexes
-vector_index/<area_id>/ → FAISS index of ≤ 200 entities each.
+## 4  Tool catalogue (ranked)
 
-Hierarchical search
-For global requests iterate areas; for room‑specific pass area_id.
+| Rank | Tool | Inputs | Ops | LLM | Returns |
+|------|------|--------|-----|-----|---------|
+| 1 | `control_device` | `service,data` | `hass.services.async_call` | — | `"OK"` |
+| 2 | `confirm_action` | `action,targets` | formats question | **mini** (<50 tok) | text |
+| 3 | `search_devices` | `query,area?,k` | FAISS cosine search | — | `[entity_id]` |
+| 4 | `generate_scene` | `intent,area` | compose commands; optional `scene.create` :contentReference[oaicite:7]{index=7} | — | `commands_list` |
+| 5 | `area_iterator` | `intent` | loop areas, dedupe | — | `commands_list` |
+| 6 | `learn_preferences` ★ | `area,entity_id,prefs,mode` | merge or overwrite JSON | — | `"saved"` |
+| 7 | `preference_manager` | `user,area,key,mode` | JSON get/set | — | value |
+| 8 | `build_vector_index` | `{force?:bool}` | rebuild FAISS | — | `"rebuilt"` |
+| 9 | `ask_user` | `question` | store pending session | — | question |
+|10 | `get_weather` | `location?` | sensor + API | **mini** (<100 tok) | forecast |
+|11 | `search_spotify` | `query,type` | Spotify `/search` :contentReference[oaicite:8]{index=8} | — | URI |
+|12 | *(future)* `calendar_lookup` | … | … | … | … |
+|13 | *(future)* `energy_report` | … | … | … | … |
+|14 | *(future)* `diagnostic_tool` | … | … | … | … |
 
-4  Tool inventory (initial + extended)
-Tool	Main duties
-search_devices	cosine search of (sub)index, returns list of entity_ids
-control_device	wraps hass.services.async_call
-generate_scene	build multi‑service scene or call scene.create
-preference_manager	get/set per‑user defaults JSON
-get_weather	sensor + API, formats speech
-search_spotify	fetch best URI
-confirm_action	yes/no confirmation
-ask_user	open‑ended clarification
-(future) calendar, energy, reminders…	drop‑in ToolSpec
+### 4.1 `learn_preferences` design
 
-5  Prompt essentials (system)
-arduino
-Copy
+*Use‑case A – session auto‑save*  
+When several brightness / colour tweaks hit the same light within 5 min, the final state is saved by calling:  
+```json
+{ "tool": "learn_preferences",
+  "params": {
+    "area": "living_room",
+    "entity_id": "light.lamp",
+    "prefs": { "brightness_pct": 12 },
+    "mode": "merge"
+}}
+```
+
+*Use‑case B – explicit user command*  
+“Remember current settings for the office as ‘focus’ scene.”
+
+Agent flow: ask clarification → map to scene intent → call `learn_preferences` with `mode:"replace"`.
+
+---
+
+## 5  Prompt essentials (system)
+
+```
 You are Special Agent, a smart‑home AI.
 TOOLS:
 {{tool_schema}}
 RULES:
 - If request implies "cozy", "movie", "good night", call generate_scene.
-- Use preference_manager.get for defaults, fall back to sensible presets.
-- For state changes ALWAYS insert confirm_action before control_device.
-- Ignore entities with IDs ending "_led" or containing ".bass_", ".treble_".
-- Output ONLY valid JSON per schema; no extra text.
-6  Implementation roadmap & smoke‑tests
-Phase	Deliverable	Coding tasks	Smoke‑test
-0 Repo bootstrap	Structure & REFERENCE	move legacy, scaffold folders	hacs.reload loads
-1 Agent skeleton	agent_core.py, no tools	“Hi” → “can’t help yet”	
-2 Control MVP	tools: search_devices, control_device, confirm_action; wire conversation	“Turn on kitchen light” → confirmation + action	
-3 Info tools	get_weather, search_spotify	“Weather?” spoken forecast	
-3b Preference mgr	preference_manager + UI helper	“Set cozy brightness 8 %” persists	
-4 Clarification loop	ask_user + handler	“Turn on lights” → asks room	
-4b Scene tool	generate_scene	“Living‑room cozy” dims to pref brightness	
-4c Global scene	hierarchical area loop	“Good night” shuts house down	
-5 ReAct loop	feed tool outputs back to LLM	Complex multi‑step request succeeds	
-5b o3‑pro router	wrapper & heuristic	Long prompt logs o3-pro	
-5c Sub‑index	build per‑area indexes	query latency < 150 ms	
-6 Safety & multi‑device	3‑iteration cap, session key `mac	conv_id`	two speakers run parallel confirmations
-7 Test harness	pytest + fixtures, CI	pytest -q passes	
-7b Extra tests	preference recall, LED exclusion, routing	automated	
-8 Docs & guide	/docs/adding_tool.md, README update	docs render	
-9 Advanced tools	calendar, scenes, energy stats	auto‑discovered by agent	
+- After a fine‑tune session OR explicit request, call learn_preferences.
+- For state changes ALWAYS confirm_action before control_device.
+- Exclude *_led, *.bass_*, *.treble_* entities.
+- Output ONLY valid JSON.
+```
 
-7  Expanded test matrix
-ID	Scenario	Expected
-T‑1	Cozy preference recall	Stores & uses 8 % brightness
-T‑2	LED exclusion	“lights off” leaves speaker_led untouched
-T‑3	Whole‑home off	Good‑night plan ≤ 2 k tokens, executes all
-T‑4	Router	short vs long prompt model selection
-T‑5	Multi‑device	Device‑A confirmation doesn’t block Device‑B
-T‑6	ReAct loop depth	caps at 3 iterations then aborts politely
+---
 
-8  Persisted data formats
-jsonc
-Copy
+## 6  Implementation roadmap & smoke‑tests
+
+| Phase | Deliverable | Status / key tests |
+| ----- | ----------- | ------------------ |
+| 0 | **Repo bootstrap** | ✅ HACS loads component :contentReference[oaicite:2]{index=2} |
+| 1 | **Agent skeleton** (no tools) | ✅ “Hi” → “can’t help yet” |
+| 1b | **`build_vector_index` (foundational)** – pull HA states, chunk, embed, write global FAISS index | ✅ index file exists; `search_devices` returns results |
+| 2 | **Control MVP** (`search_devices`, `control_device`, `confirm_action`) | → test *kitchen light* |
+| 2b | **Nightly index refresh** (CLI cron calling `build_vector_index --force`) | → “rebuild database” |
+| 3 | **Info tools** (`get_weather`, `search_spotify`) | → spoken weather query |
+| 3b | **`preference_manager`** | → set + recall cozy brightness |
+| 4 | **Clarification loop** (`ask_user`) | → ambiguous “turn on lights” |
+| 4b | **`generate_scene`** (LLM‑orchestrated, thin wrapper) | → living‑room cozy |
+| 4c | **`area_iterator`** | → whole‑home “good night” |
+| 5 | **ReAct loop** – stream tool outputs back to LLM | → complex multi‑step |
+| 5b | **o3‑pro router** – cost‑aware model switch | → long prompt selects pro |
+| 5c | **Per‑area sub‑index build** (`vector_index/<area>/`) | → per‑area latency < 150 ms |
+| 5d | **`learn_preferences`** + session detector | → last tweak persisted |
+| 6 | **Safety & multi‑device dedupe** (3‑iteration cap) | → two speakers parallel |
+| 7 | **Test harness** (`pytest‑homeassistant`) | → all unit tests pass :contentReference[oaicite:3]{index=3} |
+| 8 | **Docs & contributor guide** | → README / /docs updated |
+| 9 | **Advanced tools** (calendar, energy, diagnostics) | → drop‑in `ToolSpec` |
+| 10 | **Future R&D** – opt‑in ML‑based proactive automation | shadow‑mode predictions |
+
+
+---
+
+## 7  Expanded test matrix
+
+| ID | Scenario | Expected |
+|----|----------|----------|
+| T‑1 | Cozy preference recall | uses stored 8 % |
+| T‑2 | LED exclusion | leaves `_led` entities |
+| T‑3 | Whole‑home off | plan ≤ 2 k tokens |
+| T‑4 | Router heuristic | long prompt → o3‑pro |
+| T‑5 | Fine‑tune session auto‑save | last tweak persisted |
+| T‑6 | Explicit remember command | prefs saved in “replace” mode |
+| T‑7 | ReAct depth limit | aborts after 3 rounds |
+
+---
+
+## 8  Persisted data formats
+
+```jsonc
 // config/.special_agent_prefs.json
 {
-  "user_id_abc": {
+  "user_abc": {
     "living_room": {
-      "cozy_brightness": 8,
+      "cozy_brightness": 12,
       "cozy_playlist_uri": "spotify:playlist:123"
     }
   }
 }
-jsonc
-Copy
+```
+
+```jsonc
 // vector_index/living_room/index_meta.json
 {
   "area_id": "living_room",
-  "created": "2025‑06‑12T14:00Z",
+  "created": "2025‑06‑13T10:00Z",
   "entity_count": 185
 }
-9  OpenAI usage & cost estimate
-Model	Typical prompt	Token avg	Cost per req
-o3‑mini	one‑shot control	850	$0.001
-o3‑pro	scene / global	4 k	$0.015
-
-Router keeps monthly cost ≈ $4 for 500 control + 100 scene requests.
-
-10  References & inspirations
-HACS “content_in_root” spec (hacs.xyz)
-
-Home Assistant Area registry & Scenes docs
-
-OpenAI o3‑pro Responses API docs (2025‑06)
-
-ReAct: Yao et al., ICLR 2023
-
-HA community posts on sub‑area light control & LED exclusion
-
-Saver custom component (example JSON state)
-
-pytest‑homeassistant‑custom‑component
+```
 
 ---
 
-## References
-- Anthropic – Building effective agents - https://www.anthropic.com/engineering/building-effective-agents
-- ReAct pattern paper (Yao et al. 2022) - https://arxiv.org/abs/2210.03629
-- OpenAI JSON mode / Structured Outputs examples - https://platform.openai.com/docs/guides/structured-outputs/examples
-- Home Assistant ConversationEntity dev docs - https://developers.home-assistant.io/docs/core/entity/conversation/
-- Home Assistant LLM API tools docs - https://developers.home-assistant.io/docs/core/llm/
-- LangChain tool‑calling guidelines - https://python.langchain.com/docs/concepts/tool_calling/
-- Spotify Web API search reference - https://developer.spotify.com/documentation/web-api/reference/search
-- Home Assistant service action example - https://developers.home-assistant.io/docs/dev_101_services/
-- ArXiv ReAct abstract (iteration benefits) - https://arxiv.org/abs/2210.03629
+## 9  OpenAI usage & cost estimate
+
+| Model | Typical prompt | Avg tokens | Cost / req |
+|-------|----------------|-----------|------------|
+| **o3‑mini** | one‑shot control | ~850 | $0.001 |
+| **o3‑pro** | large scene | ~4 k | $0.015 |
+
+Routing keeps monthly cost ≈ $4 for 500 control + 100 scene requests. :contentReference[oaicite:9]{index=9}
+
+---
+
+## 10  References
+
+1. HACS “content_in_root” flag – https://www.hacs.xyz/docs/publish/integration/ :contentReference[oaicite:10]{index=10}  
+2. Home Assistant Area registry docs – https://developers.home-assistant.io/docs/area_registry_index/ :contentReference[oaicite:11]{index=11}  
+3. ConversationEntity dev guide – https://developers.home-assistant.io/docs/core/entity/conversation/ :contentReference[oaicite:12]{index=12}  
+4. Recorder integration (history API) – https://www.home-assistant.io/integrations/recorder/ :contentReference[oaicite:13]{index=13}  
+5. OpenAI structured outputs – https://platform.openai.com/docs/api-reference/responses/create :contentReference[oaicite:14]{index=14}  
+6. OpenAI o3‑pro pricing – https://community.openai.com/t/o3-is-80-cheaper-and-introducing-o3-pro/1284925 :contentReference[oaicite:15]{index=15}  
+7. Medium guide on FAISS metadata filtering – https://medium.com/@dmitri.mahayana/ultimate-semantics-search-part-2-metadata-filtering-05cad97bc5da :contentReference[oaicite:16]{index=16}  
+8. Spotify Web API search – https://developer.spotify.com/documentation/web-api/reference/search :contentReference[oaicite:17]{index=17}  
+9. Home Assistant scenes docs – https://www.home-assistant.io/docs/scene/ :contentReference[oaicite:18]{index=18}  
+10. Voluptuous validation library – https://pypi.org/project/voluptuous/ :contentReference[oaicite:19]{index=19}  
+11. pytest‑homeassistant‑custom‑component – https://github.com/MatthewFlamm/pytest-homeassistant-custom-component :contentReference[oaicite:20]{index=20}  
+12. Home Assistant conversation batching API – https://developers.home-assistant.io/docs/intent_conversation_api/ :contentReference[oaicite:21]{index=21}  
