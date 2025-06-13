@@ -10,7 +10,7 @@ def test_build_and_query_vector_index(tmp_path):
     persist = tmp_path / "index"
     index, docs = build_vector_index(states, persist_dir=str(persist))
 
-    assert os.path.exists(persist / "index.faiss")
+    assert os.path.exists(persist / "matrix.npy")
     assert len(docs) == 2
 
     loaded = load_vector_index(str(persist))
