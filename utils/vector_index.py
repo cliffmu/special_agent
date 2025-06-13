@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from typing import Iterable, Tuple, List, Dict
+
+from .constants import VECTOR_INDEX_DIR
+
+_LOGGER = logging.getLogger(__package__)
 
 import numpy as np
 
@@ -22,11 +27,12 @@ def _text_to_vector(text: str, dim: int = DIMENSION) -> np.ndarray:
 
 def build_vector_index(
     states: Iterable[Dict],
-    persist_dir: str = "vector_index",
+    persist_dir: str = VECTOR_INDEX_DIR,
     force_rebuild: bool = False,
 ) -> Tuple[np.ndarray, List[Dict]]:
     """Build or load a NumPy index from Home Assistant states."""
     os.makedirs(persist_dir, exist_ok=True)
+    _LOGGER.debug("Building vector index in %s", persist_dir)
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
 
@@ -59,10 +65,12 @@ def build_vector_index(
     with open(mapping_file, "w", encoding="utf-8") as f:
         json.dump(docs, f, indent=2)
 
+    _LOGGER.info("Vector index built with %d entries", len(docs))
+
     return matrix, docs
 
 
-def load_vector_index(persist_dir: str = "vector_index") -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+def load_vector_index(persist_dir: str = VECTOR_INDEX_DIR) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
     """Load a previously built NumPy index if available."""
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
@@ -71,8 +79,10 @@ def load_vector_index(persist_dir: str = "vector_index") -> Tuple[np.ndarray, Li
             matrix = np.load(index_file)
             with open(mapping_file, "r", encoding="utf-8") as f:
                 mapping = json.load(f)
+            _LOGGER.debug("Loaded vector index from %s", persist_dir)
             return matrix, mapping
         except Exception:
+            _LOGGER.warning("Failed to load vector index from %s", persist_dir)
             return None, None
     return None, None
 
