@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.config_entries import ConfigEntry
+try:  # during unit tests Home Assistant may not be installed
+    from homeassistant.core import HomeAssistant, ServiceCall
+    from homeassistant.config_entries import ConfigEntry
+except ModuleNotFoundError:  # pragma: no cover - fallback stubs
+    HomeAssistant = object
+    ServiceCall = object
+    ConfigEntry = object
 
 DOMAIN = "special_agent"
 PLATFORMS = ["conversation"]
