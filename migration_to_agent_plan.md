@@ -89,8 +89,8 @@ class ToolSpec:
 ### 3.2 Cost‑aware model routing  
 Heuristic unchanged; o3‑pro pricing: $20 /M in, $80 /M out vs $2 / $8 for o3‑mini :contentReference[oaicite:5]{index=5}.
 
-### 3.3 Entity retrieval & vector indexes
-Global + per‑area NumPy sub‑indexes stored in the integration's `data` folder; auto‑refresh via `build_vector_index` :contentReference[oaicite:6]{index=6}.
+### 3.3 Entity retrieval & vector indexes  
+Global + per‑area NumPy sub‑indexes; auto‑refresh via `build_vector_index` :contentReference[oaicite:6]{index=6}.
 
 ---
 
@@ -156,7 +156,7 @@ RULES:
 | ----- | ----------- | ------------------ |
 | 0 | **Repo bootstrap** | ✅ HACS loads component :contentReference[oaicite:2]{index=2} |
 | 1 | **Agent skeleton** (no tools) | ✅ “Hi” → “can’t help yet” |
-| 1b | **`build_vector_index` (foundational)** – pull HA states, chunk, embed, write global NumPy index under `data/vector_index/` | ✅ index file exists; `search_devices` returns results |
+| 1b | **`build_vector_index` (foundational)** – pull HA states, chunk, embed, write global NumPy index | ✅ index file exists; `search_devices` returns results |
 | 2 | **Control MVP** (`search_devices`, `control_device`, `confirm_action`) | → test *kitchen light* |
 | 2b | **Nightly index refresh** (CLI cron calling `build_vector_index --force`) | → “rebuild database” |
 | 3 | **Info tools** (`get_weather`, `search_spotify`) | → spoken weather query |
@@ -166,7 +166,7 @@ RULES:
 | 4c | **`area_iterator`** | → whole‑home “good night” |
 | 5 | **ReAct loop** – stream tool outputs back to LLM | → complex multi‑step |
 | 5b | **o3‑pro router** – cost‑aware model switch | → long prompt selects pro |
-| 5c | **Per‑area sub‑index build** (`data/vector_index/<area>/`) | → per‑area latency < 150 ms |
+| 5c | **Per‑area sub‑index build** (`vector_index/<area>/`) | → per‑area latency < 150 ms |
 | 5d | **`learn_preferences`** + session detector | → last tweak persisted |
 | 6 | **Safety & multi‑device dedupe** (3‑iteration cap) | → two speakers parallel |
 | 7 | **Test harness** (`pytest‑homeassistant`) | → all unit tests pass :contentReference[oaicite:3]{index=3} |
@@ -206,7 +206,7 @@ RULES:
 ```
 
 ```jsonc
-// data/vector_index/living_room/index_meta.json
+// vector_index/living_room/index_meta.json
 {
   "area_id": "living_room",
   "created": "2025‑06‑13T10:00Z",
