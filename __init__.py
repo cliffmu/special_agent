@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 try:  # during unit tests Home Assistant may not be installed
     from homeassistant.core import HomeAssistant, ServiceCall
     from homeassistant.config_entries import ConfigEntry
@@ -12,6 +14,8 @@ except ModuleNotFoundError:  # pragma: no cover - fallback stubs
 
 DOMAIN = "special_agent"
 PLATFORMS = ["conversation"]
+
+_LOGGER = logging.getLogger(__package__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -28,6 +32,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Special Agent from a config entry."""
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry.data
+    if entry.options.get("debug_logging"):
+        _LOGGER.setLevel(logging.DEBUG)
+        _LOGGER.debug("Debug logging enabled")
+    else:
+        _LOGGER.setLevel(logging.INFO)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
