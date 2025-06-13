@@ -12,7 +12,7 @@ from homeassistant.helpers import intent
 
 from .agent_core import Agent
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__package__)
 
 
 class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
