@@ -90,7 +90,7 @@ class ToolSpec:
 Heuristic unchanged; o3‑pro pricing: $20 /M in, $80 /M out vs $2 / $8 for o3‑mini :contentReference[oaicite:5]{index=5}.
 
 ### 3.3 Entity retrieval & vector indexes  
-Global + per‑area FAISS sub‑indexes; auto‑refresh via `build_vector_index` :contentReference[oaicite:6]{index=6}.
+Global + per‑area NumPy sub‑indexes; auto‑refresh via `build_vector_index` :contentReference[oaicite:6]{index=6}.
 
 ---
 
@@ -100,12 +100,12 @@ Global + per‑area FAISS sub‑indexes; auto‑refresh via `build_vector_index`
 |------|------|--------|-----|-----|---------|
 | 1 | `control_device` | `service,data` | `hass.services.async_call` | — | `"OK"` |
 | 2 | `confirm_action` | `action,targets` | formats question | **mini** (<50 tok) | text |
-| 3 | `search_devices` | `query,area?,k` | FAISS cosine search | — | `[entity_id]` |
+| 3 | `search_devices` | `query,area?,k` | NumPy cosine search | — | `[entity_id]` |
 | 4 | `generate_scene` | `intent,area` | compose commands; optional `scene.create` :contentReference[oaicite:7]{index=7} | — | `commands_list` |
 | 5 | `area_iterator` | `intent` | loop areas, dedupe | — | `commands_list` |
 | 6 | `learn_preferences` ★ | `area,entity_id,prefs,mode` | merge or overwrite JSON | — | `"saved"` |
 | 7 | `preference_manager` | `user,area,key,mode` | JSON get/set | — | value |
-| 8 | `build_vector_index` | `{force?:bool}` | rebuild FAISS | — | `"rebuilt"` |
+| 8 | `build_vector_index` | `{force?:bool}` | rebuild index | — | `"rebuilt"` |
 | 9 | `ask_user` | `question` | store pending session | — | question |
 |10 | `get_weather` | `location?` | sensor + API | **mini** (<100 tok) | forecast |
 |11 | `search_spotify` | `query,type` | Spotify `/search` :contentReference[oaicite:8]{index=8} | — | URI |
@@ -156,7 +156,7 @@ RULES:
 | ----- | ----------- | ------------------ |
 | 0 | **Repo bootstrap** | ✅ HACS loads component :contentReference[oaicite:2]{index=2} |
 | 1 | **Agent skeleton** (no tools) | ✅ “Hi” → “can’t help yet” |
-| 1b | **`build_vector_index` (foundational)** – pull HA states, chunk, embed, write global FAISS index | ✅ index file exists; `search_devices` returns results |
+| 1b | **`build_vector_index` (foundational)** – pull HA states, chunk, embed, write global NumPy index | ✅ index file exists; `search_devices` returns results |
 | 2 | **Control MVP** (`search_devices`, `control_device`, `confirm_action`) | → test *kitchen light* |
 | 2b | **Nightly index refresh** (CLI cron calling `build_vector_index --force`) | → “rebuild database” |
 | 3 | **Info tools** (`get_weather`, `search_spotify`) | → spoken weather query |
@@ -235,7 +235,7 @@ Routing keeps monthly cost ≈ $4 for 500 control + 100 scene requests. :conte
 4. Recorder integration (history API) – https://www.home-assistant.io/integrations/recorder/ :contentReference[oaicite:13]{index=13}  
 5. OpenAI structured outputs – https://platform.openai.com/docs/api-reference/responses/create :contentReference[oaicite:14]{index=14}  
 6. OpenAI o3‑pro pricing – https://community.openai.com/t/o3-is-80-cheaper-and-introducing-o3-pro/1284925 :contentReference[oaicite:15]{index=15}  
-7. Medium guide on FAISS metadata filtering – https://medium.com/@dmitri.mahayana/ultimate-semantics-search-part-2-metadata-filtering-05cad97bc5da :contentReference[oaicite:16]{index=16}  
+7. Medium guide on metadata filtering – https://medium.com/@dmitri.mahayana/ultimate-semantics-search-part-2-metadata-filtering-05cad97bc5da :contentReference[oaicite:16]{index=16}
 8. Spotify Web API search – https://developer.spotify.com/documentation/web-api/reference/search :contentReference[oaicite:17]{index=17}  
 9. Home Assistant scenes docs – https://www.home-assistant.io/docs/scene/ :contentReference[oaicite:18]{index=18}  
 10. Voluptuous validation library – https://pypi.org/project/voluptuous/ :contentReference[oaicite:19]{index=19}  
