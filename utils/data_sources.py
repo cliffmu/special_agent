@@ -1,1 +1,74 @@
-"""Utility module placeholder."""
+"""Helpers for retrieving Home Assistant data."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from typing import Dict, List, Tuple
+
+try:  # Home Assistant may be absent during testing
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers import area_registry as ar
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+except ModuleNotFoundError:  # pragma: no cover - fallback stubs
+    HomeAssistant = object  # type: ignore
+    ar = dr = er = None  # type: ignore
+
+
+def get_ha_states(hass: HomeAssistant) -> List[Dict]:
+    """Return conversation-exposed states from Home Assistant."""
+    devices: List[Dict] = []
+    for state in hass.states.all():
+        exposed = state.attributes.get("conversation_exposed", True)
+        if exposed:
+            devices.append(
+                {
+                    "entity_id": state.entity_id,
+                    "name": state.name,
+                    "attributes": state.attributes,
+                    "domain": state.domain,
+                }
+            )
+    return devices
+
+
+async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
+    """Return device registry info grouped by area."""
+    area_reg = ar.async_get(hass) if ar else None
+    device_reg = dr.async_get(hass) if dr else None
+    entity_reg = er.async_get(hass) if er else None
+
+    area_map = {area.id: area.name for area in area_reg.areas.values()} if area_reg else {}
+    devices = device_reg.devices if device_reg else {}
+    entities = entity_reg.entities if entity_reg else {}
+
+    device_entities_map = defaultdict(list)
+    for ent in entities.values():
+        if ent.device_id:
+            device_entities_map[ent.device_id].append(ent)
+
+    summary: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    detail: List[Dict] = []
+
+    for device_id, device_entry in devices.items():
+        area_name = area_map.get(device_entry.area_id, "Unassigned")
+
+        domains = {ent.entity_id.split(".")[0] for ent in device_entities_map[device_id]}
+
+        detail.append(
+            {
+                "id": device_id,
+                "name": device_entry.name or f"Device {device_id}",
+                "area": area_name,
+                "domains": list(domains),
+                "manufacturer": device_entry.manufacturer,
+                "model": device_entry.model,
+            }
+        )
+
+        for domain in domains:
+            summary[area_name][domain] += 1
+
+    summary = {area: dict(domains) for area, domains in summary.items()}
+    return summary, detail
+
