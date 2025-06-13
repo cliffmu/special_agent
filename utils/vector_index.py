@@ -1,11 +1,10 @@
-"""Simple FAISS-based vector index for Home Assistant devices."""
+"""Simple NumPy-based vector index for Home Assistant devices."""
 from __future__ import annotations
 
 import json
 import os
 from typing import Iterable, Tuple, List, Dict
 
-import faiss
 import numpy as np
 
 
@@ -25,18 +24,18 @@ def build_vector_index(
     states: Iterable[Dict],
     persist_dir: str = "vector_index",
     force_rebuild: bool = False,
-) -> Tuple[faiss.Index, List[Dict]]:
-    """Build or load a FAISS index from Home Assistant states."""
+) -> Tuple[np.ndarray, List[Dict]]:
+    """Build or load a NumPy index from Home Assistant states."""
     os.makedirs(persist_dir, exist_ok=True)
-    index_file = os.path.join(persist_dir, "index.faiss")
+    index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
 
     if not force_rebuild and os.path.exists(index_file) and os.path.exists(mapping_file):
         try:
-            index = faiss.read_index(index_file)
+            matrix = np.load(index_file)
             with open(mapping_file, "r", encoding="utf-8") as f:
                 mapping = json.load(f)
-            return index, mapping
+            return matrix, mapping
         except Exception:
             pass  # fallthrough to rebuild
 
@@ -56,40 +55,36 @@ def build_vector_index(
         raise ValueError("No states provided to build vector index")
 
     matrix = np.vstack(vectors).astype("float32")
-    index = faiss.IndexFlatL2(matrix.shape[1])
-    index.add(matrix)
-
-    faiss.write_index(index, index_file)
+    np.save(index_file, matrix)
     with open(mapping_file, "w", encoding="utf-8") as f:
         json.dump(docs, f, indent=2)
 
-    return index, docs
+    return matrix, docs
 
 
-def load_vector_index(persist_dir: str = "vector_index") -> Tuple[faiss.Index, List[Dict]] | Tuple[None, None]:
-    """Load a previously built FAISS index if available."""
-    index_file = os.path.join(persist_dir, "index.faiss")
+def load_vector_index(persist_dir: str = "vector_index") -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+    """Load a previously built NumPy index if available."""
+    index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
     if os.path.exists(index_file) and os.path.exists(mapping_file):
         try:
-            index = faiss.read_index(index_file)
+            matrix = np.load(index_file)
             with open(mapping_file, "r", encoding="utf-8") as f:
                 mapping = json.load(f)
-            return index, mapping
+            return matrix, mapping
         except Exception:
             return None, None
     return None, None
 
 
-def query_vector_index(index_data: Tuple[faiss.Index, List[Dict]], query: str, k: int = 5) -> List[Dict]:
-    """Query the FAISS index and return matching docs."""
+def query_vector_index(index_data: Tuple[np.ndarray, List[Dict]], query: str, k: int = 5) -> List[Dict]:
+    """Query the index and return matching docs using cosine similarity."""
     if not index_data or index_data[0] is None:
         return []
-    index, docs = index_data
+    matrix, docs = index_data
     vec = _text_to_vector(query)
-    distances, indices = index.search(np.array([vec], dtype="float32"), k)
-    results = []
-    for idx in indices[0]:
-        if 0 <= idx < len(docs):
-            results.append(docs[idx])
-    return results
+    matrix_norm = matrix / (np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9)
+    vec_norm = vec / (np.linalg.norm(vec) + 1e-9)
+    scores = matrix_norm @ vec_norm
+    top_indices = scores.argsort()[::-1][:k]
+    return [docs[i] for i in top_indices]

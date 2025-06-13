@@ -9,8 +9,7 @@
         "openai",
         "langchain-community",
         "numpy",
-        "tiktoken",
-        "faiss-cpu"
+        "tiktoken"
     ],
     "codeowners": ["@cliffmu"],
     "config_flow": true
