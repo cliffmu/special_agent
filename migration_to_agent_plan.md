@@ -152,9 +152,6 @@ RULES:
 
 ## 6  Implementation roadmap & smoke‑tests
 
-*Throughout the early phases, enable verbose debug logging so new features can
-be verified by inspecting Home Assistant logs.*
-
 | Phase | Deliverable | Status / key tests |
 | ----- | ----------- | ------------------ |
 | 0 | **Repo bootstrap** | ✅ HACS loads component :contentReference[oaicite:2]{index=2} |

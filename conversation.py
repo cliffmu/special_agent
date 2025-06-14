@@ -22,11 +22,6 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         super().__init__()
         self.agent = Agent()
 
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.agent.hass = self.hass
-        _LOGGER.debug("Conversation entity added to hass; agent updated")
-
     @property
     def unique_id(self) -> str:
         return "special_agent"
