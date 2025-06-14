@@ -48,7 +48,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
 
     async def async_process(self, conversation_input, context=None) -> ConversationResult:
         user_text = getattr(conversation_input, "text", "")
-        result_text = await self.agent.plan(user_text)
+        result_text = await self.agent.plan(user_text, hass=self.hass)
 
         response = intent.IntentResponse(language=conversation_input.language)
         response.async_set_speech(result_text)
