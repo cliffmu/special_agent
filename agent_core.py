@@ -1,63 +1,68 @@
-"""Core agent structures and stubs."""
-
+"""Core agent structures and stubs (v0.2)."""
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
-import inspect
 
 import voluptuous as vol
 
 _LOGGER = logging.getLogger("custom_components.special_agent")
 
+# ----------  data classes ----------
 @dataclass
 class ToolSpec:
-    """Schema describing a tool."""
-
     name: str
     description: str
     parameters: vol.Schema
     returns: str | None
     func: Callable[..., Awaitable[Any]]
 
-
+# ----------  agent ----------
 class Agent:
-    """Minimal agent placeholder."""
+    """Minimal ReAct‑capable agent."""
 
     def __init__(self) -> None:
-        _LOGGER.debug("Agent Init")
         self.tools: Dict[str, ToolSpec] = {}
         self.load_tools()
 
+    # —— tool registry ——
     def load_tools(self) -> None:
-        """Register built-in tools from tool_specs package."""
-        try:
-            from .tool_specs.search_devices import SPEC as SEARCH_SPEC
-            from .tool_specs.build_vector_index import SPEC as BUILD_SPEC
-        except Exception as err:  # pragma: no cover - optional tools
-            _LOGGER.error("Failed loading tool specs: %s", err)
-            return
-        self.register_tool(SEARCH_SPEC)
-        self.register_tool(BUILD_SPEC)
+        """Dynamically import any available tool specs."""
+        for mod_path in (
+            ".tool_specs.build_vector_index",   # always present
+            ".tool_specs.search_devices",       # optional / future
+        ):
+            try:
+                module = __import__(mod_path, fromlist=["SPEC"])
+                self.register_tool(module.SPEC)
+            except Exception as err:  # pragma: no cover
+                _LOGGER.debug("Tool '%s' not loaded: %s", mod_path, err)
 
     def register_tool(self, spec: ToolSpec) -> None:
-        _LOGGER.debug("Agent Register Tool")
         self.tools[spec.name] = spec
+        _LOGGER.info("Tool registered: %s", spec.name)
 
+    # —— entry‑point ——
     async def plan(self, user_input: str, hass: Any | None = None) -> str:
-        """Plan and execute a response using available tools."""
-        _LOGGER.debug("Agent Plan")
-        try:
-            return await plan_execute(user_input, list(self.tools.values()), hass=hass)
-        except RuntimeError as err:
-            _LOGGER.error("Planning failed: %s", err)
-            return "I'm not ready to help yet."
+        return await plan_execute(
+            user_input,
+            list(self.tools.values()),
+            hass=hass,
+        )
 
+# ----------  helpers ----------
+_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
 def _spec_to_json(spec: ToolSpec) -> Dict:
-    """Convert ToolSpec to OpenAI JSON schema."""
-    props = {k: {"type": "string"} for k in spec.parameters.schema.keys()}
+    """Translate Voluptuous schema → JSON schema for OpenAI."""
+    props = {}
+    for key, validator in spec.parameters.schema.items():
+        # crude but effective: map basic python types to JSON‑Schema 'type'
+        py_type = getattr(validator, "type", str)
+        props[str(key)] = {"type": _JSON_TYPES.get(py_type, "string")}
     return {
         "type": "function",
         "function": {
@@ -67,29 +72,25 @@ def _spec_to_json(spec: ToolSpec) -> Dict:
         },
     }
 
-
+# ----------  ReAct loop ----------
 async def plan_execute(
     prompt: str,
     tools: List[ToolSpec],
     hass: Optional[Any] = None,
     model: str = "o3-mini",
 ) -> str:
-    """Simple ReAct loop using OpenAI function calling."""
     try:
-        import openai
-    except ModuleNotFoundError:  # pragma: no cover - openai optional
-        raise RuntimeError("openai package not available")
-
-    AsyncOpenAI = getattr(openai, "AsyncOpenAI", None)
-    if AsyncOpenAI is not None:
-        from .utils.openai_client import get_async_client
+        from openai import AsyncOpenAI  # ≥ 1.2
+        client = AsyncOpenAI()
+    except Exception:
+        import openai  # legacy
+        client = openai
 
     tool_json = [_spec_to_json(t) for t in tools]
     system_prompt = (
-        "You are Special\u00a0Agent, a smart-home AI.\n" "TOOLS:\n" + str(tool_json)
-        + "\nWhen you need to perform an external action, respond with:\n"
-        "{\n \"tool_calls\": [{ \"name\": \"<tool>\", \"arguments\": { ... } }] }\n"
-        "Otherwise, reply directly to the user."
+        "You are Special Agent, a smart‑home AI.\nTOOLS:\n"
+        f"{json.dumps(tool_json, indent=2)}\n"
+        "When an external action is required, reply ONLY with tool_calls."
     )
 
     messages = [
@@ -97,44 +98,43 @@ async def plan_execute(
         {"role": "user", "content": prompt},
     ]
     depth = 0
-    while depth < 3:
-        if AsyncOpenAI is not None:
-            client = await get_async_client(hass)
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tool_json,
-                tool_choice="auto",
-                stream=False,
-            )
-        else:
-            resp = await openai.ChatCompletion.acreate(
-                model=model,
-                messages=messages,
-                tools=tool_json,
-                tool_choice="auto",
-                stream=False,
-            )
-        message = resp.choices[0].message
-        if message.content:
-            _LOGGER.debug("Thought: %s", message.content)
-        if not message.tool_calls and not (message.content or "").strip():
-            raise RuntimeError("assistant returned empty message")
+    spec_map = {t.name: t for t in tools}
 
-        if message.tool_calls:
-            call = message.tool_calls[0]
-            spec_map = {t.name: t for t in tools}
-            func = spec_map[call.name].func
-            args = spec_map[call.name].parameters(call.arguments)
-            _LOGGER.debug("Action: %s %s", call.name, call.arguments)
-            if hass is not None and "hass" in inspect.signature(func).parameters:
-                result = await func(hass=hass, **args)
+    while depth < 3:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tool_json,
+            tool_choice="auto",
+        )
+        msg = resp.choices[0].message
+        _LOGGER.debug("Thought: %s", msg.content)
+
+        if msg.tool_calls:
+            call = msg.tool_calls[0]
+            raw_args = json.loads(call.arguments or "{}")  # ← NEW
+            spec = spec_map[call.name]
+            args = spec.parameters(raw_args)               # validate
+            _LOGGER.debug("Action: %s %s", call.name, args)
+
+            # execute
+            if hass and "hass" in inspect.signature(spec.func).parameters:
+                result = await spec.func(hass=hass, **args)
             else:
-                result = await func(**args)
+                result = await spec.func(**args)
             _LOGGER.debug("Observation: %s", result)
-            messages.append({"role": "assistant", **message})
-            messages.append({"role": "tool", "name": call.name, "content": result})
+
+            # feed back
+            messages.extend(
+                [
+                    {"role": "assistant", **msg},
+                    {"role": "tool", "name": call.name, "content": str(result)},
+                ]
+            )
             depth += 1
             continue
-        return message.content or ""
-    return "Depth limit reached"
+
+        # LLM produced a final answer
+        return msg.content or "OK"
+
+    return "Depth‑limit reached (3)."
