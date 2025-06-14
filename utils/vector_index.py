@@ -18,6 +18,7 @@ DIMENSION = 128
 
 def _text_to_vector(text: str, dim: int = DIMENSION) -> np.ndarray:
     """Hash words into a fixed-size vector."""
+    log.debug("Vectorizing text: %s", text.replace("\n", " ")[:80])
     vec = np.zeros(dim, dtype=np.float32)
     for word in text.split():
         idx = hash(word) % dim
@@ -31,22 +32,33 @@ def build_vector_index(
     force_rebuild: bool = False,
 ) -> Tuple[np.ndarray, List[Dict]]:
     """Build or load a NumPy index from Home Assistant states."""
+    states = list(states)
+    log.debug(
+        "build_vector_index: dir=%s force_rebuild=%s states=%d",
+        persist_dir,
+        force_rebuild,
+        len(states),
+    )
     os.makedirs(persist_dir, exist_ok=True)
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
 
     if not force_rebuild and os.path.exists(index_file) and os.path.exists(mapping_file):
         try:
+            log.debug("Loading existing index from %s", persist_dir)
             matrix = np.load(index_file)
             with open(mapping_file, "r", encoding="utf-8") as f:
                 mapping = json.load(f)
+            log.debug("Loaded index shape=%s docs=%d", matrix.shape, len(mapping))
             return matrix, mapping
-        except Exception:
-            pass  # fallthrough to rebuild
+        except Exception as err:
+            log.debug("Failed loading existing index: %s", err, exc_info=True)
+            # fallthrough to rebuild
 
     docs = []
     vectors = []
     for st in states:
+        log.debug("Vectorizing state %s", st.get("entity_id"))
         text = (
             f"Entity: {st.get('entity_id')}\n"
             f"Name: {st.get('name')}\n"
@@ -57,14 +69,18 @@ def build_vector_index(
         vectors.append(vec)
 
     if not vectors:
+        log.debug("No vectors generated; raising error")
         raise ValueError("No states provided to build vector index")
 
     matrix = np.vstack(vectors).astype("float32")
+    log.debug("Saving index matrix to %s", index_file)
     np.save(index_file, matrix)
+    log.debug("Writing mapping to %s", mapping_file)
     with open(mapping_file, "w", encoding="utf-8") as f:
         json.dump(docs, f, indent=2)
 
     log.info("Vector index rebuilt with %d docs", len(docs))
+    log.debug("build_vector_index: completed")
     return matrix, docs
 
 
@@ -72,20 +88,25 @@ def load_vector_index(persist_dir: str = "vector_index") -> Tuple[np.ndarray, Li
     """Load a previously built NumPy index if available."""
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
+    log.debug("load_vector_index from %s", persist_dir)
     if os.path.exists(index_file) and os.path.exists(mapping_file):
         try:
             matrix = np.load(index_file)
             with open(mapping_file, "r", encoding="utf-8") as f:
                 mapping = json.load(f)
+            log.debug("Loaded index shape=%s docs=%d", matrix.shape, len(mapping))
             return matrix, mapping
-        except Exception:
+        except Exception as err:
+            log.debug("Error loading vector index: %s", err, exc_info=True)
             return None, None
+    log.debug("No vector index found in %s", persist_dir)
     return None, None
 
 
 def query_vector_index(index_data: Tuple[np.ndarray, List[Dict]], query: str, k: int = 5) -> List[Dict]:
     """Query the index and return matching docs using cosine similarity."""
     if not index_data or index_data[0] is None:
+        log.debug("query_vector_index: no index data")
         return []
     matrix, docs = index_data
     log.debug("Vector search query '%s' k=%s", query, k)
