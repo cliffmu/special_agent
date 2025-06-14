@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -32,6 +33,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Special Agent from a config entry."""
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry.data
+    api_key = entry.options.get("openai_api_key") or entry.data.get("openai_api_key")
+    if api_key and not os.environ.get("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = api_key
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
