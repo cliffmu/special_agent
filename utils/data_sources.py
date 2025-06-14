@@ -20,13 +20,9 @@ _LOGGER = logging.getLogger(__package__)
 
 def get_ha_states(hass: HomeAssistant) -> List[Dict]:
     """Return conversation-exposed states from Home Assistant."""
-    _LOGGER.debug("get_ha_states: retrieving all states")
     devices: List[Dict] = []
     for state in hass.states.all():
         exposed = state.attributes.get("conversation_exposed", True)
-        _LOGGER.debug(
-            "get_ha_states: state=%s exposed=%s", state.entity_id, exposed
-        )
         if exposed:
             devices.append(
                 {
@@ -36,21 +32,14 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
                     "domain": state.domain,
                 }
             )
-    _LOGGER.debug("get_ha_states: returning %d devices", len(devices))
     return devices
 
 
 async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     """Return device registry info grouped by area."""
-    _LOGGER.debug("get_devices_by_area: start")
     area_reg = ar.async_get(hass) if ar else None
     device_reg = dr.async_get(hass) if dr else None
     entity_reg = er.async_get(hass) if er else None
-
-    _LOGGER.debug(
-        "registries loaded: areas=%s devices=%s entities=%s",
-        bool(area_reg), bool(device_reg), bool(entity_reg),
-    )
 
     area_map = {area.id: area.name for area in area_reg.areas.values()} if area_reg else {}
     devices = device_reg.devices if device_reg else {}
@@ -60,9 +49,6 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     for ent in entities.values():
         if ent.device_id:
             device_entities_map[ent.device_id].append(ent)
-            _LOGGER.debug(
-                "mapping entity %s to device %s", ent.entity_id, ent.device_id
-            )
 
     summary: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     detail: List[Dict] = []
@@ -82,19 +68,10 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
                 "model": device_entry.model,
             }
         )
-        _LOGGER.debug(
-            "device %s (%s) in area %s with domains %s",
-            device_id,
-            device_entry.name,
-            area_name,
-            list(domains),
-        )
 
         for domain in domains:
             summary[area_name][domain] += 1
 
     summary = {area: dict(domains) for area, domains in summary.items()}
-    _LOGGER.debug("get_devices_by_area: summary=%s", summary)
-    _LOGGER.debug("get_devices_by_area: returning %d devices", len(detail))
     return summary, detail
 
