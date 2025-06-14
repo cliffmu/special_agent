@@ -97,6 +97,7 @@ async def plan_execute(
     )
     _LOGGER.debug("System_Prompt:", system_prompt)
     _LOGGER.debug("User_Prompt:", prompt)
+    _LOGGER.debug("Tools_Provided:", tool_json)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -114,6 +115,7 @@ async def plan_execute(
         )
         msg = resp.choices[0].message
         _LOGGER.debug("Thought: %s", msg.content)
+        _LOGGER.debug("Tools_Selected:", msg.tool_calls)
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
