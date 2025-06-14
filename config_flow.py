@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant import config_entries
 from homeassistant.core import callback
 
 from . import DOMAIN
+
+_LOGGER = logging.getLogger(__package__)
 
 
 class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

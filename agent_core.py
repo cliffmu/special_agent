@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict
 
 import voluptuous as vol
+
+_LOGGER = logging.getLogger(__package__)
 
 
 @dataclass
