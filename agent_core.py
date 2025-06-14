@@ -13,7 +13,10 @@ except ModuleNotFoundError:  # pragma: no cover - fallback stub
 
 import voluptuous as vol
 
-from utils import data_sources
+try:
+    from .utils import data_sources
+except ImportError:  # pragma: no cover - support running as script
+    from utils import data_sources  # type: ignore
 
 _LOGGER = logging.getLogger("custom_components.special_agent")
 
