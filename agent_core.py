@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+import os
 
 import voluptuous as vol
 
@@ -79,6 +80,8 @@ async def plan_execute(
     hass: Optional[Any] = None,
     model: str = "o3-mini",
 ) -> str:
+    if not os.environ.get("OPENAI_API_KEY"):
+        return "Sorry, I'm not ready to help yet."
     try:
         from openai import AsyncOpenAI  # ≥ 1.2
         client = AsyncOpenAI()
