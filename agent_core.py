@@ -95,6 +95,8 @@ async def plan_execute(
         f"{json.dumps(tool_json, indent=2)}\n"
         "When an external action is required, reply ONLY with tool_calls."
     )
+    _LOGGER.debug("System_Prompt:", system_prompt)
+    _LOGGER.debug("User_Prompt:", prompt)
 
     messages = [
         {"role": "system", "content": system_prompt},
