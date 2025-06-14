@@ -77,8 +77,12 @@ async def plan_execute(
     """Simple ReAct loop using OpenAI function calling."""
     try:
         import openai
+        from openai import AsyncOpenAI  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - openai optional
         raise RuntimeError("openai package not available")
+    except ImportError:
+        import openai  # type: ignore  # noqa: F401
+        AsyncOpenAI = None  # type: ignore
 
     tool_json = [_spec_to_json(t) for t in tools]
     system_prompt = (
@@ -94,13 +98,23 @@ async def plan_execute(
     ]
     depth = 0
     while depth < 3:
-        resp = await openai.ChatCompletion.acreate(
-            model=model,
-            messages=messages,
-            tools=tool_json,
-            tool_choice="auto",
-            stream=False,
-        )
+        if AsyncOpenAI is not None:
+            client = AsyncOpenAI()
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tool_json,
+                tool_choice="auto",
+                stream=False,
+            )
+        else:
+            resp = await openai.ChatCompletion.acreate(
+                model=model,
+                messages=messages,
+                tools=tool_json,
+                tool_choice="auto",
+                stream=False,
+            )
         message = resp.choices[0].message
         if message.content:
             _LOGGER.debug("Thought: %s", message.content)
