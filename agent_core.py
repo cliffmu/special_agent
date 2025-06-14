@@ -95,9 +95,9 @@ async def plan_execute(
         f"{json.dumps(tool_json, indent=2)}\n"
         "When an external action is required, reply ONLY with tool_calls."
     )
-    _LOGGER.debug("System_Prompt:", system_prompt)
-    _LOGGER.debug("User_Prompt:", prompt)
-    _LOGGER.debug("Tools_Provided:", tool_json)
+    _LOGGER.debug("System_Prompt: %s", system_prompt)
+    _LOGGER.debug("User_Prompt: %s", prompt)
+    _LOGGER.debug("Tools_Provided: %s", tool_json)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -115,7 +115,7 @@ async def plan_execute(
         )
         msg = resp.choices[0].message
         _LOGGER.debug("Thought: %s", msg.content)
-        _LOGGER.debug("Tools_Selected:", msg.tool_calls)
+        _LOGGER.debug("Tools_Selected: %s", msg.tool_calls)
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
