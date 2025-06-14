@@ -16,13 +16,16 @@ except ModuleNotFoundError:  # pragma: no cover - fallback stubs
     ar = dr = er = None  # type: ignore
 
 _LOGGER = logging.getLogger(__package__)
+from . import logging as log
 
 
 def get_ha_states(hass: HomeAssistant) -> List[Dict]:
     """Return conversation-exposed states from Home Assistant."""
+    log.debug("get_ha_states: fetching states")
     devices: List[Dict] = []
     for state in hass.states.all():
         exposed = state.attributes.get("conversation_exposed", True)
+        log.debug("State %s exposed=%s", state.entity_id, exposed)
         if exposed:
             devices.append(
                 {
@@ -32,14 +35,22 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
                     "domain": state.domain,
                 }
             )
+    log.debug("get_ha_states: returning %d states", len(devices))
     return devices
 
 
 async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     """Return device registry info grouped by area."""
+    log.debug("get_devices_by_area: start")
     area_reg = ar.async_get(hass) if ar else None
     device_reg = dr.async_get(hass) if dr else None
     entity_reg = er.async_get(hass) if er else None
+    log.debug(
+        "Registries available area=%s device=%s entity=%s",
+        bool(area_reg),
+        bool(device_reg),
+        bool(entity_reg),
+    )
 
     area_map = {area.id: area.name for area in area_reg.areas.values()} if area_reg else {}
     devices = device_reg.devices if device_reg else {}
@@ -73,5 +84,6 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
             summary[area_name][domain] += 1
 
     summary = {area: dict(domains) for area, domains in summary.items()}
+    log.debug("get_devices_by_area: returning %d device details", len(detail))
     return summary, detail
 
