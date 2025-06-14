@@ -21,9 +21,12 @@ async def build_vector_index_tool(
     hass: Any | None = None,
 ) -> str:
     """Build or refresh the vector index from Home Assistant states."""
+    log.debug("build_vector_index_tool start force=%s hass=%s", force, bool(hass))
     states = get_ha_states(hass) if hass else []
+    log.debug("Retrieved %d states from Home Assistant", len(states))
     build_vector_index(states, force_rebuild=force)
     log.info("Vector index built with %d states", len(states))
+    log.debug("build_vector_index_tool completed")
     return "rebuilt"
 
 SPEC = ToolSpec(
