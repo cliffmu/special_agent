@@ -151,28 +151,23 @@ RULES:
 ---
 
 ## 6  Implementation roadmap & smoke‑tests
-
-| Phase | Deliverable | Status / key tests |
-| ----- | ----------- | ------------------ |
-| 0 | **Repo bootstrap** | ✅ HACS loads component :contentReference[oaicite:2]{index=2} |
-| 1 | **Agent skeleton** (no tools) | ✅ “Hi” → “can’t help yet” |
-| 1b | **`build_vector_index` (foundational)** – pull HA states, chunk, embed, write global NumPy index | ✅ index file exists; `search_devices` returns results |
-| 2 | **Control MVP** (`search_devices`, `control_device`, `confirm_action`) | → test *kitchen light* |
-| 2b | **Nightly index refresh** (CLI cron calling `build_vector_index --force`) | → “rebuild database” |
-| 3 | **Info tools** (`get_weather`, `search_spotify`) | → spoken weather query |
-| 3b | **`preference_manager`** | → set + recall cozy brightness |
-| 4 | **Clarification loop** (`ask_user`) | → ambiguous “turn on lights” |
-| 4b | **`generate_scene`** (LLM‑orchestrated, thin wrapper) | → living‑room cozy |
-| 4c | **`area_iterator`** | → whole‑home “good night” |
-| 5 | **ReAct loop** – stream tool outputs back to LLM | → complex multi‑step |
-| 5b | **o3‑pro router** – cost‑aware model switch | → long prompt selects pro |
-| 5c | **Per‑area sub‑index build** (`vector_index/<area>/`) | → per‑area latency < 150 ms |
-| 5d | **`learn_preferences`** + session detector | → last tweak persisted |
-| 6 | **Safety & multi‑device dedupe** (3‑iteration cap) | → two speakers parallel |
-| 7 | **Test harness** (`pytest‑homeassistant`) | → all unit tests pass :contentReference[oaicite:3]{index=3} |
-| 8 | **Docs & contributor guide** | → README / /docs updated |
-| 9 | **Advanced tools** (calendar, energy, diagnostics) | → drop‑in `ToolSpec` |
-| 10 | **Future R&D** – opt‑in ML‑based proactive automation | shadow‑mode predictions |
+| **Phase** | New deliverable                                                                                                                                                                            | Key tests / exit criteria                                                             |
+| --------- | ---------------------------------- | -------------------- |
+| **0**     | Repository bootstrap                                                                                                                                                                       | HACS loads component                                                                  |
+| **1**     | Agent skeleton (no tools)                                                                                                                                                                  | “Hi” → “can’t help yet”                                                               |
+| **1b**    | Vector‑index utilities (`utils/vector_index.py`)                                                                                                                                           | `.npy` file exists                                                                    |
+| **2** ★   | **Minimal ReAct loop** + wrappers for *existing* utilities (`build_vector_index`, `search_devices` stub)<br>— Register specs<br>— Implement `plan_execute` with function‑calling JSON mode | Prompt “Rebuild the database.” → agent emits tool call and returns `"rebuilt"` string |
+| **2b**    | Nightly cron invoking `build_vector_index`                                                                                                                                                 | CLI completes <30 s                                                                   |
+| **3**     | **Control MVP** (`confirm_action`, `control_device`); reuse ReAct core                                                                                                                     | “Turn on kitchen light” → confirm → call                                              |
+| **3b**    | Info tools (`get_weather`, `search_spotify`)                                                                                                                                               | “Weather?” → spoken response                                                          |
+| **4**     | Clarification loop (`ask_user`)                                                                                                                                                            | Ambiguous request triggers follow‑up                                                  |
+| **4b**    | `preference_manager`                                                                                                                                                                       | Set & recall 8 % brightness                                                           |
+| **4c**    | `generate_scene` + `area_iterator`                                                                                                                                                         | “Good night” scene                                                                    |
+| **5**     | Safety & dedupe (3‑iteration cap)                                                                                                                                                          | Two speakers, no loop                                                                 |
+| **6**     | Test harness (`pytest‑homeassistant`)                                                                                                                                                      | All tests pass                                                                        |
+| **7**     | Docs & contributor guide                                                                                                                                                                   | README covers tool API                                                                |
+| **8**     | Advanced tools (calendar, energy, diagnostics)                                                                                                                                             | Drop‑in ToolSpecs                                                                     |
+| **9**     | R\&D: proactive automations                                                                                                                                                                | Shadow mode only                                                                      |
 
 
 ---
