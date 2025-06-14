@@ -5,6 +5,7 @@ from typing import Any
 
 from homeassistant import config_entries
 from homeassistant.core import callback
+import voluptuous as vol
 
 from . import DOMAIN
 
@@ -20,9 +21,12 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
-            return self.async_create_entry(title="Special Agent", data={})
+            return self.async_create_entry(title="Special Agent", data=user_input)
 
-        return self.async_show_form(step_id="user")
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({vol.Required("openai_api_key"): str}),
+        )
 
     @staticmethod
     @callback
@@ -40,4 +44,17 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-        return self.async_show_form(step_id="init")
+
+        current = dict(self.config_entry.options)
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "openai_api_key",
+                    default=current.get(
+                        "openai_api_key",
+                        self.config_entry.data.get("openai_api_key", ""),
+                    ),
+                ): str
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
