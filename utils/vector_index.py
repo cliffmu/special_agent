@@ -1,11 +1,16 @@
 """Simple NumPy-based vector index for Home Assistant devices."""
 from __future__ import annotations
 
+import logging
 import json
 import os
 from typing import Iterable, Tuple, List, Dict
 
 import numpy as np
+
+from . import logging as log
+
+_LOGGER = logging.getLogger(__package__)
 
 
 DIMENSION = 128
@@ -59,6 +64,7 @@ def build_vector_index(
     with open(mapping_file, "w", encoding="utf-8") as f:
         json.dump(docs, f, indent=2)
 
+    log.info("Vector index rebuilt with %d docs", len(docs))
     return matrix, docs
 
 
@@ -82,9 +88,12 @@ def query_vector_index(index_data: Tuple[np.ndarray, List[Dict]], query: str, k:
     if not index_data or index_data[0] is None:
         return []
     matrix, docs = index_data
+    log.debug("Vector search query '%s' k=%s", query, k)
     vec = _text_to_vector(query)
     matrix_norm = matrix / (np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9)
     vec_norm = vec / (np.linalg.norm(vec) + 1e-9)
     scores = matrix_norm @ vec_norm
     top_indices = scores.argsort()[::-1][:k]
-    return [docs[i] for i in top_indices]
+    results = [docs[i] for i in top_indices]
+    log.debug("Vector search results: %s", [r["metadata"]["entity_id"] for r in results])
+    return results

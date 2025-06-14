@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+_LOGGER = logging.getLogger(__package__)
+
 try:  # during unit tests Home Assistant may not be installed
     from homeassistant.core import HomeAssistant, ServiceCall
     from homeassistant.config_entries import ConfigEntry

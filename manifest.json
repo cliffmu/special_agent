@@ -12,5 +12,9 @@
         "tiktoken"
     ],
     "codeowners": ["@cliffmu"],
-    "config_flow": true
+    "config_flow": true,
+    "loggers": [
+        "custom_components.special_agent",
+        "special_agent"
+    ]
 }
