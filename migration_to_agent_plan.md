@@ -96,22 +96,22 @@ Global + per‑area NumPy sub‑indexes; auto‑refresh via `build_vector_index`
 
 ## 4  Tool catalogue (ranked)
 
-| Rank | Tool | Inputs | Ops | LLM | Returns |
-|------|------|--------|-----|-----|---------|
-| 1 | `control_device` | `service,data` | `hass.services.async_call` | — | `"OK"` |
-| 2 | `confirm_action` | `action,targets` | formats question | **mini** (<50 tok) | text |
-| 3 | `search_devices` | `query,area?,k` | NumPy cosine search | — | `[entity_id]` |
-| 4 | `generate_scene` | `intent,area` | compose commands; optional `scene.create` :contentReference[oaicite:7]{index=7} | — | `commands_list` |
-| 5 | `area_iterator` | `intent` | loop areas, dedupe | — | `commands_list` |
-| 6 | `learn_preferences` ★ | `area,entity_id,prefs,mode` | merge or overwrite JSON | — | `"saved"` |
-| 7 | `preference_manager` | `user,area,key,mode` | JSON get/set | — | value |
-| 8 | `build_vector_index` | `{force?:bool}` | rebuild index | — | `"rebuilt"` |
-| 9 | `ask_user` | `question` | store pending session | — | question |
-|10 | `get_weather` | `location?` | sensor + API | **mini** (<100 tok) | forecast |
-|11 | `search_spotify` | `query,type` | Spotify `/search` :contentReference[oaicite:8]{index=8} | — | URI |
-|12 | *(future)* `calendar_lookup` | … | … | … | … |
-|13 | *(future)* `energy_report` | … | … | … | … |
-|14 | *(future)* `diagnostic_tool` | … | … | … | … |
+| Rank | Tool | Inputs | Internal operations | LLM calls | Returns |
+|------|------|--------|---------------------|-----------|---------|
+| 1 | `control_device` | `service, data` | `hass.services.async_call`  | none | `"OK"` / error |
+| 2 | `confirm_action` | `action, targets` | Formats question; tiny LLM for wording | **mini** (< 50 tok) | question |
+| 3 | `search_devices` | `query, area?, k` | FAISS cosine search on **area sub‑index**  | none | `[entity_id]` |
+| 4 | **`generate_scene`** | `intent, area` | (a) `preference_manager.get`; (b) 3×`search_devices` (lights, media_player, switches); (c) compose command list; (d) optional `scene.create`  | none | `commands_list` |
+| 5 | **`area_iterator`** | `intent` | Loops HA area registry , calls `generate_scene`; dedup; merge | none | big `commands_list` |
+| 6 | `preference_manager` | `user, area, key, mode` | Read/modify JSON store  | none | value |
+| 7 | `build_vector_index` | `{force?:bool}` | Loads HA states; filters domains; builds / updates FAISS index on disk; stores timestamp | none | `"rebuilt"` |
+| 8 | `ask_user` | `question` | Stores pending session | none | question |
+| 9 | `get_weather` | `location?` | Sensor + external API; template answer  | **mini** (< 100 tok) | forecast |
+|10 | `search_spotify` | `query, type` | HTTP to Spotify `/search`  | none | URI |
+|11 | *(future)* `calendar_lookup` | `date` | Google / HA calendar API | mini | events |
+|12 | *(future)* `energy_report` | `span` | HA statistics API | none | stats |
+|13 | *(future)* `diagnostic_tool` | `entity_id` | last‑updated, availability | none | health JSON |
+
 
 ### 4.1 `learn_preferences` design
 
