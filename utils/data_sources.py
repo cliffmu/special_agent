@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
@@ -13,6 +14,8 @@ try:  # Home Assistant may be absent during testing
 except ModuleNotFoundError:  # pragma: no cover - fallback stubs
     HomeAssistant = object  # type: ignore
     ar = dr = er = None  # type: ignore
+
+_LOGGER = logging.getLogger(__package__)
 
 
 def get_ha_states(hass: HomeAssistant) -> List[Dict]:
