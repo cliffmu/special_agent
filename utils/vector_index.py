@@ -18,7 +18,7 @@ DIMENSION = 128
 
 def _text_to_vector(text: str, dim: int = DIMENSION) -> np.ndarray:
     """Hash words into a fixed-size vector."""
-    log.debug("Vectorizing text: %s", text.replace("\n", " ")[:80])
+    # log.debug("Vectorizing text: %s", text.replace("\n", " ")[:80])
     vec = np.zeros(dim, dtype=np.float32)
     for word in text.split():
         idx = hash(word) % dim
@@ -58,7 +58,7 @@ def build_vector_index(
     docs = []
     vectors = []
     for st in states:
-        log.debug("Vectorizing state %s", st.get("entity_id"))
+        # log.debug("Vectorizing state %s", st.get("entity_id"))
         text = (
             f"Entity: {st.get('entity_id')}\n"
             f"Name: {st.get('name')}\n"
