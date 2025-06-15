@@ -66,8 +66,14 @@ def _spec_to_json(spec: ToolSpec) -> Dict:
     """Translate Voluptuous schema → JSON schema for OpenAI."""
     props = {}
     for key, validator in spec.parameters.schema.items():
-        # crude but effective: map basic python types to JSON‑Schema 'type'
-        py_type = getattr(validator, "type", str)
+        # crudely map Python/voluptuous validators to JSON Schema types
+        py_type = None
+        if isinstance(validator, type):
+            py_type = validator
+        else:
+            py_type = getattr(validator, "type", None)
+        if py_type is None:
+            py_type = str
         props[str(key)] = {"type": _JSON_TYPES.get(py_type, "string")}
     return {
         "type": "function",
