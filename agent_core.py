@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import inspect
 import json
-import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 import os
 
 import voluptuous as vol
 
-_LOGGER = logging.getLogger("custom_components.special_agent")
+from utils import logging as log
 
 # ----------  data classes ----------
 @dataclass
@@ -40,11 +39,11 @@ class Agent:
                 module = __import__(mod_path, fromlist=["SPEC"])
                 self.register_tool(module.SPEC)
             except Exception as err:  # pragma: no cover
-                _LOGGER.debug("Tool '%s' not loaded: %s", mod_path, err)
+                log.debug("Tool '%s' not loaded: %s", mod_path, err)
 
     def register_tool(self, spec: ToolSpec) -> None:
         self.tools[spec.name] = spec
-        _LOGGER.info("Tool registered: %s", spec.name)
+        log.info("Tool registered: %s", spec.name)
 
     # —— entry‑point ——
     async def plan(self, user_input: str, hass: Any | None = None) -> str:
@@ -95,9 +94,9 @@ async def plan_execute(
         f"{json.dumps(tool_json, indent=2)}\n"
         "When an external action is required, reply ONLY with tool_calls."
     )
-    _LOGGER.debug("System_Prompt: %s", system_prompt)
-    _LOGGER.debug("User_Prompt: %s", prompt)
-    _LOGGER.debug("Tools_Provided: %s", tool_json)
+    log.debug("System_Prompt: %s", system_prompt)
+    log.debug("User_Prompt: %s", prompt)
+    log.debug("Tools_Provided: %s", tool_json)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -114,22 +113,22 @@ async def plan_execute(
             tool_choice="auto",
         )
         msg = resp.choices[0].message
-        _LOGGER.debug("Thought: %s", msg.content)
-        _LOGGER.debug("Tools_Selected: %s", msg.tool_calls)
+        log.debug("Thought: %s", msg.content)
+        log.debug("Tools_Selected: %s", msg.tool_calls)
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
             raw_args = json.loads(call.arguments or "{}")  # ← NEW
             spec = spec_map[call.name]
             args = spec.parameters(raw_args)               # validate
-            _LOGGER.debug("Action: %s %s", call.name, args)
+            log.debug("Action: %s %s", call.name, args)
 
             # execute
             if hass and "hass" in inspect.signature(spec.func).parameters:
                 result = await spec.func(hass=hass, **args)
             else:
                 result = await spec.func(**args)
-            _LOGGER.debug("Observation: %s", result)
+            log.debug("Observation: %s", result)
 
             # feed back
             messages.extend(
