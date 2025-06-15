@@ -4,11 +4,15 @@ from __future__ import annotations
 import logging
 import json
 import os
+from pathlib import Path
 from typing import Iterable, Tuple, List, Dict
 
 import numpy as np
 
 from . import logging as log
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_PERSIST_DIR = str(BASE_DIR / "vector_index")
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -28,7 +32,7 @@ def _text_to_vector(text: str, dim: int = DIMENSION) -> np.ndarray:
 
 def build_vector_index(
     states: Iterable[Dict],
-    persist_dir: str = "vector_index",
+    persist_dir: str = DEFAULT_PERSIST_DIR,
     force_rebuild: bool = False,
 ) -> Tuple[np.ndarray, List[Dict]]:
     """Build or load a NumPy index from Home Assistant states."""
@@ -84,7 +88,7 @@ def build_vector_index(
     return matrix, docs
 
 
-def load_vector_index(persist_dir: str = "vector_index") -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+def load_vector_index(persist_dir: str = DEFAULT_PERSIST_DIR) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
     """Load a previously built NumPy index if available."""
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
