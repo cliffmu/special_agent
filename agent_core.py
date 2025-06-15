@@ -9,7 +9,10 @@ import os
 
 import voluptuous as vol
 
-from utils import logging as log
+try:
+    from .utils import logging as log
+except ImportError:  # pragma: no cover - support direct execution
+    from utils import logging as log
 
 # ----------  data classes ----------
 @dataclass
