@@ -149,9 +149,10 @@ async def plan_execute(
             log.debug("Observation: %s", result)
 
             # feed back
+            msg_data = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
             messages.extend(
                 [
-                    {"role": "assistant", **msg},
+                    {"role": "assistant", **msg_data},
                     {"role": "tool", "name": call.name, "content": str(result)},
                 ]
             )
