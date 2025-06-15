@@ -84,12 +84,13 @@ async def plan_execute(
 ) -> str:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
+
     try:
-        from openai import AsyncOpenAI  # ≥ 1.2
-        client = AsyncOpenAI()
-    except Exception:
-        import openai  # legacy
-        client = openai
+        from .utils.openai_client import get_async_client
+        client = await get_async_client(hass)
+    except Exception as err:  # pragma: no cover - openai optional
+        log.error("OpenAI client init failed: %s", err)
+        return "Error initializing OpenAI client"
 
     tool_json = [_spec_to_json(t) for t in tools]
     system_prompt = (
