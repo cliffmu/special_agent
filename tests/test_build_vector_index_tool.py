@@ -33,8 +33,13 @@ def test_build_vector_index_tool_uses_datasource(monkeypatch):
         "special_agent.tool_specs.build_vector_index.build_vector_index", fake_build
     )
 
-    result = asyncio.run(build_vector_index_tool(hass=hass))
+    async def run_tool():
+        res = await build_vector_index_tool(hass=hass)
+        await asyncio.sleep(0)
+        return res
 
-    assert result == "rebuilt"
+    result = asyncio.run(run_tool())
+
+    assert result == "rebuild scheduled"
     assert called["get"]
     assert called["build"] == sample_states
