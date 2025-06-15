@@ -2,12 +2,26 @@
 
 EXCLUDED_DOMAINS = {
     "sensor",
-    "binary_sensor",
+    "binary_sensor", #MAYBE WANT
     "update",
     "number",
     "select",
     "button",
     "event",
+    "alarm_control_panel",
+    "assist_satellite",
+    "automation",
+    "camera",
+    "device_tracker", #MAYBE WANT
+    "input_select",
+    "scene",
+    "script",
+    "stt",
+    "sun",
+    "time",
+    "tts",
+    "wake_word",
+    "zone",
 }
 
 PREFERRED_DOMAINS = {
@@ -15,8 +29,12 @@ PREFERRED_DOMAINS = {
     "fan",
     "media_player",
     "climate",
-    "switch",
+    "switch", #MAY CAUSE ISSUES
     "cover",
+    "lock",
+    "remote",
+    "vacuum",
+    "weather",
 }
 
 LOCATION_WORDS = {
@@ -27,6 +45,47 @@ LOCATION_WORDS = {
     "bath",
     "foyer",
     "garage",
+    "gym",
+    "theater",
+    "garage",
+    "playroom",
+    "nursery",
+    "backyard",
+    "front exterior",
 }
 
 EXCLUDED_SUFFIXES = ("_led", "_powertype", "_internaltemperature")
+
+# ALL
+# alarm_control_panel
+# assist_satellite
+# automation
+# binary_sensor
+# button
+# camera
+# climate
+# conversation
+# cover
+# device_tracker
+# event
+# fan
+# input_select
+# light
+# lock
+# media_player
+# number
+# remote
+# scene
+# script
+# select
+# sensor
+# stt
+# sun
+# switch
+# time
+# tts
+# update
+# vacuum
+# wake_word
+# weather
+# zone
