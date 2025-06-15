@@ -11,8 +11,16 @@ import numpy as np
 
 from . import logging as log
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_PERSIST_DIR = str(BASE_DIR / "vector_index")
+BASE_DIR = Path(
+    os.environ.get(
+        "SPECIAL_AGENT_BASE_DIR",
+        "/homeassistant" if Path("/homeassistant").exists() else str(Path(__file__).resolve().parents[2]),
+    )
+)
+DEFAULT_PERSIST_DIR = os.environ.get(
+    "SPECIAL_AGENT_PERSIST_DIR",
+    str(Path(BASE_DIR) / "sa_vector_index"),
+)
 
 _LOGGER = logging.getLogger(__package__)
 
