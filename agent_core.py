@@ -131,11 +131,8 @@ async def plan_execute(
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
-            call_name = getattr(call, "name", None)
-            raw_json = getattr(call, "arguments", None)
-            if hasattr(call, "function"):
-                call_name = call.function.name
-                raw_json = getattr(call.function, "arguments", None)
+            call_name = call.function.name if hasattr(call, "function") else getattr(call, "name", None)
+            raw_json = call.function.arguments if hasattr(call, "function") else getattr(call, "arguments", None)
             raw_args = json.loads(raw_json or "{}")
             spec = spec_map[call_name]
             args = spec.parameters(raw_args)  # validate
@@ -153,7 +150,12 @@ async def plan_execute(
             messages.extend(
                 [
                     {"role": "assistant", **msg_data},
-                    {"role": "tool", "name": call.name, "content": str(result)},
+                    {
+                        "role": "tool",
+                        "tool_call_id": getattr(call, "id", None),
+                        "name": call_name,
+                        "content": str(result),
+                    },
                 ]
             )
             depth += 1
