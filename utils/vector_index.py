@@ -1,4 +1,5 @@
 """Simple NumPy-based vector index for Home Assistant devices."""
+
 from __future__ import annotations
 
 import logging
@@ -10,11 +11,16 @@ from typing import Iterable, Tuple, List, Dict
 import numpy as np
 
 from . import logging as log
+from .constants import EXCLUDED_DOMAINS, EXCLUDED_SUFFIXES
 
 BASE_DIR = Path(
     os.environ.get(
         "SPECIAL_AGENT_BASE_DIR",
-        "/homeassistant" if Path("/homeassistant").exists() else str(Path(__file__).resolve().parents[2]),
+        (
+            "/homeassistant"
+            if Path("/homeassistant").exists()
+            else str(Path(__file__).resolve().parents[2])
+        ),
     )
 )
 DEFAULT_PERSIST_DIR = os.environ.get(
@@ -55,7 +61,11 @@ def build_vector_index(
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
 
-    if not force_rebuild and os.path.exists(index_file) and os.path.exists(mapping_file):
+    if (
+        not force_rebuild
+        and os.path.exists(index_file)
+        and os.path.exists(mapping_file)
+    ):
         try:
             log.debug("Loading existing index from %s", persist_dir)
             matrix = np.load(index_file)
@@ -69,15 +79,27 @@ def build_vector_index(
 
     docs = []
     vectors = []
+    excluded_count = 0
     for st in states:
-        # log.debug("Vectorizing state %s", st.get("entity_id"))
+        entity_id = st.get("entity_id", "")
+        domain = st.get("domain") or entity_id.split(".")[0]
+        if domain in EXCLUDED_DOMAINS or entity_id.endswith(EXCLUDED_SUFFIXES):
+            excluded_count += 1
+            continue
+
         text = (
-            f"Entity: {st.get('entity_id')}\n"
+            f"Entity: {entity_id}\n"
             f"Name: {st.get('name')}\n"
             f"Attributes: {st.get('attributes')}"
         )
         vec = _text_to_vector(text)
-        docs.append({"page_content": text, "metadata": {"entity_id": st.get("entity_id")}})
+        meta = {
+            "entity_id": entity_id,
+            "friendly_name": st.get("attributes", {}).get("friendly_name"),
+            "area_id": st.get("attributes", {}).get("area_id"),
+            "domain": domain,
+        }
+        docs.append({"page_content": text, "metadata": meta})
         vectors.append(vec)
 
     if not vectors:
@@ -90,13 +112,21 @@ def build_vector_index(
     log.debug("Writing mapping to %s", mapping_file)
     with open(mapping_file, "w", encoding="utf-8") as f:
         json.dump(docs, f, indent=2)
+    meta_file = os.path.join(persist_dir, "meta.json")
+    log.debug("Writing meta to %s", meta_file)
+    with open(meta_file, "w", encoding="utf-8") as f:
+        json.dump({"excluded_count": excluded_count}, f)
 
-    log.info("Vector index rebuilt with %d docs", len(docs))
+    log.info(
+        "Vector index rebuilt with %d docs (excluded=%d)", len(docs), excluded_count
+    )
     log.debug("build_vector_index: completed")
     return matrix, docs
 
 
-def load_vector_index(persist_dir: str = DEFAULT_PERSIST_DIR) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+def load_vector_index(
+    persist_dir: str = DEFAULT_PERSIST_DIR,
+) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
     """Load a previously built NumPy index if available."""
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
@@ -115,7 +145,12 @@ def load_vector_index(persist_dir: str = DEFAULT_PERSIST_DIR) -> Tuple[np.ndarra
     return None, None
 
 
-def query_vector_index(index_data: Tuple[np.ndarray, List[Dict]], query: str, k: int = 5) -> List[Dict]:
+def query_vector_index(
+    index_data: Tuple[np.ndarray, List[Dict]],
+    query: str,
+    k: int = 5,
+    return_scores: bool = False,
+) -> List[Dict] | List[Tuple[Dict, float]]:
     """Query the index and return matching docs using cosine similarity."""
     if not index_data or index_data[0] is None:
         log.debug("query_vector_index: no index data")
@@ -127,6 +162,19 @@ def query_vector_index(index_data: Tuple[np.ndarray, List[Dict]], query: str, k:
     vec_norm = vec / (np.linalg.norm(vec) + 1e-9)
     scores = matrix_norm @ vec_norm
     top_indices = scores.argsort()[::-1][:k]
-    results = [docs[i] for i in top_indices]
-    log.debug("Vector search results: %s", [r["metadata"]["entity_id"] for r in results])
+    if return_scores:
+        results = [(docs[i], float(scores[i])) for i in top_indices]
+    else:
+        results = [docs[i] for i in top_indices]
+    log.debug(
+        "Vector search results: %s",
+        [
+            (
+                r[0]["metadata"]["entity_id"]
+                if return_scores
+                else r["metadata"]["entity_id"]
+            )
+            for r in results
+        ],
+    )
     return results
