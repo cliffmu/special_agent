@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import importlib
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 import os
@@ -34,15 +35,17 @@ class Agent:
     # —— tool registry ——
     def load_tools(self) -> None:
         """Dynamically import any available tool specs."""
-        for mod_path in (
-            ".tool_specs.build_vector_index",   # always present
-            ".tool_specs.search_devices",       # optional / future
+        base = __package__ or ""
+        for mod in (
+            "tool_specs.build_vector_index",  # always present
+            "tool_specs.search_devices",      # optional / future
         ):
+            module_name = f"{base}.{mod}" if base else mod
             try:
-                module = __import__(mod_path, fromlist=["SPEC"])
+                module = importlib.import_module(module_name)
                 self.register_tool(module.SPEC)
             except Exception as err:  # pragma: no cover
-                log.debug("Tool '%s' not loaded: %s", mod_path, err)
+                log.debug("Tool '%s' not loaded: %s", module_name, err)
 
     def register_tool(self, spec: ToolSpec) -> None:
         self.tools[spec.name] = spec
