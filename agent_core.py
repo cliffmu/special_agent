@@ -125,10 +125,15 @@ async def plan_execute(
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
-            raw_args = json.loads(call.arguments or "{}")  # ← NEW
-            spec = spec_map[call.name]
-            args = spec.parameters(raw_args)               # validate
-            log.debug("Action: %s %s", call.name, args)
+            call_name = getattr(call, "name", None)
+            raw_json = getattr(call, "arguments", None)
+            if hasattr(call, "function"):
+                call_name = call.function.name
+                raw_json = getattr(call.function, "arguments", None)
+            raw_args = json.loads(raw_json or "{}")
+            spec = spec_map[call_name]
+            args = spec.parameters(raw_args)  # validate
+            log.debug("Action: %s %s", call_name, args)
 
             # execute
             if hass and "hass" in inspect.signature(spec.func).parameters:
