@@ -25,7 +25,7 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
     devices: List[Dict] = []
     for state in hass.states.all():
         exposed = state.attributes.get("conversation_exposed", True)
-        log.debug("State %s exposed=%s", state.entity_id, exposed)
+        # log.debug("State %s exposed=%s", state.entity_id, exposed)
         if exposed:
             devices.append(
                 {
