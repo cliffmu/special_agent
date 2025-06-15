@@ -15,8 +15,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback stubs
     HomeAssistant = object  # type: ignore
     ar = dr = er = None  # type: ignore
 
-_LOGGER = logging.getLogger(__package__)
 from . import logging as log
+
+_LOGGER = logging.getLogger(__package__)
 
 
 def get_ha_states(hass: HomeAssistant) -> List[Dict]:
@@ -52,7 +53,9 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
         bool(entity_reg),
     )
 
-    area_map = {area.id: area.name for area in area_reg.areas.values()} if area_reg else {}
+    area_map = (
+        {area.id: area.name for area in area_reg.areas.values()} if area_reg else {}
+    )
     devices = device_reg.devices if device_reg else {}
     entities = entity_reg.entities if entity_reg else {}
 
@@ -67,7 +70,9 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     for device_id, device_entry in devices.items():
         area_name = area_map.get(device_entry.area_id, "Unassigned")
 
-        domains = {ent.entity_id.split(".")[0] for ent in device_entities_map[device_id]}
+        domains = {
+            ent.entity_id.split(".")[0] for ent in device_entities_map[device_id]
+        }
 
         detail.append(
             {
@@ -86,4 +91,3 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     summary = {area: dict(domains) for area, domains in summary.items()}
     log.debug("get_devices_by_area: returning %d device details", len(detail))
     return summary, detail
-
