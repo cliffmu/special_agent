@@ -14,7 +14,7 @@
 #     _LOGGER.warning(msg, *args)
 
 import logging, re
-_LOGGER = logging.getLogger(__package__)
+_LOGGER = logging.getLogger("custom_components.special_agent")
 _PLACEHOLDER_RE = re.compile(r"%\([^)]+\)|%[sdifr]")
 
 def _safe(level, msg, *args, **kw):
