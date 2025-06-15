@@ -3,8 +3,6 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock
 
-import pytest
-
 from special_agent.__init__ import async_setup_entry
 
 

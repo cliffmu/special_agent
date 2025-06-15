@@ -1,0 +1,39 @@
+import asyncio
+import importlib
+
+from special_agent.utils.vector_index import build_vector_index
+
+
+def test_search_device_filter(tmp_path, monkeypatch):
+    states = [
+        {
+            "entity_id": "light.office_sconces",
+            "name": "Office Sconces",
+            "attributes": {"friendly_name": "Office Sconces"},
+            "domain": "light",
+        },
+        {
+            "entity_id": "sensor.office_sconces_led_effect",
+            "name": "LED Effect",
+            "attributes": {"friendly_name": "Office LED"},
+            "domain": "sensor",
+        },
+    ]
+
+    persist = tmp_path / "index"
+    build_vector_index(states, persist_dir=str(persist))
+
+    monkeypatch.setenv("SPECIAL_AGENT_PERSIST_DIR", str(persist))
+    import special_agent.utils.vector_index as vi
+    import special_agent.tool_specs.search_devices as sd
+
+    importlib.reload(vi)
+    importlib.reload(sd)
+
+    async def run_search():
+        return await sd.search_devices("turn on the office light", k=5)
+
+    results = asyncio.run(run_search())
+
+    assert "light.office_sconces" in results
+    assert all("sensor.office_sconces_led_effect" != r for r in results)
