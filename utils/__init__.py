@@ -1,3 +1,3 @@
-import logging
+from logging import getLogger
 
-_LOGGER = logging.getLogger(__package__)
+_LOGGER = getLogger(__package__)
