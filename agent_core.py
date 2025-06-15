@@ -26,6 +26,10 @@ class ToolSpec:
 # ----------  agent ----------
 class Agent:
     """Minimal ReAct‑capable agent."""
+    log.debug("Brace {} {}", 1, 2)
+    log.debug("Percent %s", "ok")
+    log.debug("No placeholders", {"k": 42})
+
 
     def __init__(self) -> None:
         self.tools: Dict[str, ToolSpec] = {}
@@ -82,6 +86,10 @@ async def plan_execute(
     hass: Optional[Any] = None,
     model: str = "o3-mini",
 ) -> str:
+    log.debug("Brace {} {}", 1, 2)
+    log.debug("Percent %s", "ok")
+    log.debug("No placeholders", {"k": 42})
+
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
 
