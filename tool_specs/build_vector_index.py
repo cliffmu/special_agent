@@ -11,7 +11,7 @@ import voluptuous as vol
 
 from ..utils import logging as log
 from ..utils.vector_index import build_vector_index
-from ..utils.data_sources import get_ha_states
+from ..utils.data_sources import get_ha_states, enrich_states_metadata
 from ..agent_core import ToolSpec
 
 _LOGGER = logging.getLogger(__package__)
@@ -30,12 +30,14 @@ async def build_vector_index_tool(
         add_job = getattr(hass, "async_add_executor_job", None) if hass else None
         if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
             states = await add_job(get_ha_states, hass)
+            states = enrich_states_metadata(hass, states)
             log.debug("Retrieved %d states from Home Assistant", len(states))
             await add_job(
                 functools.partial(build_vector_index, force_rebuild=force), states
             )
         else:
             states = get_ha_states(hass)
+            states = enrich_states_metadata(hass, states)
             log.debug("Retrieved %d states from Home Assistant", len(states))
             await asyncio.get_running_loop().run_in_executor(
                 None,
