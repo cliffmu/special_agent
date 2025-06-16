@@ -104,6 +104,9 @@ async def plan_execute(
         return "Error initializing OpenAI client"
 
     # ---- build system prompt ----
+    from .utils.vector_index import async_load_vector_meta
+    meta = await async_load_vector_meta(hass=hass)
+    area_summary = meta.get("area_summary", {}) if isinstance(meta, dict) else {}
     tool_json = [_spec_to_json(t) for t in tools]
     goals_block = ""
     if goals:
