@@ -1,16 +1,15 @@
-"""Tool for retrieving device entity_ids by similarity search."""
+"""Tool for retrieving device entity_ids by filtered similarity search."""
 
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Any
 
 import voluptuous as vol
 
-from ..utils import logging as log
-from ..utils.constants import EXCLUDED_DOMAINS, PREFERRED_DOMAINS, LOCATION_WORDS
-from ..utils.vector_index import async_load_vector_index, query_vector_index
+from ..utils.vector_index import load_vector_index, query_vector_index
 from ..agent_core import ToolSpec
+from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -18,45 +17,28 @@ _LOGGER = logging.getLogger(__package__)
 PARAMS = vol.Schema(
     {
         vol.Required("query"): str,
+        vol.Optional("area"): str,
+        vol.Optional("domain", default=["light", "switch"]): vol.Any(str, [str]),
         vol.Optional("k", default=5): int,
     }
 )
 
 
-async def search_devices(query: str, k: int = 5) -> List[str]:
-    """Return entity_ids matching the query from the vector index."""
-    index_data = await async_load_vector_index()
-    raw_results = query_vector_index(index_data, query, k, return_scores=True)
-
-    tokens = {t.rstrip('s') for t in query.lower().split()}
-    scored = []
-    for doc, score in raw_results:
-        entity_id = doc["metadata"].get("entity_id", "")
-        domain = entity_id.split(".")[0]
-        if domain in PREFERRED_DOMAINS:
-            score += 0.25
-        if domain in EXCLUDED_DOMAINS:
-            score -= 0.20
-
-        friendly = (doc["metadata"].get("friendly_name") or "").lower()
-        area = (doc["metadata"].get("area_id") or "").lower()
-        base = f"{entity_id.lower()} {friendly} {area}"
-        if any(
-            word in LOCATION_WORDS and (word in friendly or word in area)
-            for word in tokens
-        ):
-            score += 0.05
-
-        # boost for direct text matches
-        for token in tokens:
-            if token and token in base:
-                score += 0.05
-
-        scored.append((score, entity_id))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    log.debug("Device search '%s' => %s", query, [e for _, e in scored])
-    return [e for _, e in scored]
+async def search_devices(
+    query: str,
+    area: str | None = None,
+    domain: str | list[str] | None = None,
+    k: int = 5,
+) -> List[str]:
+    """Return entity_ids matching the query with optional metadata filters."""
+    index_data = load_vector_index()
+    filters: dict[str, Any] = {}
+    if area:
+        filters["area_id"] = area
+    if domain:
+        filters["domain"] = domain
+    hits = query_vector_index(index_data, query, k, filters)
+    return [h["metadata"].get("entity_id", "") for h in hits]
 
 
 SPEC = ToolSpec(

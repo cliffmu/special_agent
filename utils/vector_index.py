@@ -188,13 +188,39 @@ def query_vector_index(
     index_data: Tuple[np.ndarray, List[Dict]],
     query: str,
     k: int = 5,
+    filters: Dict[str, Any] | None = None,
     return_scores: bool = False,
 ) -> List[Dict] | List[Tuple[Dict, float]]:
-    """Query the index and return matching docs using cosine similarity."""
+    """Query the index and return matching docs using cosine similarity.
+
+    If ``filters`` is provided, only documents whose metadata match every
+    key/value pair are considered. Values may be single items or lists.
+    """
     if not index_data or index_data[0] is None:
         log.debug("query_vector_index: no index data")
         return []
     matrix, docs = index_data
+    if filters:
+        keep_indices = []
+        for idx, doc in enumerate(docs):
+            meta = doc.get("metadata", {})
+            match = True
+            for key, value in filters.items():
+                val = meta.get(key)
+                if isinstance(value, (list, tuple, set)):
+                    if val not in value:
+                        match = False
+                        break
+                else:
+                    if val != value:
+                        match = False
+                        break
+            if match:
+                keep_indices.append(idx)
+        if not keep_indices:
+            return []
+        matrix = matrix[keep_indices]
+        docs = [docs[i] for i in keep_indices]
     log.debug("Vector search query '%s' k=%s", query, k)
     vec = _text_to_vector(query)
     matrix_norm = matrix / (np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9)
