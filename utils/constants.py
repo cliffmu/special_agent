@@ -29,7 +29,6 @@ PREFERRED_DOMAINS = {
     "fan",
     "media_player",
     "climate",
-    "switch", #MAY CAUSE ISSUES
     "cover",
     "lock",
     "remote",
