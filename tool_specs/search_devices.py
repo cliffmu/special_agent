@@ -28,7 +28,7 @@ async def search_devices(query: str, k: int = 5) -> List[str]:
     index_data = load_vector_index()
     raw_results = query_vector_index(index_data, query, k, return_scores=True)
 
-    tokens = set(query.lower().split())
+    tokens = {t.rstrip('s') for t in query.lower().split()}
     scored = []
     for doc, score in raw_results:
         entity_id = doc["metadata"].get("entity_id", "")
@@ -40,11 +40,17 @@ async def search_devices(query: str, k: int = 5) -> List[str]:
 
         friendly = (doc["metadata"].get("friendly_name") or "").lower()
         area = (doc["metadata"].get("area_id") or "").lower()
+        base = f"{entity_id.lower()} {friendly} {area}"
         if any(
             word in LOCATION_WORDS and (word in friendly or word in area)
             for word in tokens
         ):
             score += 0.05
+
+        # boost for direct text matches
+        for token in tokens:
+            if token and token in base:
+                score += 0.05
 
         scored.append((score, entity_id))
 
