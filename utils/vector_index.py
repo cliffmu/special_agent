@@ -6,13 +6,23 @@ import logging
 import asyncio
 import json
 import os
+import hashlib
 from pathlib import Path
 from typing import Iterable, Tuple, List, Dict, Any
 
 import numpy as np
 
 from . import logging as log
-from .constants import EXCLUDED_DOMAINS, EXCLUDED_SUFFIXES
+from .constants import (
+    EXCLUDED_DOMAINS,
+    EXCLUDED_SUFFIXES,
+    EMBED_MODEL,
+    EMBED_DIM,
+    FALLBACK_MODEL,
+    BOOST_DOMAIN,
+    BOOST_AREA,
+    BOOST_OVERLAP,
+)
 
 BASE_DIR = Path(
     os.environ.get(
@@ -32,16 +42,85 @@ DEFAULT_PERSIST_DIR = os.environ.get(
 _LOGGER = logging.getLogger(__package__)
 
 
-DIMENSION = 128
+DIMENSION = EMBED_DIM
 
 
-def _text_to_vector(text: str, dim: int = DIMENSION) -> np.ndarray:
-    """Hash words into a fixed-size vector."""
-    # log.debug("Vectorizing text: %s", text.replace("\n", " ")[:80])
-    vec = np.zeros(dim, dtype=np.float32)
+_EMBED_CACHE_FILE = os.environ.get(
+    "SPECIAL_AGENT_EMBED_CACHE", str(Path(DEFAULT_PERSIST_DIR) / "embed_cache.json")
+)
+_EMBED_CACHE: Dict[str, list] | None = None
+
+
+def _load_cache() -> Dict[str, list]:
+    """Load embedding cache from disk lazily."""
+    global _EMBED_CACHE
+    if _EMBED_CACHE is None:
+        if os.path.exists(_EMBED_CACHE_FILE):
+            try:
+                with open(_EMBED_CACHE_FILE, "r", encoding="utf-8") as f:
+                    _EMBED_CACHE = json.load(f)
+            except Exception:  # pragma: no cover - cache failures not fatal
+                _EMBED_CACHE = {}
+        else:
+            _EMBED_CACHE = {}
+    return _EMBED_CACHE
+
+
+def _save_cache() -> None:  # pragma: no cover - trivial
+    """Persist embedding cache to disk."""
+    if _EMBED_CACHE is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(_EMBED_CACHE_FILE), exist_ok=True)
+        with open(_EMBED_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_EMBED_CACHE, f)
+    except Exception:  # pragma: no cover - cache failures not fatal
+        pass
+
+
+def _hash_embed(text: str) -> np.ndarray:
+    vec = np.zeros(DIMENSION, dtype=np.float32)
     for word in text.split():
-        idx = hash(word) % dim
+        idx = hash(word) % DIMENSION
         vec[idx] += 1.0
+    return vec
+
+
+def _semantic_embed(text: str) -> np.ndarray:
+    """Return a semantic embedding for text with caching and fallbacks."""
+    cache = _load_cache()
+    key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if key in cache:
+        log.debug("embedding cache hit %s", key[:8])
+        return np.array(cache[key], dtype=np.float32)
+    log.debug("embedding cache miss %s", key[:8])
+
+    if os.environ.get("SPECIAL_AGENT_TESTING") == "true":
+        vec = _hash_embed(text)
+    else:
+        try:  # pragma: no cover - requires openai package
+            from openai import OpenAI, OpenAIError  # type: ignore
+
+            client = OpenAI()
+            resp = client.embeddings.create(model=EMBED_MODEL, input=[text])
+            vec = np.array(resp.data[0].embedding, dtype=np.float32)
+        except Exception as err:  # pragma: no cover - network failures
+            log.debug("OpenAI embed failed: %s", err)
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore
+
+                model = SentenceTransformer(FALLBACK_MODEL)
+                vec = model.encode(text)
+                if vec.shape[0] < DIMENSION:
+                    vec = np.pad(vec, (0, DIMENSION - vec.shape[0]))
+                vec = vec.astype(np.float32)
+            except Exception as err2:  # pragma: no cover - no fallback model
+                log.debug("SentenceTransformer embed failed: %s", err2)
+                vec = _hash_embed(text)
+
+    vec = vec / (np.linalg.norm(vec) + 1e-9)
+    cache[key] = vec.tolist()
+    _save_cache()
     return vec
 
 
@@ -61,19 +140,29 @@ def build_vector_index(
     os.makedirs(persist_dir, exist_ok=True)
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
+    meta_file = os.path.join(persist_dir, "meta.json")
 
     if (
         not force_rebuild
         and os.path.exists(index_file)
         and os.path.exists(mapping_file)
+        and os.path.exists(meta_file)
     ):
         try:
-            log.debug("Loading existing index from %s", persist_dir)
-            matrix = np.load(index_file)
-            with open(mapping_file, "r", encoding="utf-8") as f:
-                mapping = json.load(f)
-            log.debug("Loaded index shape=%s docs=%d", matrix.shape, len(mapping))
-            return matrix, mapping
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("embedding_model") == EMBED_MODEL:
+                log.debug("Loading existing index from %s", persist_dir)
+                matrix = np.load(index_file)
+                with open(mapping_file, "r", encoding="utf-8") as f2:
+                    mapping = json.load(f2)
+                log.debug(
+                    "Loaded index shape=%s docs=%d",
+                    matrix.shape,
+                    len(mapping),
+                )
+                return matrix, mapping
+            log.debug("Embedding model changed; rebuilding index")
         except Exception as err:
             log.debug("Failed loading existing index: %s", err, exc_info=True)
             # fallthrough to rebuild
@@ -93,7 +182,7 @@ def build_vector_index(
             f"Name: {st.get('name')}\n"
             f"Attributes: {st.get('attributes')}"
         )
-        vec = _text_to_vector(text)
+        vec = _semantic_embed(text)
         meta = {
             "entity_id": entity_id,
             "domain": domain,
@@ -116,7 +205,9 @@ def build_vector_index(
     meta_file = os.path.join(persist_dir, "meta.json")
     log.debug("Writing meta to %s", meta_file)
     with open(meta_file, "w", encoding="utf-8") as f:
-        json.dump({"excluded_count": excluded_count}, f)
+        json.dump(
+            {"excluded_count": excluded_count, "embedding_model": EMBED_MODEL}, f
+        )
 
     log.info(
         "Vector index rebuilt with %d docs (excluded=%d)", len(docs), excluded_count
@@ -222,24 +313,37 @@ def query_vector_index(
         matrix = matrix[keep_indices]
         docs = [docs[i] for i in keep_indices]
     log.debug("Vector search query '%s' k=%s", query, k)
-    vec = _text_to_vector(query)
+    vec = _semantic_embed(query)
     matrix_norm = matrix / (np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9)
     vec_norm = vec / (np.linalg.norm(vec) + 1e-9)
     scores = matrix_norm @ vec_norm
     top_indices = scores.argsort()[::-1][:k]
-    if return_scores:
-        results = [(docs[i], float(scores[i])) for i in top_indices]
-    else:
-        results = [docs[i] for i in top_indices]
+    base_hits = [(docs[i], float(scores[i])) for i in top_indices]
+
+    reranked = []
+    query_tokens = query.lower().split()
+    for doc, cos in base_hits:
+        meta = doc.get("metadata", {})
+        fn_tokens = str(meta.get("friendly_name", "")).lower().split()
+        overlap = 0.0
+        if query_tokens:
+            overlap = len(set(query_tokens) & set(fn_tokens)) / len(query_tokens)
+        area_match = (
+            1
+            if meta.get("area_id")
+            and str(meta.get("area_id")).lower() in query.lower()
+            else 0
+        )
+        domain_bonus = 1 if meta.get("domain") == "light" else 0
+        final = cos + BOOST_OVERLAP * overlap + BOOST_DOMAIN * domain_bonus + BOOST_AREA * area_match
+        reranked.append((doc, final))
+
+    reranked.sort(key=lambda x: x[1], reverse=True)
+    results = reranked
     log.debug(
         "Vector search results: %s",
-        [
-            (
-                r[0]["metadata"]["entity_id"]
-                if return_scores
-                else r["metadata"]["entity_id"]
-            )
-            for r in results
-        ],
+        [r[0]["metadata"].get("entity_id") for r in results],
     )
-    return results
+    if return_scores:
+        return results
+    return [r[0] for r in results]
