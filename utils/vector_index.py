@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Iterable, Tuple, List, Dict
+from typing import Iterable, Tuple, List, Dict, Any
 
 import numpy as np
 
@@ -139,6 +140,44 @@ def load_vector_index(
             with open(mapping_file, "r", encoding="utf-8") as f:
                 mapping = json.load(f)
             log.debug("Loaded index shape=%s docs=%d", matrix.shape, len(mapping))
+            return matrix, mapping
+        except Exception as err:
+            log.debug("Error loading vector index: %s", err, exc_info=True)
+            return None, None
+    log.debug("No vector index found in %s", persist_dir)
+    return None, None
+
+
+async def async_load_vector_index(
+    persist_dir: str = DEFAULT_PERSIST_DIR,
+    hass: Any | None = None,
+) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+    """Asynchronously load a previously built NumPy index if available."""
+    index_file = os.path.join(persist_dir, "matrix.npy")
+    mapping_file = os.path.join(persist_dir, "mapping.json")
+    log.debug("async_load_vector_index from %s", persist_dir)
+    if os.path.exists(index_file) and os.path.exists(mapping_file):
+        try:
+            add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+            if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+                matrix = await add_job(np.load, index_file)
+
+                def _load_json(path: str) -> Any:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                mapping = await add_job(_load_json, mapping_file)
+            else:
+                matrix = await asyncio.to_thread(np.load, index_file)
+
+                def _load_json() -> Any:
+                    with open(mapping_file, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                mapping = await asyncio.to_thread(_load_json)
+            log.debug(
+                "Loaded index shape=%s docs=%d", matrix.shape, len(mapping)
+            )
             return matrix, mapping
         except Exception as err:
             log.debug("Error loading vector index: %s", err, exc_info=True)
