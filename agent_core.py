@@ -102,23 +102,42 @@ async def plan_execute(
         return "Error initializing OpenAI client"
 
     tool_json = [_spec_to_json(t) for t in tools]
+    # system_prompt = (
+    #     "You are Special Agent, a smart‑home AI.\nTOOLS:\n"
+    #     f"{json.dumps(tool_json, indent=2)}\n"
+    #     "When an external action is required, reply ONLY with tool_calls."
+    # )
     system_prompt = (
-        "You are Special Agent, a smart‑home AI.\nTOOLS:\n"
+        "You are Special Agent, a smart‑home AI.\n"
+        "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
+        #  👇 NEW • post‑tool evaluation rules
+        "After every tool result you must:\n"
+        "• reflect on whether the observation fully answers the user’s goal;\n"
+        "• if NOT, brainstorm a *single* improved call (e.g., bigger k, re‑phrased query, "
+        "different tool) and invoke it; do this at most 2 times per user request;\n"
+        "• never repeat an identical call that has already been tried;\n"
+        "• once satisfied, talk to the user in clear, friendly language (no entity IDs unless "
+        "they asked for them) and stop.\n"
         "When an external action is required, reply ONLY with tool_calls."
     )
     log.debug("System_Prompt: %s", system_prompt)
     log.debug("User_Prompt: %s", prompt)
     log.debug("Tools_Provided: %s", tool_json)
 
+     # ----- conversation state -------------------------------------------------
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
     ]
+    tried_calls: set[tuple[str, str]] = set()   # (tool, canonicalised args)
+    retry_budget = 2                            # extra tool calls permitted
     depth = 0
+    max_depth = 6                               # 2 retries + 1 final chain ≈ 6 turns
     spec_map = {t.name: t for t in tools}
 
-    while depth < 3:
+    # ----- ReAct loop ---------------------------------------------------------
+    while depth < max_depth:
         resp = await client.chat.completions.create(
             model=model,
             messages=messages,
@@ -129,40 +148,53 @@ async def plan_execute(
         log.debug("Thought: %s", msg.content)
         log.debug("Tools_Selected: %s", msg.tool_calls)
 
+        # -- tool invocation branch -------------------------------------------
         if msg.tool_calls:
             call = msg.tool_calls[0]
-            call_name = call.function.name if hasattr(call, "function") else getattr(call, "name", None)
-            raw_json = call.function.arguments if hasattr(call, "function") else getattr(call, "arguments", None)
-            raw_args = json.loads(raw_json or "{}")
-            spec = spec_map[call_name]
-            args = spec.parameters(raw_args)  # validate
-            log.debug("Action: %s %s", call_name, args)
+            call_name = call.function.name
+            raw_json  = call.function.arguments or "{}"
+            canonical = (call_name,
+                         json.dumps(json.loads(raw_json), sort_keys=True))
 
-            # execute
+            # duplicate-call guard
+            if canonical in tried_calls:
+                log.debug("Duplicate call blocked: %s", canonical)
+                messages.append({
+                    "role": "assistant",
+                    "content": "Observation identical to previous attempt; please refine your plan."
+                })
+                continue
+            tried_calls.add(canonical)
+
+            # validate + execute
+            spec = spec_map[call_name]
+            args = spec.parameters(json.loads(raw_json))
+            log.debug("Action: %s %s", call_name, args)
             if hass and "hass" in inspect.signature(spec.func).parameters:
                 result = await spec.func(hass=hass, **args)
             else:
                 result = await spec.func(**args)
             log.debug("Observation: %s", result)
 
-            # feed back
+            # feed back into context
             msg_data = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
-            log.debug("Msg_data: %s", msg_data)
             messages.extend(
                 [
                     {"role": "assistant", **msg_data},
                     {
                         "role": "tool",
-                        "tool_call_id": getattr(call, "id", None),
+                        "tool_call_id": call.id,
                         "name": call_name,
                         "content": str(result),
                     },
                 ]
             )
             depth += 1
+            if retry_budget > 0:
+                retry_budget -= 1
             continue
 
-        # LLM produced a final answer
+        # -- normal chat response branch --------------------------------------
         return msg.content or "OK"
 
-    return "Depth‑limit reached (3)."
+    return "Depth-limit reached."
