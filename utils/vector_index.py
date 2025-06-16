@@ -9,6 +9,7 @@ import os
 import hashlib
 from pathlib import Path
 from typing import Iterable, Tuple, List, Dict, Any
+from collections import defaultdict
 
 import numpy as np
 
@@ -170,6 +171,7 @@ def build_vector_index(
     docs = []
     vectors = []
     excluded_count = 0
+    area_summary: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for st in states:
         entity_id = st.get("entity_id", "")
         domain = st.get("domain") or entity_id.split(".")[0]
@@ -191,6 +193,8 @@ def build_vector_index(
         }
         docs.append({"page_content": text, "metadata": meta})
         vectors.append(vec)
+        area = meta.get("area_id") or "Unassigned"
+        area_summary[str(area)][domain] += 1
 
     if not vectors:
         log.debug("No vectors generated; raising error")
@@ -206,7 +210,12 @@ def build_vector_index(
     log.debug("Writing meta to %s", meta_file)
     with open(meta_file, "w", encoding="utf-8") as f:
         json.dump(
-            {"excluded_count": excluded_count, "embedding_model": EMBED_MODEL}, f
+            {
+                "excluded_count": excluded_count,
+                "embedding_model": EMBED_MODEL,
+                "area_summary": {a: dict(d) for a, d in area_summary.items()},
+            },
+            f,
         )
 
     log.info(
