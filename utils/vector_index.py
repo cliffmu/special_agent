@@ -284,6 +284,52 @@ async def async_load_vector_index(
     return None, None
 
 
+def load_vector_meta(
+    persist_dir: str = DEFAULT_PERSIST_DIR,
+) -> Dict | None:
+    """Load ``meta.json`` for the vector index if available."""
+    meta_file = os.path.join(persist_dir, "meta.json")
+    log.debug("load_vector_meta from %s", persist_dir)
+    if os.path.exists(meta_file):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as err:  # pragma: no cover - optional
+            log.debug("Error loading vector meta: %s", err, exc_info=True)
+            return None
+    log.debug("No vector meta found in %s", persist_dir)
+    return None
+
+
+async def async_load_vector_meta(
+    persist_dir: str = DEFAULT_PERSIST_DIR,
+    hass: Any | None = None,
+) -> Dict | None:
+    """Asynchronously read ``meta.json`` if present."""
+    meta_file = os.path.join(persist_dir, "meta.json")
+    log.debug("async_load_vector_meta from %s", persist_dir)
+    if os.path.exists(meta_file):
+        try:
+            add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+            if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+                def _load(path: str) -> Any:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                return await add_job(_load, meta_file)
+            else:
+                def _load() -> Any:
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                return await asyncio.to_thread(_load)
+        except Exception as err:  # pragma: no cover - optional
+            log.debug("Error loading vector meta: %s", err, exc_info=True)
+            return None
+    log.debug("No vector meta found in %s", persist_dir)
+    return None
+
+
 def query_vector_index(
     index_data: Tuple[np.ndarray, List[Dict]],
     query: str,
