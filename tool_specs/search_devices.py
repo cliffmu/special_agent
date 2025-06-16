@@ -7,7 +7,10 @@ from typing import List, Any
 
 import voluptuous as vol
 
-from ..utils.vector_index import load_vector_index, query_vector_index
+from ..utils.vector_index import (
+    async_load_vector_index,
+    async_query_vector_index,
+)
 from ..agent_core import ToolSpec
 from ..utils import logging as log
 
@@ -29,15 +32,18 @@ async def search_devices(
     area: str | None = None,
     domain: str | list[str] | None = None,
     k: int = 5,
+    hass: Any | None = None,
 ) -> List[str]:
     """Return entity_ids matching the query with optional metadata filters."""
-    index_data = load_vector_index()
+    index_data = await async_load_vector_index(hass=hass)
     filters: dict[str, Any] = {}
     if area:
         filters["area_id"] = area
     if domain:
         filters["domain"] = domain
-    hits = query_vector_index(index_data, query, k, filters)
+    hits = await async_query_vector_index(
+        index_data, query, k, filters, hass=hass
+    )
     return [h["metadata"].get("entity_id", "") for h in hits]
 
 

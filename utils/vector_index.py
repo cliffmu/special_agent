@@ -347,3 +347,22 @@ def query_vector_index(
     if return_scores:
         return results
     return [r[0] for r in results]
+
+
+async def async_query_vector_index(
+    index_data: Tuple[np.ndarray, List[Dict]],
+    query: str,
+    k: int = 5,
+    filters: Dict[str, Any] | None = None,
+    return_scores: bool = False,
+    hass: Any | None = None,
+) -> List[Dict] | List[Tuple[Dict, float]]:
+    """Run ``query_vector_index`` in an executor thread."""
+    add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+    if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+        return await add_job(
+            query_vector_index, index_data, query, k, filters, return_scores
+        )
+    return await asyncio.to_thread(
+        query_vector_index, index_data, query, k, filters, return_scores
+    )
