@@ -1,6 +1,7 @@
 import json
 
 from special_agent.utils.vector_index import build_vector_index
+from special_agent.utils import constants
 
 
 def test_vector_meta(tmp_path):
@@ -26,3 +27,4 @@ def test_vector_meta(tmp_path):
         meta = json.load(f)
 
     assert meta.get("excluded_count", 0) > 0
+    assert meta.get("embedding_model") == constants.EMBED_MODEL
