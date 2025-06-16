@@ -9,7 +9,7 @@ import voluptuous as vol
 
 from ..utils import logging as log
 from ..utils.constants import EXCLUDED_DOMAINS, PREFERRED_DOMAINS, LOCATION_WORDS
-from ..utils.vector_index import load_vector_index, query_vector_index
+from ..utils.vector_index import async_load_vector_index, query_vector_index
 from ..agent_core import ToolSpec
 
 _LOGGER = logging.getLogger(__package__)
@@ -25,7 +25,7 @@ PARAMS = vol.Schema(
 
 async def search_devices(query: str, k: int = 5) -> List[str]:
     """Return entity_ids matching the query from the vector index."""
-    index_data = load_vector_index()
+    index_data = await async_load_vector_index()
     raw_results = query_vector_index(index_data, query, k, return_scores=True)
 
     tokens = {t.rstrip('s') for t in query.lower().split()}
