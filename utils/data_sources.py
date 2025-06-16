@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 try:  # Home Assistant may be absent during testing
     from homeassistant.core import HomeAssistant
@@ -60,6 +60,54 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
 
     log.debug("get_ha_states: returning %d states", len(devices))
     return devices
+
+
+def resolve_entity_metadata(
+    hass: HomeAssistant, entity_id: str
+) -> Tuple[str | None, str | None]:
+    """Return ``(area_id, friendly_name)`` for an entity via registries."""
+    area_id = None
+    friendly_name = None
+
+    try:
+        state = hass.states.get(entity_id)
+    except Exception:  # pragma: no cover - mocked hass may lack .states
+        state = None
+
+    entity_reg = er.async_get(hass) if er else None
+    device_reg = dr.async_get(hass) if dr else None
+
+    if entity_reg:
+        ent_entry = entity_reg.entities.get(entity_id)
+        if ent_entry:
+            friendly_name = getattr(ent_entry, "original_name", None) or getattr(
+                ent_entry, "name", None
+            )
+            if ent_entry.device_id and device_reg:
+                dev_entry = device_reg.devices.get(ent_entry.device_id)
+                if dev_entry:
+                    area_id = dev_entry.area_id
+
+    if area_id is None and state is not None:
+        area_id = state.attributes.get("area_id")
+    if friendly_name is None and state is not None:
+        friendly_name = state.attributes.get("friendly_name") or state.name
+
+    return area_id, friendly_name
+
+
+def enrich_states_metadata(hass: HomeAssistant, states: Iterable[Dict]) -> List[Dict]:
+    """Update a list of state dicts in place with area_id and friendly name."""
+    result = []
+    for st in states:
+        area_id, friendly = resolve_entity_metadata(hass, st.get("entity_id", ""))
+        if area_id is not None:
+            st["area_id"] = area_id
+        if friendly and isinstance(st.get("attributes"), dict):
+            st.setdefault("attributes", {})
+            st["attributes"].setdefault("friendly_name", friendly)
+        result.append(st)
+    return result
 
 
 async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
