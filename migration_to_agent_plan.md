@@ -1,4 +1,4 @@
-# Special Agent — Agent‑Based Migration Plan (v5.2, **self‑contained**)
+# Special Agent — Agent‑Based Migration Plan (v5.3, **self‑contained**)
 
 *This file supersedes every earlier draft (v4.0 and v5.1).  
 It preserves all content present in v4.0, retains the deeper tool specs from v5.0/5.1, **adds the new `learn_preferences` tool**, and relegates heavier ML features to a far‑future roadmap phase.*
@@ -90,7 +90,9 @@ class ToolSpec:
 Heuristic unchanged; o3‑pro pricing: $20 /M in, $80 /M out vs $2 / $8 for o3‑mini :contentReference[oaicite:5]{index=5}.
 
 ### 3.3 Entity retrieval & vector indexes  
-Global + per‑area NumPy sub‑indexes; auto‑refresh via `build_vector_index` :contentReference[oaicite:6]{index=6}.
+    • v2 metadata enrichment – every vector now carries `domain`, `area_id`, `friendly_name`; index files include `meta.json` with build params.
+    • v3 semantic embeddings – hash buckets replaced by OpenAI text‑embedding‑3‑small (1536‑d) with local MiniLM fallback.
+    • v3 filtered & hybrid retrieval – `query_vector_index()` supports metadata masks and a lexical tie‑breaker for precision at k.
 
 ---
 
@@ -100,11 +102,11 @@ Global + per‑area NumPy sub‑indexes; auto‑refresh via `build_vector_index`
 |------|------|--------|---------------------|-----------|---------|
 | 1 | `control_device` | `service, data` | `hass.services.async_call`  | none | `"OK"` / error |
 | 2 | `confirm_action` | `action, targets` | Formats question; tiny LLM for wording | **mini** (< 50 tok) | question |
-| 3 | `search_devices` | `query, area?, k` | FAISS cosine search on **area sub‑index**  | none | `[entity_id]` |
+| 3 | `search_devices` | `query, area?, domain?, k` | Filtered cosine search (metadata mask ➜ top‑k, lexical boost)**  | none | `[entity_id]` |
 | 4 | **`generate_scene`** | `intent, area` | (a) `preference_manager.get`; (b) 3×`search_devices` (lights, media_player, switches); (c) compose command list; (d) optional `scene.create`  | none | `commands_list` |
 | 5 | **`area_iterator`** | `intent` | Loops HA area registry , calls `generate_scene`; dedup; merge | none | big `commands_list` |
 | 6 | `preference_manager` | `user, area, key, mode` | Read/modify JSON store  | none | value |
-| 7 | `build_vector_index` | `{force?:bool}` | Loads HA states; filters domains; builds / updates FAISS index on disk; stores timestamp | none | `"rebuilt"` |
+| 7 | `build_vector_index` | `{force?:bool}` | Pull HA states → embed 1536‑d → save matrix, mapping, meta | none | `"rebuilt"` |
 | 8 | `ask_user` | `question` | Stores pending session | none | question |
 | 9 | `get_weather` | `location?` | Sensor + external API; template answer  | **mini** (< 100 tok) | forecast |
 |10 | `search_spotify` | `query, type` | HTTP to Spotify `/search`  | none | URI |
@@ -158,6 +160,9 @@ RULES:
 | **1b**    | Vector‑index utilities (`utils/vector_index.py`)                                                                                                                                           | `.npy` file exists                                                                    |
 | **2** ★   | **Minimal ReAct loop** + wrappers for *existing* utilities (`build_vector_index`, `search_devices` stub)<br>— Register specs<br>— Implement `plan_execute` with function‑calling JSON mode | Prompt “Rebuild the database.” → agent emits tool call and returns `"rebuilt"` string |
 | **2b**    | Nightly cron invoking `build_vector_index`                                                                                                                                                 | CLI completes <30 s                                                                   |
+| **2c**    | **Metadata enrichment** (area/domain) in index + migration script | Rebuild adds non‑null `area_id`; old mapping upgraded   |
+| **2d**    | **Filtered `search_devices`** tool                                | Query “office light” (area=office) returns light entity |
+| **2e**    | **Embedding upgrade + hybrid scorer**                             | Rebuild uses 1536‑d; similarity tests pass              |
 | **3**     | **Control MVP** (`confirm_action`, `control_device`); reuse ReAct core                                                                                                                     | “Turn on kitchen light” → confirm → call                                              |
 | **3b**    | Info tools (`get_weather`, `search_spotify`)                                                                                                                                               | “Weather?” → spoken response                                                          |
 | **4**     | Clarification loop (`ask_user`)                                                                                                                                                            | Ambiguous request triggers follow‑up                                                  |
