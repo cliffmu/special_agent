@@ -1,0 +1,1 @@
+I have a prototype version of the project saved in REFERENCE folder. Look at that for examples of how certain code worked but I'm working on migrating this project to an AI agent based tool. Details for the migration are in migration_to_agent_plan.md. Look at that file first as it details the project, features and development roadmap.
