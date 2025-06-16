@@ -117,7 +117,7 @@ async def plan_execute(
         "• if NOT, brainstorm a *single* improved call (e.g., bigger k, re‑phrased query, "
         "different tool) and invoke it; do this at most 2 times per user request;\n"
         "• never repeat an identical call that has already been tried;\n"
-        "• once satisfied, talk to the user in clear, friendly language (no entity IDs unless "
+        "• once satisfied, talk to the user in clear, friendly language designed to be spoken aloud to concisely convey information without symbols (no entity IDs unless "
         "they asked for them) and stop.\n"
         "When an external action is required, reply ONLY with tool_calls."
     )
