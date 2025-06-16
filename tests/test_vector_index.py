@@ -1,4 +1,5 @@
 import os
+import json
 from utils.vector_index import build_vector_index, load_vector_index, query_vector_index
 
 
@@ -33,3 +34,30 @@ def test_build_vector_index_includes_area(tmp_path):
     _, docs = build_vector_index(states, persist_dir=str(persist))
 
     assert docs[0]["metadata"].get("area_id") == "bedroom"
+
+
+def test_mapping_contains_light_area(tmp_path):
+    states = [
+        {
+            "entity_id": "light.kitchen_ceiling",
+            "name": "Kitchen Ceiling",
+            "attributes": {"friendly_name": "Kitchen Ceiling"},
+            "area_id": "kitchen",
+        },
+        {
+            "entity_id": "switch.outlet",
+            "name": "Outlet",
+            "attributes": {"friendly_name": "Outlet"},
+        },
+    ]
+
+    persist = tmp_path / "index_check"
+    build_vector_index(states, persist_dir=str(persist))
+
+    with open(persist / "mapping.json", encoding="utf-8") as f:
+        mapping = json.load(f)
+
+    assert any(
+        doc["metadata"].get("domain") == "light" and doc["metadata"].get("area_id")
+        for doc in mapping
+    )
