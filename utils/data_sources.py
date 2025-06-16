@@ -21,21 +21,43 @@ _LOGGER = logging.getLogger(__package__)
 
 
 def get_ha_states(hass: HomeAssistant) -> List[Dict]:
-    """Return conversation-exposed states from Home Assistant."""
+    """Return conversation-exposed states from Home Assistant.
+
+    In addition to the basic state info, this function attempts to
+    resolve the ``area_id`` for each entity via the entity and device
+    registries.  When running tests or if the registries are not
+    available, ``area_id`` will be ``None``.
+    """
     log.debug("get_ha_states: fetching states")
+
+    # Registries may be unavailable when running unit tests
+    entity_reg = er.async_get(hass) if er else None
+    device_reg = dr.async_get(hass) if dr else None
+
     devices: List[Dict] = []
     for state in hass.states.all():
         exposed = state.attributes.get("conversation_exposed", True)
-        # log.debug("State %s exposed=%s", state.entity_id, exposed)
-        if exposed:
-            devices.append(
-                {
-                    "entity_id": state.entity_id,
-                    "name": state.name,
-                    "attributes": state.attributes,
-                    "domain": state.domain,
-                }
-            )
+        if not exposed:
+            continue
+
+        area_id = None
+        if entity_reg and device_reg:
+            ent_entry = entity_reg.entities.get(state.entity_id)
+            if ent_entry and ent_entry.device_id:
+                dev_entry = device_reg.devices.get(ent_entry.device_id)
+                if dev_entry:
+                    area_id = dev_entry.area_id
+
+        devices.append(
+            {
+                "entity_id": state.entity_id,
+                "name": state.name,
+                "attributes": state.attributes,
+                "domain": state.domain,
+                "area_id": area_id,
+            }
+        )
+
     log.debug("get_ha_states: returning %d states", len(devices))
     return devices
 

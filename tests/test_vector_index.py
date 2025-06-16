@@ -17,3 +17,19 @@ def test_build_and_query_vector_index(tmp_path):
     results = query_vector_index(loaded, "kitchen", k=2)
     ids = [r["metadata"]["entity_id"] for r in results]
     assert "light.kitchen" in ids
+
+
+def test_build_vector_index_includes_area(tmp_path):
+    states = [
+        {
+            "entity_id": "light.bedroom",
+            "name": "Bedroom Light",
+            "attributes": {"friendly_name": "Bedroom Light"},
+            "area_id": "bedroom",
+        }
+    ]
+
+    persist = tmp_path / "index_area"
+    _, docs = build_vector_index(states, persist_dir=str(persist))
+
+    assert docs[0]["metadata"].get("area_id") == "bedroom"

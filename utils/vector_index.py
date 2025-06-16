@@ -96,7 +96,9 @@ def build_vector_index(
         meta = {
             "entity_id": entity_id,
             "friendly_name": st.get("attributes", {}).get("friendly_name"),
-            "area_id": st.get("attributes", {}).get("area_id"),
+            # Prefer top-level area_id injected by get_ha_states; fall back to
+            # any value stored under attributes for backward compatibility.
+            "area_id": st.get("area_id") or st.get("attributes", {}).get("area_id"),
             "domain": domain,
         }
         docs.append({"page_content": text, "metadata": meta})
