@@ -89,41 +89,49 @@ async def plan_execute(
     prompt: str,
     tools: List[ToolSpec],
     hass: Optional[Any] = None,
-    model: str = "o4-mini",
+    model: str = "o4-mini",          # ← your tweak #1
+    goals: Optional[List[str]] = None,   # ← new (can be None)
 ) -> str:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
 
+    # ---- OpenAI client ----
     try:
         from .utils.openai_client import get_async_client
         client = await get_async_client(hass)
-    except Exception as err:  # pragma: no cover - openai optional
+    except Exception as err:                       # pragma: no cover
         log.error("OpenAI client init failed: %s", err)
         return "Error initializing OpenAI client"
 
+    # ---- build system prompt ----
     tool_json = [_spec_to_json(t) for t in tools]
-    # system_prompt = (
-    #     "You are Special Agent, a smart‑home AI.\nTOOLS:\n"
-    #     f"{json.dumps(tool_json, indent=2)}\n"
-    #     "When an external action is required, reply ONLY with tool_calls."
-    # )
+    goals_block = ""
+    if goals:
+        goals_fmt = "\n".join(f"{idx+1}. {g}" for idx, g in enumerate(goals))
+        goals_block = f"\nGOALS:\n{goals_fmt}\n"
+
     system_prompt = (
         "You are Special Agent, a smart‑home AI.\n"
+        f"{goals_block}"
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
         "After every tool result you must:\n"
-        "• reflect on whether the observation fully answers the user’s goal;\n"
-        "• if NOT, brainstorm ONE improved call (re‑phrase query, bigger k, etc.) and invoke it; "
-        "do this at most 2 times per user request;\n"
+        "• reflect on whether the observation fully answers the user’s goal and, if goals "
+        "are listed, mark completed goals as (done);\n"
+        "• include a 0‑100 % confidence score in the form 'Confidence: NN%';\n"
+        "• if NOT satisfied, brainstorm ONE improved call (re‑phrase query, bigger k, etc.) "
+        "and invoke it; do this at most 2 times per user request;\n"
         "• never repeat an identical call already tried;\n"
-        "• write your reflection in a short paragraph that starts with 'Thought:' and then include "
-        "the tool_calls object in the same message;\n"
-        "• once satisfied, talk to the user in clear, friendly language designed to be spoken aloud to concisely convey information without symbols (no entity IDs unless "
-        "When an external action is required, you MAY include both a Thought and tool_calls."
+        "• once satisfied, talk to the user in clear, friendly language designed to be spoken "
+        "aloud to concisely convey information without symbols (no entity IDs unless they "
+        "explicitly asked for them) and stop.\n"
+        "When an external action is required, you MAY include both a Thought paragraph and "
+        "tool_calls in the same message."
     )
+
     log.debug("System_Prompt: %s", system_prompt)
     log.debug("User_Prompt: %s", prompt)
-    log.debug("Tools_Provided: %s", tool_json)
+    log.debug("Tools_Provided: %s", tool_json)     # ← your tweak #2
 
     # ---- state ----
     messages = [
@@ -133,10 +141,24 @@ async def plan_execute(
     tried_calls: set[tuple[str, str]] = set()
     retry_budget = 2
     depth = 0
-    max_depth = 7                              # room for 1‑2 retries + final answer
+    max_depth = 7
     spec_map = {t.name: t for t in tools}
 
-    # ---- loop ----
+    # ---- helper: summarise observation ----
+    def _summarise(result: Any) -> str:
+        try:
+            if isinstance(result, list):
+                head = ", ".join(map(str, result[:5]))
+                return f"{len(result)} items: {head}{' …' if len(result) > 5 else ''}"
+            if isinstance(result, dict):
+                keys = list(result.keys())[:5]
+                return f"dict with {len(result)} keys: {', '.join(keys)}{' …' if len(result) > 5 else ''}"
+            txt = str(result)
+            return txt if len(txt) <= 200 else txt[:200] + " …"
+        except Exception as err:           # pragma: no cover
+            return f"(summary error: {err})"
+
+    # ---- main loop ----
     while depth < max_depth:
         resp = await client.chat.completions.create(
             model=model,
@@ -145,16 +167,11 @@ async def plan_execute(
             tool_choice="auto",
         )
         msg = resp.choices[0].message
-        log.debug("Raw assistant msg: %s", msg)
-        log.debug("Thought: %s", msg.content)
-        log.debug("Tools_Selected: %s", msg.tool_calls)
+        log.debug("Thought: %s", msg.content)      # ← your tweak #3
+        log.debug("Tools_Selected: %s", msg.tool_calls)   # ← your tweak #3
 
-        # ----- tool branch -----
+        # ---------- tool branch ----------
         if msg.tool_calls:
-            # log the model’s internal thought if any
-            if msg.content:
-                log.debug("Thought: %s", msg.content)
-
             call = msg.tool_calls[0]
             call_name = call.function.name
             raw_json  = call.function.arguments or "{}"
@@ -163,16 +180,30 @@ async def plan_execute(
             # duplicate guard
             if canonical in tried_calls:
                 log.debug("Duplicate call blocked: %s", canonical)
-                messages.append({
-                    "role": "assistant",
-                    "content": "Thought: Duplicate of previous attempt; refining…"
-                })
+                messages.append(
+                    {"role": "assistant",
+                     "content": "Thought: Duplicate of previous attempt; refining… Confidence: 30%"}
+                )
                 continue
             tried_calls.add(canonical)
 
             # validate & execute
-            spec = spec_map[call_name]
-            args = spec.parameters(json.loads(raw_json))
+            try:
+                spec = spec_map[call_name]
+                args = spec.parameters(json.loads(raw_json))   # validate
+            except Exception as err:         # ← catches MultipleInvalid and others
+                log.debug("Validation error: %s", err)
+                messages.append({
+                    "role": "assistant",
+                    "content": (
+                        "Thought: Tool arguments were invalid "
+                        f"(`{err}`); please supply the missing or "
+                        "malformed fields and try again. Confidence: 25%"
+                    )
+                })
+                # do NOT decrement retry_budget or depth; let the model fix itself
+                continue
+            # ---------------------------------------------
             log.debug("Action: %s %s", call_name, args)
             if hass and "hass" in inspect.signature(spec.func).parameters:
                 result = await spec.func(hass=hass, **args)
@@ -180,7 +211,8 @@ async def plan_execute(
                 result = await spec.func(**args)
             log.debug("Observation: %s", result)
 
-            # feed back
+            # feed back – store SUMMARISED observation
+            observation_summary = _summarise(result)
             msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
             messages.extend(
                 [
@@ -189,7 +221,7 @@ async def plan_execute(
                         "role": "tool",
                         "tool_call_id": call.id,
                         "name": call_name,
-                        "content": str(result),
+                        "content": observation_summary,
                     },
                 ]
             )
@@ -198,7 +230,8 @@ async def plan_execute(
                 retry_budget -= 1
             continue
 
-        # ----- final answer -----
+        # ---------- final answer ----------
         return msg.content or "OK"
 
     return "Depth‑limit reached."
+
