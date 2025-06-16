@@ -49,7 +49,7 @@ async def search_devices(
 
 SPEC = ToolSpec(
     name="search_devices",
-    description="Find matching Home Assistant entities by text query.",
+    description="Find matching Home Assistant entities by text query. This tool *always* needs a non-empty 'query' string (e.g. 'lights').",
     parameters=PARAMS,
     returns="list of entity_ids",
     func=search_devices,
