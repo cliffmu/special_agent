@@ -113,6 +113,9 @@ async def plan_execute(
     system_prompt = (
         "You are Special Agent, a smart‑home AI.\n"
         f"{goals_block}"
+        "You have an index summary of the home:\n"
+        f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
+        "If you plan to call search_devices, use this data to choose the most likely area and domain names, and pick k slightly larger than the expected count."
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
         "After every tool result you must:\n"
