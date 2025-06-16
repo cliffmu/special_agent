@@ -11,6 +11,7 @@ from ..utils.vector_index import (
     async_load_vector_index,
     async_query_vector_index,
 )
+from ..utils.constants import MAX_SEARCH_K
 from ..agent_core import ToolSpec
 from ..utils import logging as log
 
@@ -35,6 +36,7 @@ async def search_devices(
     hass: Any | None = None,
 ) -> List[str]:
     """Return entity_ids matching the query with optional metadata filters."""
+    k = min(k, MAX_SEARCH_K)
     index_data = await async_load_vector_index(hass=hass)
     filters: dict[str, Any] = {}
     if area:
@@ -49,7 +51,11 @@ async def search_devices(
 
 SPEC = ToolSpec(
     name="search_devices",
-    description="Find matching Home Assistant entities by text query. This tool *always* needs a non-empty 'query' string (e.g. 'lights').",
+    description=(
+        f"Find matching Home Assistant entities by text query. "
+        f"This tool *always* needs a non-empty 'query' string (e.g. 'lights'). "
+        f"Parameter 'k' is capped at {MAX_SEARCH_K}."
+    ),
     parameters=PARAMS,
     returns="list of entity_ids",
     func=search_devices,
