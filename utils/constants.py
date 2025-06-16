@@ -89,3 +89,10 @@ EXCLUDED_SUFFIXES = ("_led", "_powertype", "_internaltemperature")
 # wake_word
 # weather
 # zone
+
+EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIM = 1536
+FALLBACK_MODEL = "all-MiniLM-L6-v2"
+BOOST_DOMAIN = 0.20
+BOOST_AREA = 0.10
+BOOST_OVERLAP = 0.30
