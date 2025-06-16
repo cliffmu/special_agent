@@ -29,6 +29,7 @@ PREFERRED_DOMAINS = {
     "fan",
     "media_player",
     "climate",
+    # "switch",
     "cover",
     "lock",
     "remote",
