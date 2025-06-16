@@ -61,3 +61,37 @@ def test_mapping_contains_light_area(tmp_path):
         doc["metadata"].get("domain") == "light" and doc["metadata"].get("area_id")
         for doc in mapping
     )
+
+
+def test_query_vector_index_with_filters(tmp_path):
+    states = [
+        {
+            "entity_id": "light.office_ceiling",
+            "name": "Office Ceiling",
+            "attributes": {"friendly_name": "Office Ceiling"},
+            "area_id": "office",
+            "domain": "light",
+        },
+        {
+            "entity_id": "switch.office_fan",
+            "name": "Office Fan",
+            "attributes": {"friendly_name": "Office Fan"},
+            "area_id": "office",
+            "domain": "switch",
+        },
+    ]
+
+    persist = tmp_path / "index_filter"
+    index = build_vector_index(states, persist_dir=str(persist))
+
+    results = query_vector_index(
+        index,
+        "office light",
+        k=5,
+        filters={"area_id": "office", "domain": "light"},
+    )
+
+    assert any(
+        r["metadata"].get("domain") == "light" and "office" in (r["metadata"].get("area_id") or "")
+        for r in results
+    )
