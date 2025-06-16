@@ -52,7 +52,7 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
             {
                 "entity_id": state.entity_id,
                 "name": state.name,
-                "attributes": state.attributes,
+                "attributes": dict(state.attributes),
                 "domain": state.domain,
                 "area_id": area_id,
             }
