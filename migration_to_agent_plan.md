@@ -165,6 +165,9 @@ RULES:
 | **2e**    | **Embedding upgrade + hybrid scorer**                             | Rebuild uses 1536‑d; similarity tests pass              |
 | **3**     | **Control MVP** (`confirm_action`, `control_device`); reuse ReAct core                                                                                                                     | “Turn on kitchen light” → confirm → call                                              |
 | **3b**    | Info tools (`get_weather`, `search_spotify`)                                                                                                                                               | “Weather?” → spoken response                                                          |
+| **3c**    | Harden tool schemas (real JSON export)
+
+                                         | Arrays & nested dicts validated |
 | **4**     | Clarification loop (`ask_user`)                                                                                                                                                            | Ambiguous request triggers follow‑up                                                  |
 | **4b**    | `preference_manager`                                                                                                                                                                       | Set & recall 8 % brightness                                                           |
 | **4c**    | `generate_scene` + `area_iterator`                                                                                                                                                         | “Good night” scene                                                                    |
