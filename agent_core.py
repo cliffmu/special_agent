@@ -177,9 +177,9 @@ async def plan_execute(
             # temperature=0.4,
         )
         msg = resp.choices[0].message
-        log.debug("Thought: %s", msg.content)      # ← your tweak #3
-        log.debug("Tools_Selected: %s", msg.tool_calls)   # ← your tweak #3
-        log.debug("MSG: %s", msg)
+        log.debug("AI_Response_Content: %s", msg.content)      # ← your tweak #3
+        log.debug("AI_Response_Tools_Selected: %s, Arguments: %s", msg.tool_calls.function.name, msg.tool_calls.function.arguments)   # ← your tweak #3
+        log.debug("AI_Response_Full: %s", msg)
 
         # ---------- tool branch ----------
         if msg.tool_calls:
@@ -220,11 +220,9 @@ async def plan_execute(
                 result = await spec.func(hass=hass, **args)
             else:
                 result = await spec.func(**args)
-            log.debug("Observation: %s", result)
 
             # feed back – store SUMMARISED observation
-            observation_summary = _summarise(result)
-            log.debug("Observation Summary: %s", observation_summary)
+            content_summary = _summarise(result)
             msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
             messages.extend(
                 [
@@ -233,11 +231,10 @@ async def plan_execute(
                         "role": "tool",
                         "tool_call_id": call.id,
                         "name": call_name,
-                        "content": observation_summary,
+                        "content": content_summary,
                     },
                 ]
             )
-            log.debug("Messages: %s", messages)
             depth += 1
             if retry_budget > 0:
                 retry_budget -= 1
