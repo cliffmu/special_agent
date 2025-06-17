@@ -39,8 +39,6 @@ class Agent:
         for mod in (
             "tool_specs.build_vector_index",  # always present
             "tool_specs.search_devices",      # optional / future
-            "tool_specs.confirm_action",      # phase 3
-            "tool_specs.control_device",      # phase 3
         ):
             module_name = f"{base}.{mod}" if base else mod
             try:
@@ -174,7 +172,7 @@ async def plan_execute(
             messages=messages,
             tools=tool_json,
             tool_choice="auto",
-            # temperature=0.4,
+            temperature=0.4,
         )
         msg = resp.choices[0].message
         log.debug("Thought: %s", msg.content)      # ← your tweak #3
