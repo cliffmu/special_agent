@@ -117,7 +117,7 @@ async def plan_execute(
 
     system_prompt = (
         "You are Special Agent, a smart‑home AI.\n"
-        "You MUST include a Thought paragraph every time you send tool_calls; if omitted I will assume the message failed.\n"
+        "When you call any tool you MUST include, in the SAME assistant message: 1) a line that begins with ‘Thought:’ summarising why you are calling the tool; and 2) the tool_calls object. Failure to comply means you will be asked to resend.\n"
         f"{goals_block}"
         "You have an index summary of the home with count of entity types for each area:\n"
         f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
