@@ -174,7 +174,7 @@ async def plan_execute(
             messages=messages,
             tools=tool_json,
             tool_choice="auto",
-            temperature=0.4,
+            # temperature=0.4,
         )
         msg = resp.choices[0].message
         log.debug("Thought: %s", msg.content)      # ← your tweak #3
