@@ -117,7 +117,7 @@ async def plan_execute(
         "You are Special Agent, a smart‑home AI.\n"
         "You MUST include a Thought paragraph every time you send tool_calls; if omitted I will assume the message failed.\n"
         f"{goals_block}"
-        "You have an index summary of the home:\n"
+        "You have an index summary of the home with count of entity types for each area:\n"
         f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
         "If you plan to call search_devices, use this data to choose the most likely area and domain names, and pick k slightly larger than the expected count."
         "TOOLS:\n"
