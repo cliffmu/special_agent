@@ -62,27 +62,70 @@ class Agent:
         )
 
 # ----------  helpers ----------
-_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
+_JSON_TYPES = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    dict: "object",
+    list: "array",
+}
+
+
+def _schema_to_json(value: Any) -> Dict:
+    """Recursively convert a Voluptuous schema into JSON Schema."""
+    import voluptuous as vol
+
+    if isinstance(value, vol.Schema):
+        value = value.schema
+
+    if isinstance(value, dict):
+        props: Dict[str, Any] = {}
+        required: list[str] = []
+        for k, v in value.items():
+            name = k.schema if isinstance(k, (vol.Required, vol.Optional)) else k
+            if isinstance(k, vol.Required):
+                required.append(str(name))
+            prop_schema = _schema_to_json(v)
+            if isinstance(k, (vol.Optional, vol.Required)) and k.default is not vol.UNDEFINED:
+                prop_schema["default"] = k.default()
+            props[str(name)] = prop_schema
+        result: Dict[str, Any] = {"type": "object", "properties": props}
+        if required:
+            result["required"] = required
+        return result
+
+    if isinstance(value, list):
+        item_schema = _schema_to_json(value[0]) if value else {}
+        return {"type": "array", "items": item_schema}
+
+    if isinstance(value, vol.Any):
+        return {"oneOf": [_schema_to_json(v) for v in value.validators if v is not None]}
+
+    if isinstance(value, vol.All):
+        schema: Dict[str, Any] = {}
+        for v in value.validators:
+            schema.update(_schema_to_json(v))
+        return schema
+
+    if isinstance(value, vol.Coerce):
+        return _schema_to_json(value.type)
+
+    if isinstance(value, type):
+        return {"type": _JSON_TYPES.get(value, "string")}
+
+    return {"type": _JSON_TYPES.get(type(value), "string")}
+
 
 def _spec_to_json(spec: ToolSpec) -> Dict:
     """Translate Voluptuous schema → JSON schema for OpenAI."""
-    props = {}
-    for key, validator in spec.parameters.schema.items():
-        # crudely map Python/voluptuous validators to JSON Schema types
-        py_type = None
-        if isinstance(validator, type):
-            py_type = validator
-        else:
-            py_type = getattr(validator, "type", None)
-        if py_type is None:
-            py_type = str
-        props[str(key)] = {"type": _JSON_TYPES.get(py_type, "string")}
+    params_schema = _schema_to_json(spec.parameters)
     return {
         "type": "function",
         "function": {
             "name": spec.name,
             "description": spec.description,
-            "parameters": {"type": "object", "properties": props},
+            "parameters": params_schema,
         },
     }
 
@@ -124,6 +167,12 @@ async def plan_execute(
         "If you plan to call search_devices, use this data to choose the most likely area and domain names, and pick k slightly larger than the expected count."
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
+        "Example tool_calls JSON: [\n"
+        "  {\"type\": \"function\", \"function\": {\n"
+        "    \"name\": \"confirm_action\",\n"
+        "    \"arguments\": {\"action\": \"turn off\", \"targets\": [\"light.kitchen\"]}\n"
+        "  }}\n"
+        "]\n"
         "After every tool result you must:\n"
         "• reflect on whether the observation fully answers the user’s goal and, if goals "
         "are listed, mark completed goals as (done);\n"
