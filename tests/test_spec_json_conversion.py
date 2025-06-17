@@ -26,3 +26,25 @@ def test_bool_parameter_serialized_as_boolean():
     )
 
 
+def test_array_and_object_serialization():
+    complex_spec = ToolSpec(
+        name="dummy", 
+        description="",
+        parameters=vol.Schema(
+            {
+                vol.Required("targets"): [str],
+                vol.Optional("opts"): {vol.Required("mode"): str},
+            }
+        ),
+        returns=None,
+        func=dummy_func,
+    )
+    js = _spec_to_json(complex_spec)
+    params = js["function"]["parameters"]
+    assert params["properties"]["targets"]["type"] == "array"
+    assert params["properties"]["targets"]["items"]["type"] == "string"
+    assert params["properties"]["opts"]["type"] == "object"
+    assert params["properties"]["opts"]["properties"]["mode"]["type"] == "string"
+    assert "targets" in params["required"]
+
+
