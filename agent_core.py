@@ -244,6 +244,7 @@ async def plan_execute(
             continue
 
         # ---------- final answer ----------
+        log.debug("Final Message: %s", messages)
         return msg.content or "OK"
 
     return "Depth‑limit reached."
