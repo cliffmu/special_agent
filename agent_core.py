@@ -172,10 +172,12 @@ async def plan_execute(
             messages=messages,
             tools=tool_json,
             tool_choice="auto",
+            temperature=0.4,
         )
         msg = resp.choices[0].message
         log.debug("Thought: %s", msg.content)      # ← your tweak #3
         log.debug("Tools_Selected: %s", msg.tool_calls)   # ← your tweak #3
+        log.debug("MSG: %s", msg)
 
         # ---------- tool branch ----------
         if msg.tool_calls:
@@ -220,6 +222,7 @@ async def plan_execute(
 
             # feed back – store SUMMARISED observation
             observation_summary = _summarise(result)
+            log.debug("Observation Summary: %s", observation_summary)
             msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
             messages.extend(
                 [
@@ -232,6 +235,7 @@ async def plan_execute(
                     },
                 ]
             )
+            log.debug("Messages: %s", messages)
             depth += 1
             if retry_budget > 0:
                 retry_budget -= 1
