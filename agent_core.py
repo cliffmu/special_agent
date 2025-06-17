@@ -39,6 +39,8 @@ class Agent:
         for mod in (
             "tool_specs.build_vector_index",  # always present
             "tool_specs.search_devices",      # optional / future
+            "tool_specs.confirm_action",      # phase 3
+            "tool_specs.control_device",      # phase 3
         ):
             module_name = f"{base}.{mod}" if base else mod
             try:
