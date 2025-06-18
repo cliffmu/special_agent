@@ -6,6 +6,8 @@ from typing import Any, Dict
 from ..agent_core import ToolSpec
 from ..utils import logging as log
 
+_LOGGER = logging.getLogger(__package__)
+
 PARAMS = vol.Schema({
     vol.Required("prompt"): str,
     vol.Required("kind"):  vol.In(["confirm", "clarify", "notify"]),
