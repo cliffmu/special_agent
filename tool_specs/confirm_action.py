@@ -6,6 +6,9 @@ from typing import Iterable, Dict, Any
 
 from ..agent_core import ToolSpec
 from .prompt_user import prompt_user
+from ..utils import logging as log
+
+_LOGGER = logging.getLogger(__package__)
 
 PARAMS = vol.Schema(
     {
