@@ -59,18 +59,25 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
 
         if isinstance(result, dict) and "prompt_payload" in result:
             await mgr.save()
-            await self.hass.services.async_call(
-                "assist_pipeline",
-                "run",
-                {
-                    "conversation_id": conversation_input.conversation_id,
-                    "device_id": device_id,
-                    "tts_input": result["prompt_payload"]["speak"],
-                    "start_stage": "tts",
-                    "end_stage": "stt",
-                },
-                blocking=False,
-            )
+            service_domain = "assist_pipeline"
+            service_name = "run"
+            if self.hass.services.has_service(service_domain, service_name):
+                await self.hass.services.async_call(
+                    service_domain,
+                    service_name,
+                    {
+                        "conversation_id": conversation_input.conversation_id,
+                        "device_id": device_id,
+                        "tts_input": result["prompt_payload"]["speak"],
+                        "start_stage": "tts",
+                        "end_stage": "stt",
+                    },
+                    blocking=False,
+                )
+            else:
+                _LOGGER.error(
+                    "Service %s.%s not found", service_domain, service_name
+                )
             response = intent.IntentResponse(language=conversation_input.language)
             response.async_set_speech(result["prompt_payload"]["speak"])
             return ConversationResult(
