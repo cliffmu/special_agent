@@ -20,8 +20,10 @@ PARAMS = vol.Schema(
 )
 
 
-async def control_device(service: str, data: dict | None = None, hass: Any | None = None) -> str:
-    """Invoke a Home Assistant service."""
+async def control_device(
+    service: str, data: dict | None = None, hass: Any | None = None
+) -> dict:
+    """Invoke a Home Assistant service and return a focus payload."""
     if hass is None:
         raise RuntimeError("hass required")
     if "." not in service:
@@ -29,13 +31,16 @@ async def control_device(service: str, data: dict | None = None, hass: Any | Non
     domain, name = service.split(".", 1)
     log.debug("control_device: %s %s", service, data)
     await hass.services.async_call(domain, name, data or {}, blocking=True)
-    return "OK"
+
+    entity = (data or {}).get("entity_id")
+    targets = entity if isinstance(entity, list) else [entity] if entity else None
+    return {"status": "OK", "focus": {"targets": targets, "action": service}}
 
 
 SPEC = ToolSpec(
     name="control_device",
     description="Call a Home Assistant service like 'light.turn_on'.",
     parameters=PARAMS,
-    returns="'OK' on success",
+    returns="dict(status, focus)",
     func=control_device,
 )

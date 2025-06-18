@@ -11,6 +11,7 @@ from homeassistant.components.conversation import (
 from homeassistant.helpers import intent
 
 from .agent_core import Agent
+from . import DOMAIN
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -48,10 +49,34 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
 
     async def async_process(self, conversation_input, context=None) -> ConversationResult:
         user_text = getattr(conversation_input, "text", "")
-        result_text = await self.agent.plan(user_text, hass=self.hass)
+        sess_key = (conversation_input.conversation_id, conversation_input.device_id)
+        result = await self.agent.plan(
+            user_text, hass=self.hass, session_key=sess_key
+        )
 
+        mgr = self.hass.data[DOMAIN]["sessions"]
+
+        if isinstance(result, dict) and "prompt_payload" in result:
+            await mgr.save()
+            await self.hass.services.async_call(
+                "assist_pipeline",
+                "run",
+                {
+                    "conversation_id": conversation_input.conversation_id,
+                    "device_id": conversation_input.device_id,
+                    "prompt": result["prompt_payload"]["speak"],
+                    "listen_for_response": True,
+                },
+                blocking=True,
+            )
+            response = intent.IntentResponse(language=conversation_input.language)
+            response.async_set_speech(result["prompt_payload"]["speak"])
+            return ConversationResult(
+                conversation_id=conversation_input.conversation_id,
+                response=response,
+            )
         response = intent.IntentResponse(language=conversation_input.language)
-        response.async_set_speech(result_text)
+        response.async_set_speech(str(result))
         return ConversationResult(
             conversation_id=conversation_input.conversation_id,
             response=response,
