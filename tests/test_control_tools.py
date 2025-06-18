@@ -13,9 +13,16 @@ def test_agent_loads_control_tools():
 
 
 def test_confirm_action_formats_question():
-    question = asyncio.run(confirm_action("turn on", ["light.kitchen"]))
-    assert "turn on" in question.lower()
-    assert "light.kitchen" in question
+    result = asyncio.run(
+        confirm_action(
+            "turn on",
+            ["light.kitchen"],
+            question="Turn on the kitchen light?",
+        )
+    )
+    assert result["kind"] == "confirm"
+    assert "turn on" in result["speak"].lower()
+    assert "kitchen" in result["speak"].lower()
 
 
 def test_control_device_calls_service():

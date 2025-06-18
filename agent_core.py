@@ -7,13 +7,18 @@ import importlib
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 import os
+import time
 
 import voluptuous as vol
 
 try:
     from .utils import logging as log
+    from . import DOMAIN
+    from .session_store import Session
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
+    from __init__ import DOMAIN
+    from session_store import Session
 
 # ----------  data classes ----------
 @dataclass
@@ -54,11 +59,17 @@ class Agent:
         log.info("Tool registered: %s", spec.name)
 
     # —— entry‑point ——
-    async def plan(self, user_input: str, hass: Any | None = None) -> str:
+    async def plan(
+        self,
+        user_input: str,
+        hass: Any | None = None,
+        session_key: tuple[str, str] | None = None,
+    ) -> Any:
         return await plan_execute(
             user_input,
             list(self.tools.values()),
             hass=hass,
+            session_key=session_key,
         )
 
 # ----------  helpers ----------
@@ -136,7 +147,8 @@ async def plan_execute(
     hass: Optional[Any] = None,
     model: str = "o4-mini",          # ← your tweak #1
     goals: Optional[List[str]] = None,   # ← new (can be None)
-) -> str:
+    session_key: tuple[str, str] | None = None,
+) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
 
@@ -185,6 +197,7 @@ async def plan_execute(
         "explicitly asked for them) and stop.\n"
         "When an external action is required, you MAY include both a Thought paragraph and "
         "tool_calls in the same message."
+        "\nRULES:\n- When you call confirm_action you MUST include a `question` field containing the exact sentence to speak."
     )
 
     log.debug("System_Prompt: %s", system_prompt)
@@ -192,10 +205,23 @@ async def plan_execute(
     log.debug("Tools_Provided: %s", tool_json)     # ← your tweak #2
 
     # ---- state ----
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
-    ]
+    mgr = None
+    session = None
+    focus: Dict[str, Any] | None = None
+    if hass:
+        mgr = hass.data.get(DOMAIN, {}).get("sessions")
+        if session_key and mgr:
+            session = mgr.get(session_key)
+            if session:
+                messages = list(session.messages)
+                focus = session.focus
+                messages.append({"role": "user", "content": prompt})
+            else:
+                messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+        else:
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+    else:
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
     tried_calls: set[tuple[str, str]] = set()
     retry_budget = 2
     depth = 0
@@ -270,6 +296,11 @@ async def plan_execute(
             else:
                 result = await spec.func(**args)
 
+            if call_name == "control_device" and result == "OK":
+                ent = args.get("data", {}).get("entity_id") if isinstance(args, dict) else None
+                t = ent if isinstance(ent, list) else [ent] if ent else None
+                focus = {"targets": t, "action": args.get("service")}
+
             # feed back – store SUMMARISED observation
             content_summary = _summarise(result)
             msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
@@ -284,6 +315,19 @@ async def plan_execute(
                     },
                 ]
             )
+            if isinstance(result, dict) and "speak" in result:
+                if mgr and session_key:
+                    mgr.set(
+                        session_key,
+                        Session(
+                            messages=messages,
+                            pending=result.get("pending"),
+                            focus=focus,
+                            device_id=session_key[1],
+                            updated=time.time(),
+                        ),
+                    )
+                return {"prompt_payload": result, "messages": messages}
             depth += 1
             if retry_budget > 0:
                 retry_budget -= 1
@@ -291,6 +335,8 @@ async def plan_execute(
 
         # ---------- final answer ----------
         log.debug("Final Message: %s", messages)
+        if mgr and session_key:
+            mgr.pop(session_key)
         return msg.content or "OK"
 
     return "Depth‑limit reached."
