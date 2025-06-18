@@ -288,7 +288,11 @@ async def plan_execute(
         )
         msg = resp.choices[0].message
         log.debug("AI_Response_Content: %s", msg.content)      # ← your tweak #3
-        log.debug("AI_Response_Tools_Selected: %s, Arguments: %s", msg.tool_calls.function.name, msg.tool_calls.function.arguments)   # ← your tweak #3
+        if msg.tool_calls:
+            log.debug(
+                "AI_Response_Tools_Selected: %s",
+                [(tc.function.name, tc.function.arguments) for tc in msg.tool_calls],
+            )
         log.debug("AI_Response_Full: %s", msg)
 
         # ---------- tool branch ----------
@@ -331,7 +335,12 @@ async def plan_execute(
             else:
                 result = await spec.func(**args)
 
-            if isinstance(result, dict) and result.get("focus"):
+            if call_name == "control_device":
+                focus = {
+                    "targets": args["data"].get("entity_id", []),
+                    "action": args["service"],
+                }
+            elif isinstance(result, dict) and result.get("focus"):
                 focus = result["focus"]
 
             # feed back – store SUMMARISED observation

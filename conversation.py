@@ -40,19 +40,20 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             "default": {
                 "name": "default",
                 "description": "Default intent",
-                "examples": ["hi"]
+                "examples": ["hi"],
             }
         }
 
     async def async_handle(self, intent_obj, conversation_input, context):
         return await self.async_process(conversation_input, context)
 
-    async def async_process(self, conversation_input, context=None) -> ConversationResult:
+    async def async_process(
+        self, conversation_input, context=None
+    ) -> ConversationResult:
         user_text = getattr(conversation_input, "text", "")
-        sess_key = (conversation_input.conversation_id, conversation_input.device_id)
-        result = await self.agent.plan(
-            user_text, hass=self.hass, session_key=sess_key
-        )
+        device_id = conversation_input.device_id or ""
+        sess_key = (conversation_input.conversation_id, device_id)
+        result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
 
         mgr = self.hass.data[DOMAIN]["sessions"]
 
@@ -63,11 +64,12 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                 "run",
                 {
                     "conversation_id": conversation_input.conversation_id,
-                    "device_id": conversation_input.device_id,
-                    "prompt": result["prompt_payload"]["speak"],
-                    "listen_for_response": True,
+                    "device_id": device_id,
+                    "tts_input": result["prompt_payload"]["speak"],
+                    "start_stage": "tts",
+                    "end_stage": "stt",
                 },
-                blocking=True,
+                blocking=False,
             )
             response = intent.IntentResponse(language=conversation_input.language)
             response.async_set_speech(result["prompt_payload"]["speak"])
