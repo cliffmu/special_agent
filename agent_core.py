@@ -7,13 +7,18 @@ import importlib
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 import os
+import time
 
 import voluptuous as vol
 
 try:
     from .utils import logging as log
+    from . import DOMAIN
+    from .session_store import Session
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
+    from __init__ import DOMAIN
+    from session_store import Session
 
 # ----------  data classes ----------
 @dataclass
@@ -54,11 +59,17 @@ class Agent:
         log.info("Tool registered: %s", spec.name)
 
     # —— entry‑point ——
-    async def plan(self, user_input: str, hass: Any | None = None) -> str:
+    async def plan(
+        self,
+        user_input: str,
+        hass: Any | None = None,
+        session_key: tuple[str, str] | None = None,
+    ) -> Any:
         return await plan_execute(
             user_input,
             list(self.tools.values()),
             hass=hass,
+            session_key=session_key,
         )
 
 # ----------  helpers ----------
@@ -129,6 +140,57 @@ def _spec_to_json(spec: ToolSpec) -> Dict:
         },
     }
 
+
+def _load_session(
+    hass: Any | None,
+    session_key: tuple[str, str] | None,
+    system_prompt: str,
+    prompt: str,
+) -> tuple[list, Any | None, Dict[str, Any] | None]:
+    """Restore a previous session or create a new one."""
+    mgr = None
+    focus: Dict[str, Any] | None = None
+    if hass:
+        mgr = hass.data.get(DOMAIN, {}).get("sessions")
+        if session_key and mgr:
+            session = mgr.get(session_key)
+            if session:
+                msgs = list(session.messages)
+                focus = session.focus
+                msgs.append({"role": "user", "content": prompt})
+                return msgs, mgr, focus
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ], mgr, focus
+
+
+def _store_session(
+    mgr: Any | None,
+    session_key: tuple[str, str] | None,
+    messages: list,
+    pending: Dict[str, Any] | None,
+    focus: Dict[str, Any] | None,
+) -> None:
+    """Persist session state if a manager is available."""
+    if mgr and session_key:
+        mgr.set(
+            session_key,
+            Session(
+                messages=messages,
+                pending=pending,
+                focus=focus,
+                device_id=session_key[1],
+                updated=time.time(),
+            ),
+        )
+
+
+def _clear_session(mgr: Any | None, session_key: tuple[str, str] | None) -> None:
+    """Remove a persisted session."""
+    if mgr and session_key:
+        mgr.pop(session_key)
+
 # ----------  ReAct loop ----------
 async def plan_execute(
     prompt: str,
@@ -136,7 +198,8 @@ async def plan_execute(
     hass: Optional[Any] = None,
     model: str = "o4-mini",          # ← your tweak #1
     goals: Optional[List[str]] = None,   # ← new (can be None)
-) -> str:
+    session_key: tuple[str, str] | None = None,
+) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
 
@@ -185,6 +248,7 @@ async def plan_execute(
         "explicitly asked for them) and stop.\n"
         "When an external action is required, you MAY include both a Thought paragraph and "
         "tool_calls in the same message."
+        "\nRULES:\n- When you call confirm_action you MUST include a `question` field containing the exact sentence to speak."
     )
 
     log.debug("System_Prompt: %s", system_prompt)
@@ -192,10 +256,7 @@ async def plan_execute(
     log.debug("Tools_Provided: %s", tool_json)     # ← your tweak #2
 
     # ---- state ----
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
-    ]
+    messages, mgr, focus = _load_session(hass, session_key, system_prompt, prompt)
     tried_calls: set[tuple[str, str]] = set()
     retry_budget = 2
     depth = 0
@@ -270,6 +331,9 @@ async def plan_execute(
             else:
                 result = await spec.func(**args)
 
+            if isinstance(result, dict) and result.get("focus"):
+                focus = result["focus"]
+
             # feed back – store SUMMARISED observation
             content_summary = _summarise(result)
             msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
@@ -284,6 +348,9 @@ async def plan_execute(
                     },
                 ]
             )
+            if isinstance(result, dict) and "speak" in result:
+                _store_session(mgr, session_key, messages, result.get("pending"), focus)
+                return {"prompt_payload": result, "messages": messages}
             depth += 1
             if retry_budget > 0:
                 retry_budget -= 1
@@ -291,6 +358,7 @@ async def plan_execute(
 
         # ---------- final answer ----------
         log.debug("Final Message: %s", messages)
+        _clear_session(mgr, session_key)
         return msg.content or "OK"
 
     return "Depth‑limit reached."
