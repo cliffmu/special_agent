@@ -330,10 +330,28 @@ async def plan_execute(
                 continue
             # ---------------------------------------------
             log.debug("Action: %s %s", call_name, args)
-            if hass and "hass" in inspect.signature(spec.func).parameters:
-                result = await spec.func(hass=hass, **args)
-            else:
-                result = await spec.func(**args)
+            try:
+                if hass and "hass" in inspect.signature(spec.func).parameters:
+                    result = await spec.func(hass=hass, **args)
+                else:
+                    result = await spec.func(**args)
+            except Exception as err:
+                log.error("Tool execution failed: %s", err)
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"Thought: Execution of {call_name} failed (`{err}`). "
+                            "Please adjust the parameters and try again. Confidence: 20%"
+                        ),
+                    }
+                )
+                depth += 1
+                if retry_budget > 0:
+                    retry_budget -= 1
+                    continue
+                _clear_session(mgr, session_key)
+                return f"Error: {err}"
 
             if call_name == "control_device":
                 focus = {
