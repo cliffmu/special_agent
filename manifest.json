@@ -3,7 +3,7 @@
     "name": "Special Agent",
     "version": "0.0.1",
     "documentation": "https://example.com",
-    "dependencies": ["conversation"],
+    "dependencies": ["conversation", "assist_pipeline"],
     "requirements": [
         "langchain",
         "openai",
