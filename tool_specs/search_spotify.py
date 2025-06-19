@@ -33,9 +33,11 @@ SPEC = ToolSpec(
     name="search_spotify",
     description=(
         "Search Spotify and return the first result URI. "
-        "Use this tool to look up a track, artist, album or playlist before "
-        "calling 'media_player.play_media'. Pass the returned URI as the "
-        "'media_content_id'."
+        "The 'query' must be a plain text search term (do not pass a URI). "
+        "The returned value is a string like 'spotify:<type>:<id>' or null if "
+        "nothing is found. Use this tool to look up a track, artist, album or "
+        "playlist before calling 'media_player.play_media'; pass the URI as "
+        "the 'media_content_id'."
     ),
     parameters=PARAMS,
     returns="spotify uri or null",
