@@ -11,20 +11,23 @@ from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
-PARAMS = vol.Schema(
-    {
-        vol.Required("entity_ids"): vol.All([str], vol.Length(min=1)),
-        vol.Optional("attributes"): [str],
-    }
+_ENTITIES = vol.All(
+    vol.Any(str, [str]),
+    lambda v: [v] if isinstance(v, str) else list(v),
+    vol.Length(min=1),
 )
+
+PARAMS = vol.Schema({vol.Required("entity_ids"): _ENTITIES, vol.Optional("attributes"): [str]})
 
 
 async def get_entity_state(
-    entity_ids: List[str],
+    entity_ids: List[str] | str,
     attributes: List[str] | None = None,
     hass: Any | None = None,
 ) -> Dict[str, Any]:
     """Return state and selected attributes for the given entities."""
+    if isinstance(entity_ids, str):
+        entity_ids = [entity_ids]
     result: Dict[str, Any] = {}
     hass_states = getattr(hass, "states", None)
     get_state = getattr(hass_states, "get", None) if hass_states else None
@@ -42,7 +45,11 @@ async def get_entity_state(
 
 SPEC = ToolSpec(
     name="get_entity_state",
-    description="Return current state and requested attributes for entities.",
+    description=(
+        "Return current state and requested attributes for entities. "
+        "Parameter 'entity_ids' accepts a single string or list of strings; "
+        "a single value will be wrapped into a list."
+    ),
     parameters=PARAMS,
     returns="dict of entity states",
     func=get_entity_state,
