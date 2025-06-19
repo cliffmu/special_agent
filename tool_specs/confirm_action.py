@@ -45,8 +45,8 @@ async def confirm_action(
 SPEC = ToolSpec(
     name="confirm_action",
     description=(
-        "Ask the user for confirmation before a control action. "
-        "Provide a natural‑language question that includes both the "
+        "Ask the user for confirmation before using the 'control_device' tool to change device states. "
+        "Provide a natural‑language question meant to be spoken aloud that concisely includes both the "
         "action and target devices."
     ),
     parameters=PARAMS,
