@@ -40,9 +40,14 @@ _LOGGER = logging.getLogger(__package__)
 
 MAX_EVENTS = 100
 
+_ENTITY = vol.All(
+    vol.Any(str, [str]),
+    lambda v: v[0] if isinstance(v, list) else v,
+)
+
 PARAMS = vol.Schema(
     {
-        vol.Required("entity_id"): str,
+        vol.Required("entity_id"): _ENTITY,
         vol.Optional("lookback_hours", default=24): vol.All(
             int, vol.Range(min=1, max=168)
         ),
@@ -55,7 +60,7 @@ PARAMS = vol.Schema(
 
 
 async def get_entity_history(
-    entity_id: str,
+    entity_id: str | list[str],
     lookback_hours: int = 24,
     start_iso: str | None = None,
     end_iso: str | None = None,
@@ -70,6 +75,8 @@ async def get_entity_history(
     """
     if get_significant_states is None:
         raise RuntimeError("history component not available")
+    if isinstance(entity_id, list):
+        entity_id = entity_id[0]
     if start_iso or end_iso:
         start = parse_datetime(start_iso) if start_iso else None
         end = parse_datetime(end_iso) if end_iso else None
@@ -93,7 +100,11 @@ async def get_entity_history(
 
 SPEC = ToolSpec(
     name="get_entity_history",
-    description="Return recent state changes for entities.",
+    description=(
+        "Return recent state changes for an entity from recorder history. "
+        "'entity_id' may be a string or single-item list; a list is reduced "
+        "to its first value."
+    ),
     parameters=PARAMS,
     returns="list of dict(state, when)",
     func=get_entity_history,

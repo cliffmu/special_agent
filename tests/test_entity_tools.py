@@ -32,6 +32,19 @@ def test_get_entity_state(monkeypatch):
     assert result["light.kitchen"]["brightness"] == 200
 
 
+def test_get_entity_state_accepts_string(monkeypatch):
+    from special_agent.tool_specs import get_entity_state as ges
+
+    state_obj = SimpleNamespace(state="on", attributes={"color": "blue"})
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=state_obj)
+
+    result = asyncio.run(ges.get_entity_state("light.kitchen", hass=hass))
+
+    assert result["light.kitchen"]["state"] == "on"
+    assert "color" in result["light.kitchen"]
+
+
 def test_state_empty_list_fails():
     from special_agent.tool_specs import get_entity_state as ges
 
@@ -65,6 +78,33 @@ def test_get_entity_history(monkeypatch):
 
     assert result[0]["state"] == "on"
     assert "when" in result[0]
+
+
+def test_get_entity_history_accepts_list(monkeypatch):
+    events = [
+        SimpleNamespace(state="off", last_changed=datetime(2023, 1, 1, 12, 0)),
+        SimpleNamespace(state="on", last_changed=datetime(2023, 1, 1, 13, 0)),
+    ]
+
+    def fake_history(hass, start, end, entity_ids, significant):
+        return {entity_ids[0]: events}
+
+    history_mod = SimpleNamespace(get_significant_states=fake_history)
+    sys.modules["homeassistant.components.history"] = history_mod
+
+    import special_agent.tool_specs.get_entity_history as geh
+    importlib.reload(geh)
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(
+        side_effect=lambda func, *a, **kw: func(*a, **kw)
+    )
+
+    result = asyncio.run(
+        geh.get_entity_history(["light.kitchen"], hass=hass, limit=1)
+    )
+
+    assert result[-1]["state"] == "on"
 
 
 def test_history_cap_applied(monkeypatch):
