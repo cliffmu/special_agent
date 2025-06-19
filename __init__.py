@@ -53,6 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api_key = entry.options.get("openai_api_key") or entry.data.get("openai_api_key")
     if api_key and not os.environ.get("OPENAI_API_KEY"):
         os.environ["OPENAI_API_KEY"] = api_key
+    sp_id = entry.options.get("spotify_client_id") or entry.data.get("spotify_client_id")
+    sp_secret = entry.options.get("spotify_client_secret") or entry.data.get("spotify_client_secret")
+    if sp_id and not os.environ.get("SPOTIFY_CLIENT_ID"):
+        os.environ["SPOTIFY_CLIENT_ID"] = sp_id
+    if sp_secret and not os.environ.get("SPOTIFY_CLIENT_SECRET"):
+        os.environ["SPOTIFY_CLIENT_SECRET"] = sp_secret
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _save_sessions(_):
