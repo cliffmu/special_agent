@@ -10,7 +10,7 @@ from special_agent.session_store import SessionManager
 from special_agent import DOMAIN
 
 
-class FakeClient:
+class SeqClient:
     def __init__(self, msgs):
         self._msgs = list(msgs)
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
@@ -20,65 +20,45 @@ class FakeClient:
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
 
 
-def make_err_msg():
+def _dup_msg():
     call = SimpleNamespace(
         id="1",
         function=SimpleNamespace(
-            name="control_device",
-            arguments=json.dumps(
-                {
-                    "service": "climate.set_temperature",
-                    "data": {"entity_id": ["climate.main"], "temperature": -5},
-                }
-            ),
+            name="get_entity_state",
+            arguments=json.dumps({"entity_ids": ["light.kitchen"], "attributes": ["brightness"]}),
         ),
     )
+
     class ToolList(list):
         @property
         def function(self):
             return self[0].function
 
     tool_list = ToolList([call])
-    msg = SimpleNamespace(
+    return SimpleNamespace(
         content=None,
         tool_calls=tool_list,
         model_dump=lambda: {"content": None, "tool_calls": tool_list},
         dict=lambda: {"content": None, "tool_calls": tool_list},
     )
-    return msg
 
 
 @pytest.mark.asyncio
-async def test_control_device_error(monkeypatch):
+async def test_duplicate_depth_limit(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "1")
-    msgs = [make_err_msg(), make_err_msg(), make_err_msg()]
-    client = FakeClient(msgs)
+    msgs = [_dup_msg() for _ in range(10)]
+    client = SeqClient(msgs)
 
     async def get_client(hass=None):
         return client
 
-    monkeypatch.setattr(
-        "special_agent.utils.openai_client.get_async_client",
-        get_client,
-    )
-
-    async def bad_control_device(*args, **kw):
-        raise Exception(
-            "Provided temperature -5 is not valid. Accepted range is 1 to 37"
-        )
-
-    from special_agent.tool_specs import control_device as cd
-
-    monkeypatch.setattr(cd, "control_device", bad_control_device)
-    monkeypatch.setattr(cd.SPEC, "func", bad_control_device)
+    monkeypatch.setattr("special_agent.utils.openai_client.get_async_client", get_client)
 
     hass = MagicMock()
     mgr = SessionManager(hass)
     hass.data = {DOMAIN: {"sessions": mgr}}
 
     agent = Agent()
-    result = await plan_execute(
-        "hi", list(agent.tools.values()), hass=hass, session_key=("c", "dev")
-    )
+    result = await plan_execute("hi", list(agent.tools.values()), hass=hass, session_key=("c", "dev"))
 
-    assert "not valid" in str(result) or "Depth" in str(result)
+    assert "Depth" in result
