@@ -48,6 +48,8 @@ class Agent:
             "tool_specs.search_devices",
             "tool_specs.control_device",
             "tool_specs.search_spotify",
+            "tool_specs.get_entity_state",
+            "tool_specs.get_entity_history",
         ):
             module_name = f"{base}.{mod}" if base else mod
             try:
