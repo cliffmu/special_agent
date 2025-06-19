@@ -353,9 +353,18 @@ async def plan_execute(
             if canonical in tried_calls:
                 log.debug("Duplicate call blocked: %s", canonical)
                 messages.append(
-                    {"role": "assistant",
-                     "content": "Thought: Duplicate of previous attempt; refining… Confidence: 30%"}
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Thought: Duplicate of previous attempt; refining… Confidence: 30%"
+                        ),
+                    },
                 )
+                depth += 1
+                retry_budget -= 1
+                if retry_budget < 0:
+                    _clear_session(mgr, session_key)
+                    return "Depth‑limit reached."
                 continue
             tried_calls.add(canonical)
 
@@ -394,8 +403,8 @@ async def plan_execute(
                     }
                 )
                 depth += 1
-                if retry_budget > 0:
-                    retry_budget -= 1
+                retry_budget -= 1
+                if retry_budget >= 0:
                     continue
                 _clear_session(mgr, session_key)
                 return f"Error: {err}"
