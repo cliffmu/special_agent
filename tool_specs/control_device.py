@@ -39,7 +39,7 @@ async def control_device(
 
 SPEC = ToolSpec(
     name="control_device",
-    description="Call a Home Assistant service like 'light.turn_on'.",
+    description="Call a Home Assistant service like 'light.turn_on'. This tool required explicit entity_ids to proceed. 'control_device' call must have data.entity_id list.",
     parameters=PARAMS,
     returns="dict(status, focus)",
     func=control_device,
