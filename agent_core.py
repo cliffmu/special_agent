@@ -314,11 +314,19 @@ async def plan_execute(
     def _summarise(result: Any) -> str:
         try:
             if isinstance(result, list):
+                json_txt = json.dumps(result)
+                if len(result) <= 5 and len(json_txt) <= 200:
+                    return json_txt
                 head = ", ".join(map(str, result[:5]))
                 return f"{len(result)} items: {head}{' …' if len(result) > 5 else ''}"
+
             if isinstance(result, dict):
+                json_txt = json.dumps(result)
+                if len(result) <= 3 and len(json_txt) <= 200:
+                    return json_txt
                 keys = list(result.keys())[:5]
                 return f"dict with {len(result)} keys: {', '.join(keys)}{' …' if len(result) > 5 else ''}"
+
             txt = str(result)
             return txt if len(txt) <= 200 else txt[:200] + " …"
         except Exception as err:           # pragma: no cover
