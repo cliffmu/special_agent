@@ -184,28 +184,28 @@ RULES:
 
 \## 6  Implementation roadmap & smoke‑tests
 
-| **Phase** | New deliverable                                                                                        | Key tests / exit criteria                               |
-| --------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| **0**     | Repository bootstrap                                                                                   | HACS loads component                                    |
-| **1**     | Agent skeleton (no tools)                                                                              | “Hi” → “can’t help yet”                                 |
-| **1b**    | `utils/vector_index.py` utilities                                                                      | `.npy` file exists                                      |
-| **2** ★   | **Minimal ReAct loop** + wrappers for existing utilities (`build_vector_index`, stub `search_devices`) | “Rebuild the database.” → tool call returns `"rebuilt"` |
-| **2b**    | Nightly cron for `build_vector_index`                                                                  | CLI completes < 30 s                                    |
-| **2c**    | Metadata enrichment migration                                                                          | `area_id` non‑null; old mapping upgraded                |
-| **2d**    | **Filtered `search_devices`**                                                                          | “office light” → correct entity                         |
-| **2e**    | **Embedding upgrade + hybrid scorer**                                                                  | similarity tests pass                                   |
-| **3**     | **Control MVP**: `prompt_user` + wrappers + `control_device`                                           | “Turn on kitchen light” → confirm → call                |
-| **3b**    | Info tools (`get_weather`, `search_spotify`)                                                           | “Weather?” → spoken response                            |
-| **3c**    | Harden tool schemas (real JSON export)                                                                 | Arrays & nested dicts validated                         |
-| **3d**    | **Multi‑device SessionManager**                                                                        | Two satellites hold independent threads                 |
-| **4**     | Clarification loop via `prompt_user(kind="clarify")`                                                   | Ambiguous request triggers follow‑up                    |
-| **4b**    | `preference_manager`                                                                                   | Recall 8 % brightness                                   |
-| **4c**    | `generate_scene` + `area_iterator`                                                                     | “Good night” scene                                      |
-| **5**     | Safety & dedupe (3‑iteration cap)                                                                      | Two speakers, no loop                                   |
-| **6**     | Test harness (`pytest‑homeassistant`)                                                                  | All tests pass                                          |
-| **7**     | Docs & contributor guide                                                                               | README covers tool API                                  |
-| **8**     | Advanced tools (calendar, energy, diagnostics)                                                         | Drop‑in ToolSpecs                                       |
-| **9**     | R\&D: proactive automations                                                                            | Shadow mode only                                        |
+| **Phase** | New deliverable                                              | Key tests / exit criteria                  | Status      |
+| --------- | ------------------------------------------------------------ | ------------------------------------------ | ----------- |
+| **0**     | Repository bootstrap                                         | HACS loads component                       | Done        |
+| **1**     | Agent skeleton (no tools)                                    | “Hi” → “can’t help yet”                    | Done        |
+| **1b**    | `utils/vector_index.py` utilities                            | `.npy` file exists                         | Done        |
+| **2** ★   | **Minimal ReAct loop** + wrappers for existing utilities (`build_vector_index`, stub `search_devices`) | “Rebuild the database.” → tool call returns `"rebuilt"`                                                                              | Done        |
+| **2b**    | Nightly cron for `build_vector_index`                        | CLI completes < 30 s                        |
+| **2c**    | Metadata enrichment migration                                | `area_id` non‑null; old mapping upgraded   |
+| **2d**    | **Filtered `search_devices`**                                | “office light” → correct entity            | Done        |
+| **2e**    | **Embedding upgrade + hybrid scorer**                        | similarity tests pass                      |
+| **3**     | **Control MVP**: `prompt_user` + wrappers + `control_device` | “Turn on kitchen light” → confirm → call   | Done        |
+| **3b**    | Info tools (`get_weather`, `search_spotify`)                 | “Weather?” → spoken response               |
+| **3c**    | Harden tool schemas (real JSON export)                       | Arrays & nested dicts validated            |
+| **3d**    | **Multi‑device SessionManager**                              | Two satellites hold independent threads    | Done        |
+| **4**     | Clarification loop via `prompt_user(kind="clarify")`         | Ambiguous request triggers follow‑up       | Done        |
+| **4b**    | `preference_manager`                                         | Recall 8 % brightness                       |
+| **4c**    | `generate_scene` + `area_iterator`                           | “Good night” scene                         |
+| **5**     | Safety & dedupe (3‑iteration cap)                            | Two speakers, no loop                      |
+| **6**     | Test harness (`pytest‑homeassistant`)                        | All tests pass                             |
+| **7**     | Docs & contributor guide                                     | README covers tool API                     |
+| **8**     | Advanced tools (calendar, energy, diagnostics)               | Drop‑in ToolSpecs                          |
+| **9**     | R\&D: proactive automations                                  | Shadow mode only                           |
 
 ---
 
