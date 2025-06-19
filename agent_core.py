@@ -193,6 +193,36 @@ def _clear_session(mgr: Any | None, session_key: tuple[str, str] | None) -> None
     if mgr and session_key:
         mgr.pop(session_key)
 
+
+async def _is_followup_prompt(
+    client: Any, history: list[Dict[str, Any]], prompt: str
+) -> bool:
+    """Ask the LLM if the prompt continues the same conversation."""
+    if not history:
+        return False
+    hist_text = "\n".join(
+        f"{m['role']}: {m['content']}" for m in history[-4:] if m.get("content")
+    )
+    eval_messages = [
+        {
+            "role": "system",
+            "content": (
+                "Answer yes or no: Does the NEW prompt continue the same topic as "
+                "the prior conversation? Reply only 'yes' or 'no'."
+            ),
+        },
+        {"role": "user", "content": f"{hist_text}\nNEW PROMPT: {prompt}"},
+    ]
+    try:
+        resp = await client.chat.completions.create(
+            model="o4-mini", messages=eval_messages
+        )
+        answer = resp.choices[0].message.content.strip().lower()
+        return answer.startswith("yes")
+    except Exception as err:  # pragma: no cover - fallback
+        log.debug("Follow-up check failed: %s", err)
+    return False
+
 # ----------  ReAct loop ----------
 async def plan_execute(
     prompt: str,
@@ -259,6 +289,19 @@ async def plan_execute(
 
     # ---- state ----
     messages, mgr, focus = _load_session(hass, session_key, system_prompt, prompt)
+    if focus:
+        try:
+            follow = await _is_followup_prompt(client, messages[:-1], prompt)
+        except Exception as err:  # pragma: no cover
+            log.debug("Follow-up check error: %s", err)
+            follow = False
+        if not follow:
+            _clear_session(mgr, session_key)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            focus = None
     tried_calls: set[tuple[str, str]] = set()
     retry_budget = 2
     depth = 0
@@ -387,7 +430,7 @@ async def plan_execute(
 
         # ---------- final answer ----------
         log.debug("Final Message: %s", messages)
-        _clear_session(mgr, session_key)
+        _store_session(mgr, session_key, messages, None, focus)
         return msg.content or "OK"
 
     return "Depth‑limit reached."
