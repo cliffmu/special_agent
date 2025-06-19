@@ -46,6 +46,9 @@ class Agent:
             "tool_specs.search_devices",      # optional / future
             "tool_specs.confirm_action",      # phase 3
             "tool_specs.control_device",      # phase 3
+            "tool_specs.ask_user",
+            "tool_specs.prompt_user",
+            "tool_specs.search_spotify",
         ):
             module_name = f"{base}.{mod}" if base else mod
             try:
