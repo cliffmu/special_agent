@@ -25,7 +25,13 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required("openai_api_key"): str}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required("openai_api_key"): str,
+                    vol.Optional("spotify_client_id", default=""): str,
+                    vol.Optional("spotify_client_secret", default=""): str,
+                }
+            ),
         )
 
     @staticmethod
@@ -54,7 +60,21 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
                         "openai_api_key",
                         self.config_entry.data.get("openai_api_key", ""),
                     ),
-                ): str
+                ): str,
+                vol.Optional(
+                    "spotify_client_id",
+                    default=current.get(
+                        "spotify_client_id",
+                        self.config_entry.data.get("spotify_client_id", ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    "spotify_client_secret",
+                    default=current.get(
+                        "spotify_client_secret",
+                        self.config_entry.data.get("spotify_client_secret", ""),
+                    ),
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
