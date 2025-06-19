@@ -1,29 +1,35 @@
-"""Ask a clarifying question via prompt_user(kind='clarify')."""
+"""Ask a clarifying follow‑up question."""
 from __future__ import annotations
+
 import logging
-import voluptuous as vol
 from typing import Dict, Any
 
+import voluptuous as vol
+
 from ..agent_core import ToolSpec
-from .prompt_user import prompt_user
 from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
 PARAMS = vol.Schema({vol.Required("question"): str})
 
+
 async def ask_user(question: str, hass=None) -> Dict[str, Any]:
-    log.debug("ask_user: %s", question)
-    return await prompt_user(
-        prompt=question,
-        kind="clarify",
-        pending=None,
-        hass=hass,
-    )
+    """
+    Return a clarification prompt.  The session remains open and there is
+    no `pending` payload because no action is blocked on the answer.
+    """
+    log.debug("ask_user -> %s", question)
+
+    return {
+        "speak": question,
+        "kind":  "clarify",
+    }
+
 
 SPEC = ToolSpec(
     name="ask_user",
-    description="Ask the user for additional information.",
+    description="Ask the user for additional information to disambiguate the request.",
     parameters=PARAMS,
     returns="dict(speak, kind='clarify')",
     func=ask_user,
