@@ -54,7 +54,7 @@ ROOT/
 ├─ tests/                             # pytest‑homeassistant‑custom‑component
 │  ├─ test_preferences.py
 │  ├─ test_scene.py
-│  ├─ test_multi_session.py           # ★ NEW – simultaneous satellite sessions
+│  ├─ test_multi_session.py
 │  └─ ...
 │
 ├─ REFERENCE/
