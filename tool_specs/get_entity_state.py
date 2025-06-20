@@ -25,7 +25,11 @@ async def get_entity_state(
     attributes: List[str] | None = None,
     hass: Any | None = None,
 ) -> Dict[str, Any]:
-    """Return state and selected attributes for the given entities."""
+    """Return state and selected attributes for the given entities.
+
+    When ``attributes`` is ``None`` all available attributes from the
+    entity's state are returned.
+    """
     if isinstance(entity_ids, str):
         entity_ids = [entity_ids]
     result: Dict[str, Any] = {}

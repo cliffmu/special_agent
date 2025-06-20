@@ -45,6 +45,19 @@ def test_get_entity_state_accepts_string(monkeypatch):
     assert "color" in result["light.kitchen"]
 
 
+def test_get_entity_state_returns_all_attributes(monkeypatch):
+    from special_agent.tool_specs import get_entity_state as ges
+
+    attrs = {"color": "blue", "brightness": 100}
+    state_obj = SimpleNamespace(state="on", attributes=attrs)
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=state_obj)
+
+    result = asyncio.run(ges.get_entity_state(["light.kitchen"], hass=hass))
+
+    assert result["light.kitchen"] == {"state": "on", **attrs}
+
+
 def test_state_empty_list_fails():
     from special_agent.tool_specs import get_entity_state as ges
 
