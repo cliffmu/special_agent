@@ -35,5 +35,6 @@ def test_search_device_filter(tmp_path, monkeypatch):
 
     results = asyncio.run(run_search())
 
-    assert "light.office_sconces" in results
-    assert all("sensor.office_sconces_led_effect" != r for r in results)
+    ids = [r["entity_id"] for r in results]
+    assert "light.office_sconces" in ids
+    assert all("sensor.office_sconces_led_effect" != r for r in ids)
