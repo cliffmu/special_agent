@@ -9,7 +9,10 @@ def test_search_device_filter(tmp_path, monkeypatch):
         {
             "entity_id": "light.office_sconces",
             "name": "Office Sconces",
-            "attributes": {"friendly_name": "Office Sconces"},
+            "attributes": {
+                "friendly_name": "Office Sconces",
+                "brightness": 128,
+            },
             "domain": "light",
         },
         {
@@ -38,3 +41,10 @@ def test_search_device_filter(tmp_path, monkeypatch):
     ids = [r["entity_id"] for r in results]
     assert "light.office_sconces" in ids
     assert all("sensor.office_sconces_led_effect" != r for r in ids)
+
+    info = next(r["info"] for r in results if r["entity_id"] == "light.office_sconces")
+    attr_keys = next(r.get("attribute_keys") for r in results if r["entity_id"] == "light.office_sconces")
+    assert "128" not in info
+    assert "brightness" not in info and "friendly_name" not in info
+    assert info.endswith("Attributes:")
+    assert set(attr_keys) == {"friendly_name", "brightness"}
