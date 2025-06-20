@@ -1,4 +1,4 @@
-"""Core agent structures and stubs (v0.2)."""
+"""Core agent structures and stubs"""
 from __future__ import annotations
 
 import inspect
