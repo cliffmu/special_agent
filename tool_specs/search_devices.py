@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Any
+from typing import List, Any, Dict
 
 import voluptuous as vol
 
@@ -34,8 +34,8 @@ async def search_devices(
     domain: str | list[str] | None = None,
     k: int = 5,
     hass: Any | None = None,
-) -> List[str]:
-    """Return entity_ids matching the query with optional metadata filters."""
+) -> List[Dict[str, Any]]:
+    """Return matching devices with full metadata and text info."""
     k = min(k, MAX_SEARCH_K)
     index_data = await async_load_vector_index(hass=hass)
     filters: dict[str, Any] = {}
@@ -46,7 +46,19 @@ async def search_devices(
     hits = await async_query_vector_index(
         index_data, query, k, filters, hass=hass
     )
-    return [h["metadata"].get("entity_id", "") for h in hits]
+    results = []
+    for doc in hits:
+        meta = doc.get("metadata", {})
+        results.append(
+            {
+                "entity_id": meta.get("entity_id", ""),
+                "domain": meta.get("domain"),
+                "area_id": meta.get("area_id"),
+                "friendly_name": meta.get("friendly_name"),
+                "info": doc.get("page_content"),
+            }
+        )
+    return results
 
 
 SPEC = ToolSpec(
@@ -57,6 +69,6 @@ SPEC = ToolSpec(
         f"Parameter 'k' is capped at {MAX_SEARCH_K}."
     ),
     parameters=PARAMS,
-    returns="list of entity_ids",
+    returns="list of device info dicts",
     func=search_devices,
 )
