@@ -40,7 +40,7 @@ ROOT/
 │  ├─ ask_user.py                     # thin wrapper → prompt_user(kind="clarify")
 │  ├─ get_weather.py
 │  ├─ search_spotify.py
-│  ├─ learn_preferences.py            # ★ NEW in v5.3
+│  ├─ learn_preferences.py
 │  ├─ area_iterator.py
 │  └─ build_vector_index.py
 │
