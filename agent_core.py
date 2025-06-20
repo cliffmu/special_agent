@@ -396,9 +396,14 @@ async def plan_execute(
             log.debug("Action: %s %s", call_name, args)
             try:
                 if hass and "hass" in inspect.signature(spec.func).parameters:
-                    result = await spec.func(hass=hass, **args)
+                    call_args = {"hass": hass, **args}
+                    log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                    result = await spec.func(**call_args)
                 else:
-                    result = await spec.func(**args)
+                    call_args = args
+                    log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                    result = await spec.func(**call_args)
+                log.debug("Tool_Result[%s]: %s", call_name, result)
             except Exception as err:
                 log.error("Tool execution failed: %s", err)
                 messages.append(
