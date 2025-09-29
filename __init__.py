@@ -16,8 +16,10 @@ except Exception:  # pragma: no cover - during unit tests
 
 try:
     from .session_store import SessionManager
+    from .utils import logging as log
 except Exception:  # pragma: no cover
     from session_store import SessionManager
+    from utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -40,7 +42,51 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         for entry in hass.config_entries.async_entries(DOMAIN):
             await hass.config_entries.async_reload(entry.entry_id)
 
+    async def get_sessions_handler(call: ServiceCall) -> None:
+        """Service to get current session information."""
+        mgr = hass.data.get(DOMAIN, {}).get("sessions")
+        if not mgr:
+            return
+
+        sessions = {}
+        for key, session in mgr._data.items():
+            sessions[key] = {
+                "device_id": session.device_id,
+                "updated": session.updated,
+                "message_count": len(session.messages),
+                "has_pending": session.pending is not None,
+                "focus": session.focus,
+                "last_message_preview": session.messages[-1]["content"][:200] + "..." if session.messages else None
+            }
+
+        # Log the session info for debugging
+        log.info("Current sessions: %s", sessions)
+
+        # You could also store this in a sensor or trigger automations
+        hass.states.async_set(f"{DOMAIN}.sessions", str(sessions), {"sessions": sessions})
+
+    async def get_last_interaction_handler(call: ServiceCall) -> None:
+        """Service to get the last interaction details."""
+        mgr = hass.data.get(DOMAIN, {}).get("sessions")
+        if not mgr:
+            return
+
+        # Get the most recent session by update time
+        recent_session = None
+        for session in mgr._data.values():
+            if recent_session is None or session.updated > recent_session.updated:
+                recent_session = session
+
+        if recent_session:
+            log.info("Last interaction: device=%s, messages=%d, pending=%s",
+                    recent_session.device_id, len(recent_session.messages),
+                    recent_session.pending is not None)
+            if recent_session.messages:
+                log.info("Last message: %s", recent_session.messages[-1]["content"][:200])
+
     hass.services.async_register(DOMAIN, "reload", reload_service_handler)
+    hass.services.async_register(DOMAIN, "get_sessions", get_sessions_handler)
+    hass.services.async_register(DOMAIN, "get_last_interaction", get_last_interaction_handler)
     return True
 
 
