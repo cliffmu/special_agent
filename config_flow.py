@@ -30,8 +30,13 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required("openai_api_key"): str,
                     vol.Optional("spotify_client_id", default=""): str,
                     vol.Optional("spotify_client_secret", default=""): str,
+                    vol.Optional("google_api_key", default=""): str,
+                    vol.Optional("google_cx", default=""): str,
                 }
             ),
+            description_placeholders={
+                "google_docs_url": "https://developers.google.com/custom-search/v1/overview"
+            },
         )
 
     @staticmethod
@@ -73,6 +78,20 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
                     default=current.get(
                         "spotify_client_secret",
                         self.config_entry.data.get("spotify_client_secret", ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    "google_api_key",
+                    default=current.get(
+                        "google_api_key",
+                        self.config_entry.data.get("google_api_key", ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    "google_cx",
+                    default=current.get(
+                        "google_cx",
+                        self.config_entry.data.get("google_cx", ""),
                     ),
                 ): str,
             }
