@@ -68,12 +68,18 @@ class Agent:
         user_input: str,
         hass: Any | None = None,
         session_key: tuple[str, str] | None = None,
+        model: str = "gpt-5",
+        reasoning_effort: str = "medium",
+        verbosity: str = "medium",
     ) -> Any:
         return await plan_execute(
             user_input,
             list(self.tools.values()),
             hass=hass,
             session_key=session_key,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
         )
 
 # ----------  helpers ----------
@@ -217,7 +223,7 @@ async def _is_followup_prompt(
     ]
     try:
         resp = await client.chat.completions.create(
-            model="o4-mini", messages=eval_messages
+            model="gpt-5", messages=eval_messages
         )
         answer = resp.choices[0].message.content.strip().lower()
         return answer.startswith("yes")
@@ -230,9 +236,11 @@ async def plan_execute(
     prompt: str,
     tools: List[ToolSpec],
     hass: Optional[Any] = None,
-    model: str = "o4-mini",          # ← your tweak #1
+    model: str = "gpt-5",       # Updated to GPT-5
     goals: Optional[List[str]] = None,   # ← new (can be None)
     session_key: tuple[str, str] | None = None,
+    reasoning_effort: str = "medium",  # GPT-5 parameter: "minimal", "low", "medium", "high"
+    verbosity: str = "medium",         # GPT-5 parameter: "low", "medium", "high"
 ) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
@@ -270,6 +278,7 @@ async def plan_execute(
         "    \"arguments\": {\"action\": \"turn off\", \"targets\": [\"light.kitchen\"]}\n"
         "  }}\n"
         "]\n"
+        f"MODEL: {model} | Reasoning: {reasoning_effort} | Verbosity: {verbosity}\n"
         "After every tool result you must:\n"
         "• reflect on whether the observation fully answers the user’s goal and, if goals "
         "are listed, mark completed goals as (done);\n"
@@ -334,14 +343,31 @@ async def plan_execute(
 
     # ---- main loop ----
     while depth < max_depth:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tool_json,
-            tool_choice="auto",
-            # temperature=0.4,
-        )
-        msg = resp.choices[0].message
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tool_json,
+                tool_choice="auto",
+                reasoning_effort=reasoning_effort,  # GPT-5 reasoning depth control
+                verbosity=verbosity,                # GPT-5 response detail level
+                # temperature=0.4,
+            )
+            msg = resp.choices[0].message
+        except Exception as err:
+            # Handle GPT-5 specific errors
+            error_msg = str(err)
+            if "context_overflow" in error_msg:
+                log.error("GPT-5 context overflow - reducing message history")
+                # Keep system message and last 5 user/assistant messages
+                messages = messages[:1] + messages[-10:]
+                continue
+            elif "modality_mismatch" in error_msg:
+                log.error("GPT-5 modality mismatch - check input format")
+                return "Error: Input format not compatible with GPT-5"
+            else:
+                log.error("GPT-5 API error: %s", err)
+                return f"Error calling GPT-5: {err}"
         log.debug("AI_Response_Content: %s", msg.content)      # ← your tweak #3
         if msg.tool_calls:
             log.debug(
