@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 import os
 import time
+from datetime import datetime
 
 import voluptuous as vol
 
@@ -50,6 +51,8 @@ class Agent:
             "tool_specs.search_spotify",
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",
+            "tool_specs.search_web",
+            "tool_specs.prepare_voice_response",
         ):
             module_name = f"{base}.{mod}" if base else mod
             try:
@@ -263,6 +266,11 @@ async def plan_execute(
         goals_fmt = "\n".join(f"{idx+1}. {g}" for idx, g in enumerate(goals))
         goals_block = f"\nGOALS:\n{goals_fmt}\n"
 
+    # Add current date/time context
+    current_datetime = datetime.now()
+    date_str = current_datetime.strftime("%A, %B %d, %Y")
+    time_str = current_datetime.strftime("%I:%M %p")
+    
     system_prompt = (
         "You are Special Agent, a smart‑home AI.\n"
         "When you call any tool you MUST include, in the SAME assistant message: 1) a line that begins with ‘Thought:’ summarising why you are calling the tool; and 2) the tool_calls object. Failure to comply means you will be asked to resend.\n"
