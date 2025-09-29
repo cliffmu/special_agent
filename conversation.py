@@ -19,9 +19,9 @@ _LOGGER = logging.getLogger(__package__)
 class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     """Minimal conversation agent stub."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         super().__init__()
-        self.agent = Agent()
+        self.agent = Agent(config)
 
     @property
     def unique_id(self) -> str:
@@ -93,10 +93,15 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    agent = SpecialAgentConversation()
+    # Get config including both data and options
+    config = dict(config_entry.data)
+    config.update(config_entry.options)
+    
+    agent = SpecialAgentConversation(config)
     async_add_entities([agent])
     from homeassistant.components.conversation import async_set_agent
 
     async_set_agent(hass, config_entry, agent)
-    _LOGGER.debug("Special Agent conversation initialized")
+    _LOGGER.debug("Special Agent conversation initialized with config: %s", 
+                  {k: "***" if "key" in k or "secret" in k else v for k, v in config.items()})
     return True

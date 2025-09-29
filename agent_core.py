@@ -34,15 +34,18 @@ class ToolSpec:
 class Agent:
     """Minimal ReAct‑capable agent."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: Dict[str, Any] | None = None) -> None:
         self.tools: Dict[str, ToolSpec] = {}
+        self.config = config or {}
         self.load_tools()
 
     # —— tool registry ——
     def load_tools(self) -> None:
         """Dynamically import any available tool specs."""
         base = __package__ or ""
-        for mod in (
+        
+        # Base tools that are always loaded
+        base_tools = [
             "tool_specs.build_vector_index",
             "tool_specs.confirm_action",
             "tool_specs.ask_user",
@@ -51,12 +54,28 @@ class Agent:
             "tool_specs.search_spotify",
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",
-            "tool_specs.search_web",
             "tool_specs.prepare_voice_response",
-        ):
+        ]
+        
+        # Conditionally add search_web if Google API is configured
+        if self.config.get("google_api_key") and self.config.get("google_cx"):
+            base_tools.append("tool_specs.search_web")
+            log.info("Google search enabled - API key and CX configured")
+        else:
+            log.info("Google search disabled - API key or CX not configured")
+        
+        for mod in base_tools:
             module_name = f"{base}.{mod}" if base else mod
             try:
                 module = importlib.import_module(module_name)
+                
+                # Special handling for search_web - set credentials
+                if mod == "tool_specs.search_web" and hasattr(module, "set_credentials"):
+                    module.set_credentials(
+                        self.config.get("google_api_key"),
+                        self.config.get("google_cx")
+                    )
+                
                 self.register_tool(module.SPEC)
             except Exception as err:  # pragma: no cover
                 log.debug("Tool '%s' not loaded: %s", module_name, err)
@@ -326,6 +345,7 @@ async def plan_execute(
     depth = 0
     max_depth = 7
     spec_map = {t.name: t for t in tools}
+    needs_voice_response = True  # Track if we need to format final response
 
     # ---- helper: summarise observation ----
     def _summarise(result: Any) -> str:
@@ -405,8 +425,15 @@ async def plan_execute(
                 depth += 1
                 retry_budget -= 1
                 if retry_budget < 0:
-                    _clear_session(mgr, session_key)
-                    return "Depth‑limit reached."
+                    # Force a voice response before giving up
+                    messages.append({
+                        "role": "assistant",
+                        "content": (
+                            "Thought: Maximum retries reached. I need to prepare a voice response "
+                            "to explain the situation to the user. Confidence: 100%"
+                        )
+                    })
+                    depth += 1
                 continue
             tried_calls.add(canonical)
 
