@@ -303,12 +303,18 @@ async def plan_execute(
     time_str = current_datetime.strftime("%I:%M %p")
     
     system_prompt = (
+        f"CURRENT DATE & TIME: {date_str} at {time_str}\n"
+        "Knowledge cutoff: October 2024.\n"
         "You are Special Agent, a smart‑home AI.\n"
         "When you call any tool you MUST include, in the SAME assistant message: 1) a line that begins with ‘Thought:’ summarising why you are calling the tool; and 2) the tool_calls object. Failure to comply means you will be asked to resend.\n"
         f"{goals_block}"
         "You have an index summary of the home with count of entity types for each area:\n"
         f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
-        "If you plan to call search_devices, use this data to choose the most likely area and domain names, and pick k slightly larger than the expected count."
+        "If you plan to call search_devices, use this data to choose the most likely area and domain names, and pick k slightly larger than the expected count.\n"
+        "SEARCH GUIDANCE:\n"
+        "- When using search_web, READ THE SNIPPETS CAREFULLY - they often contain the answer directly\n"
+        "- For time-sensitive queries (scores, news), use SPECIFIC DATES not words like 'yesterday'\n"
+        "- Example: If today is Sept 29, search 'Yankees score September 28' not 'Yankees yesterday'\n"
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
         "Example tool_calls JSON: [\n"
@@ -325,12 +331,12 @@ async def plan_execute(
         "• if NOT satisfied, brainstorm ONE improved call (re‑phrase query, bigger k, etc.) "
         "and invoke it; do this at most 2 times per user request;\n"
         "• never repeat an identical call already tried;\n"
-        "• once satisfied, talk to the user in clear, friendly language designed to be spoken "
-        "aloud to concisely convey information without symbols (no entity IDs unless they "
-        "explicitly asked for them) and stop.\n"
+        "• once satisfied, call prepare_voice_response with your answer to format it for voice output.\n"
         "When an external action is required, you MAY include both a Thought paragraph and "
         "tool_calls in the same message."
-        "\nRULES:\n- When you call confirm_action you MUST include a `question` field containing the exact sentence to speak."
+        "\nRULES:\n"
+        "- For FINAL ANSWERS, always use prepare_voice_response (do NOT use it for confirm_action/ask_user - they format themselves)\n"
+        "- When you call confirm_action you MUST include a `question` field containing the exact sentence to speak"
     )
 
     log.debug("System_Prompt: %s", system_prompt)
