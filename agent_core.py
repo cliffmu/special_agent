@@ -37,11 +37,14 @@ class Agent:
     def __init__(self, config: Dict[str, Any] | None = None) -> None:
         self.tools: Dict[str, ToolSpec] = {}
         self.config = config or {}
-        self.load_tools()
+        self._tools_loaded = False
 
     # —— tool registry ——
-    def load_tools(self) -> None:
+    async def load_tools(self, hass: Any | None = None) -> None:
         """Dynamically import any available tool specs."""
+        if self._tools_loaded:
+            return
+        self._tools_loaded = True
         base = __package__ or ""
         
         # Base tools that are always loaded
@@ -67,7 +70,13 @@ class Agent:
         for mod in base_tools:
             module_name = f"{base}.{mod}" if base else mod
             try:
-                module = importlib.import_module(module_name)
+                # Use executor to avoid blocking the event loop
+                if hass:
+                    module = await hass.async_add_executor_job(
+                        importlib.import_module, module_name
+                    )
+                else:
+                    module = importlib.import_module(module_name)
                 
                 # Special handling for search_web - set credentials
                 if mod == "tool_specs.search_web" and hasattr(module, "set_credentials"):
@@ -94,6 +103,9 @@ class Agent:
         reasoning_effort: str = "medium",
         verbosity: str = "medium",
     ) -> Any:
+        # Ensure tools are loaded
+        await self.load_tools(hass)
+        
         return await plan_execute(
             user_input,
             list(self.tools.values()),
