@@ -393,15 +393,13 @@ async def plan_execute(
                 return f"{len(result)} items: {head}{' …' if len(result) > 5 else ''}"
 
             if isinstance(result, dict):
-                # For search results, return full JSON so agent can read snippets
-                if "results" in result and isinstance(result.get("results"), list):
-                    return json.dumps(result, ensure_ascii=False)
-                
-                json_txt = json.dumps(result)
-                if len(result) <= 3 and len(json_txt) <= 200:
+                # Don't truncate tool results - agent needs to see the data
+                json_txt = json.dumps(result, ensure_ascii=False)
+                # Only truncate if extremely long (>2000 chars)
+                if len(json_txt) <= 2000:
                     return json_txt
-                keys = list(result.keys())[:5]
-                return f"dict with {len(result)} keys: {', '.join(keys)}{' …' if len(result) > 5 else ''}"
+                # For very long results, show first part
+                return json_txt[:2000] + "... (truncated)"
 
             txt = str(result)
             return txt if len(txt) <= 200 else txt[:200] + " …"

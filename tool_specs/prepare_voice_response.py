@@ -95,7 +95,8 @@ SPEC = ToolSpec(
     description=(
         "Format any content for natural voice output. Use this tool to prepare "
         "your final response to the user, ensuring it sounds natural when spoken aloud. "
-        "This tool removes technical formatting, adapts tone, and optimizes for voice assistants."
+        "This tool removes technical formatting, adapts tone, and optimizes for voice assistants. "
+        "Valid styles: 'conversational' (default), 'brief', 'detailed', 'confirmation', 'informational'"
     ),
     parameters=PARAMS,
     returns="dict with 'speak' field containing voice-optimized text",
