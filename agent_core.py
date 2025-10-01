@@ -58,14 +58,20 @@ class Agent:
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",
             "tool_specs.prepare_voice_response",
+            "tool_specs.search_web",
         ]
         
-        # Conditionally add search_web if Google API is configured
-        if self.config.get("google_api_key") and self.config.get("google_cx"):
-            base_tools.append("tool_specs.search_web")
-            log.info("Google search enabled - API key and CX configured")
-        else:
-            log.info("Google search disabled - API key or CX not configured")
+        # Google search integration (commented out - using OpenAI web search instead)
+        # To re-enable Google search:
+        # 1. Uncomment the block below
+        # 2. Add "tool_specs.search_web_google" to base_tools
+        # 3. Configure google_api_key and google_cx in config_flow
+        #
+        # if self.config.get("google_api_key") and self.config.get("google_cx"):
+        #     base_tools.append("tool_specs.search_web_google")
+        #     log.info("Google search enabled")
+        # else:
+        #     log.info("Google search disabled - using OpenAI web search")
         
         for mod in base_tools:
             module_name = f"{base}.{mod}" if base else mod
@@ -78,12 +84,12 @@ class Agent:
                 else:
                     module = importlib.import_module(module_name)
                 
-                # Special handling for search_web - set credentials
-                if mod == "tool_specs.search_web" and hasattr(module, "set_credentials"):
-                    module.set_credentials(
-                        self.config.get("google_api_key"),
-                        self.config.get("google_cx")
-                    )
+                # Google search credential setup (commented out)
+                # if mod == "tool_specs.search_web_google" and hasattr(module, "set_credentials"):
+                #     module.set_credentials(
+                #         self.config.get("google_api_key"),
+                #         self.config.get("google_cx")
+                #     )
                 
                 self.register_tool(module.SPEC)
             except Exception as err:  # pragma: no cover
@@ -322,10 +328,11 @@ async def plan_execute(
         "- Decide if search_devices will help (if user asks about lights and you see 'light' listed, search for them!)\n"
         "- Choose the right area and domain for search_devices (k = count shown + a few extra)\n"
         "- Avoid searching for device types not listed (tell user they're not available)\n"
-        "SEARCH GUIDANCE:\n"
-        "- When using search_web, READ THE SNIPPETS CAREFULLY - they often contain the answer directly\n"
-        "- For time-sensitive queries (scores, news), use SPECIFIC DATES not words like 'yesterday'\n"
-        "- Example: If today is Sept 29, search 'Yankees score September 28' not 'Yankees yesterday'\n"
+        "WEB SEARCH TOOL:\n"
+        "- search_web uses OpenAI with real-time sports scores, weather, and news\n"
+        "- It returns an interpreted 'answer' - the search is already done for you\n"
+        "- Use it when you need current info after Oct 2024 or time-sensitive data\n"
+        "- For sports scores, include specific dates: 'Yankees score September 28' not 'yesterday'\n"
         "WEATHER QUERIES:\n"
         "- For weather, ALWAYS check Home Assistant weather entities FIRST (search_devices domain=weather)\n"
         "- The 'temperature' attribute from weather entities IS the current temperature - use it directly\n"
