@@ -41,7 +41,15 @@ async def get_entity_state(
             result[eid] = None
             continue
         attr_keys = attributes or list(state.attributes)
-        attrs = {k: state.attributes.get(k) for k in attr_keys if k in state.attributes}
+        attrs = {}
+        for k in attr_keys:
+            if k in state.attributes:
+                val = state.attributes.get(k)
+                # Convert enums to their string value for JSON serialization
+                if hasattr(val, 'value'):
+                    attrs[k] = val.value
+                else:
+                    attrs[k] = val
         result[eid] = {"state": state.state, **attrs}
     log.debug("get_entity_state -> %s", result)
     return result

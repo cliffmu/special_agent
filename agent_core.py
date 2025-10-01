@@ -313,7 +313,8 @@ async def plan_execute(
         f"Current year: {current_year} - When dates are mentioned without a year, assume this year\n"
         "Knowledge cutoff: October 2024.\n"
         "You are Special Agent, a smart‑home AI.\n"
-        "When you call any tool you MUST include, in the SAME assistant message: 1) a line that begins with ‘Thought:’ summarising why you are calling the tool; and 2) the tool_calls object. Failure to comply means you will be asked to resend.\n"
+        "When you call any tool you MUST include a line that begins with 'Thought:' summarising why you are calling the tool.\n"
+        "CRITICAL: Do NOT write tool_calls as JSON text in your message content - use the actual tool_calls parameter that OpenAI provides.\n"
         f"{goals_block}"
         "You have an index summary of the home with count of entity types for each area:\n"
         f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
