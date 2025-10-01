@@ -301,9 +301,11 @@ async def plan_execute(
     current_datetime = datetime.now()
     date_str = current_datetime.strftime("%A, %B %d, %Y")
     time_str = current_datetime.strftime("%I:%M %p")
+    current_year = current_datetime.year
     
     system_prompt = (
         f"CURRENT DATE & TIME: {date_str} at {time_str}\n"
+        f"Current year: {current_year} - When dates are mentioned without a year, assume this year\n"
         "Knowledge cutoff: October 2024.\n"
         "You are Special Agent, a smart‑home AI.\n"
         "When you call any tool you MUST include, in the SAME assistant message: 1) a line that begins with ‘Thought:’ summarising why you are calling the tool; and 2) the tool_calls object. Failure to comply means you will be asked to resend.\n"
@@ -336,6 +338,8 @@ async def plan_execute(
         "tool_calls in the same message."
         "\nRULES:\n"
         "- For FINAL ANSWERS, always use prepare_voice_response (do NOT use it for confirm_action/ask_user - they format themselves)\n"
+        "- NEVER suggest checking external services (MLB, ESPN, etc) - use only the tools you have available\n"
+        "- If you can't find info with search_web, just say you don't have access to that information\n"
         "- When you call confirm_action you MUST include a `question` field containing the exact sentence to speak"
     )
 
@@ -376,6 +380,10 @@ async def plan_execute(
                 return f"{len(result)} items: {head}{' …' if len(result) > 5 else ''}"
 
             if isinstance(result, dict):
+                # For search results, return full JSON so agent can read snippets
+                if "results" in result and isinstance(result.get("results"), list):
+                    return json.dumps(result, ensure_ascii=False)
+                
                 json_txt = json.dumps(result)
                 if len(result) <= 3 and len(json_txt) <= 200:
                     return json_txt
