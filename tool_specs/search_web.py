@@ -1,11 +1,9 @@
-"""Tool for searching the web using Google Custom Search API."""
+"""Tool for web search using OpenAI's built-in web search capability."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict
-import aiohttp
-import json
 
 import voluptuous as vol
 
@@ -14,132 +12,108 @@ from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
-# Global variables to store API credentials (set by agent when loading)
-_GOOGLE_API_KEY = None
-_GOOGLE_CX = None
-
 PARAMS = vol.Schema(
     {
         vol.Required("query"): str,
-        vol.Optional("max_results", default=3): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=10)
-        ),
+        vol.Optional("reasoning_effort", default="low"): vol.In([
+            "minimal", "low", "medium", "high"
+        ]),
     }
 )
 
 
 async def search_web(
     query: str,
-    max_results: int = 3,
+    reasoning_effort: str = "low",
     hass: Any | None = None,
 ) -> Dict[str, Any]:
     """
-    Search the web using Google Custom Search API.
+    Search the web using OpenAI's built-in web search.
     
-    Returns structured search results that the agent can interpret.
+    This leverages OpenAI's web_search tool which includes:
+    - Real-time sports scores (oai-sports feed)
+    - Current weather (oai-weather feed)
+    - Financial data (oai-finance feed)
+    - General web results with citations
+    
+    Returns structured results with answer and sources.
     """
-    log.debug(f"Google search: {query}")
-    
-    # Check if API credentials are available
-    if not _GOOGLE_API_KEY or not _GOOGLE_CX:
-        log.error("Google API credentials not configured")
-        return {
-            "query": query,
-            "error": "Search not configured",
-            "message": "Web search is not available. Google API credentials have not been configured."
-        }
+    log.debug(f"OpenAI web search: {query} (effort={reasoning_effort})")
     
     try:
-        async with aiohttp.ClientSession() as session:
-            # Google Custom Search API endpoint
-            url = "https://www.googleapis.com/customsearch/v1"
-            params = {
-                "key": _GOOGLE_API_KEY,
-                "cx": _GOOGLE_CX,
-                "q": query,
-                "num": max_results,
-            }
-            
-            async with session.get(url, params=params) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    
-                    # Build structured response
-                    result = {
-                        "query": query,
-                        "results": [],
-                        "total_results": data.get("searchInformation", {}).get("totalResults", "0")
+        from ..utils.openai_client import get_async_client
+        client = await get_async_client(hass)
+        
+        # Get user location from Home Assistant for better local results
+        user_location = None
+        if hass:
+            try:
+                # Get timezone and location from HA config
+                if hasattr(hass.config, 'time_zone'):
+                    timezone = hass.config.time_zone
+                    user_location = {
+                        "type": "approximate",
+                        "timezone": timezone
                     }
-                    
-                    # Extract search results
-                    items = data.get("items", [])
-                    for item in items:
-                        result["results"].append({
-                            "title": item.get("title", ""),
-                            "snippet": item.get("snippet", ""),
-                            "link": item.get("link", ""),
-                            "source": item.get("displayLink", "")
-                        })
-                    
-                    # Check for answer box or featured snippets
-                    if "answerBox" in data:
-                        answer_box = data["answerBox"]
-                        if answer_box.get("answer"):
-                            result["instant_answer"] = answer_box["answer"]
-                        elif answer_box.get("snippet"):
-                            result["featured_snippet"] = answer_box["snippet"]
-                    
-                    # Check for knowledge graph
-                    if "knowledge_graph" in data:
-                        kg = data["knowledge_graph"]
-                        if kg.get("description"):
-                            result["summary"] = kg["description"]
-                    
-                    return result
-                    
-                elif resp.status == 403:
-                    error_data = await resp.json()
-                    error_msg = error_data.get("error", {}).get("message", "API key invalid or quota exceeded")
-                    log.error(f"Google API error: {error_msg}")
-                    return {
-                        "query": query,
-                        "error": "API limit or authentication issue",
-                        "message": f"Search failed: {error_msg}"
-                    }
-                else:
-                    log.error(f"Google API returned status {resp.status}")
-                    return {
-                        "query": query,
-                        "error": f"HTTP {resp.status}",
-                        "message": "Search service returned an error. Please try again later."
-                    }
-                    
+                    # Try to add location name if available
+                    if hasattr(hass.config, 'location_name') and hass.config.location_name:
+                        user_location["city"] = hass.config.location_name
+            except Exception as e:
+                log.debug(f"Could not get user location: {e}")
+        
+        # Build tools config
+        web_search_tool = {"type": "web_search"}
+        if user_location:
+            web_search_tool["user_location"] = user_location
+        
+        # Call OpenAI Responses API
+        response = await client.responses.create(
+            model="gpt-5",
+            reasoning={"effort": reasoning_effort},
+            tools=[web_search_tool],
+            tool_choice="auto",
+            include=["web_search_call.action.sources"],
+            input=query,
+        )
+        
+        # Extract response
+        result = {
+            "query": query,
+            "answer": response.output_text,
+            "sources": [],
+        }
+        
+        # Extract sources from web_search_call items
+        for item in response.output:
+            if item.get("type") == "web_search_call":
+                action = item.get("action", {})
+                sources_list = action.get("sources", [])
+                if sources_list:
+                    result["sources"] = sources_list
+        
+        log.debug(f"OpenAI search returned {len(result.get('sources', []))} sources")
+        return result
+        
     except Exception as e:
-        log.error(f"Google search exception: {e}")
+        log.error(f"OpenAI web search failed: {e}")
         return {
             "query": query,
             "error": str(e),
-            "message": "An error occurred while searching. Please try again."
+            "message": f"Web search failed: {str(e)}"
         }
-
-
-def set_credentials(api_key: str, cx: str) -> None:
-    """Set the Google API credentials for this module."""
-    global _GOOGLE_API_KEY, _GOOGLE_CX
-    _GOOGLE_API_KEY = api_key
-    _GOOGLE_CX = cx
-    log.debug("Google search credentials configured")
 
 
 # Tool specification
 SPEC = ToolSpec(
     name="search_web",
     description=(
-        "Search the web using Google for current information when your knowledge is insufficient "
-        "or when the user asks about recent events, news, scores, or data after October 2024. "
-        "Returns structured search results including titles, snippets, and links that you should interpret and summarize."
+        "Search the web using OpenAI for current information when your knowledge is insufficient "
+        "or when the user asks about recent events, news, scores, weather, or data after October 2024. "
+        "This tool has access to real-time sports scores (oai-sports), weather (oai-weather), "
+        "and financial data (oai-finance), plus general web results with citations. "
+        "Returns answer text already interpreted by GPT-5, plus source URLs."
     ),
     parameters=PARAMS,
-    returns="dict with search results including title, snippet, link for each result, plus total_results count",
+    returns="dict with 'answer' (interpreted text) and 'sources' (list of URLs)",
     func=search_web,
 )
