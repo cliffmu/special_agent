@@ -297,10 +297,15 @@ async def plan_execute(
         goals_fmt = "\n".join(f"{idx+1}. {g}" for idx, g in enumerate(goals))
         goals_block = f"\nGOALS:\n{goals_fmt}\n"
 
-    # Add current date/time context
+    # Add current date/time context with timezone
     current_datetime = datetime.now()
     date_str = current_datetime.strftime("%A, %B %d, %Y")
-    time_str = current_datetime.strftime("%I:%M %p")
+    time_str = current_datetime.strftime("%I:%M %p %Z")
+    # If no timezone in strftime, try to get it manually
+    if not time_str.strip().endswith(('PST', 'PDT', 'EST', 'EDT', 'MST', 'MDT', 'CST', 'CDT')):
+        import time
+        tz_name = time.tzname[time.daylight]
+        time_str = current_datetime.strftime("%I:%M %p") + f" {tz_name}"
     current_year = current_datetime.year
     
     system_prompt = (
@@ -312,11 +317,18 @@ async def plan_execute(
         f"{goals_block}"
         "You have an index summary of the home with count of entity types for each area:\n"
         f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
-        "If you plan to call search_devices, use this data to choose the most likely area and domain names, and pick k slightly larger than the expected count.\n"
+        "Use this device list to:\n"
+        "- Decide if search_devices will help (if user asks about lights and you see 'light' listed, search for them!)\n"
+        "- Choose the right area and domain for search_devices (k = count shown + a few extra)\n"
+        "- Avoid searching for device types not listed (tell user they're not available)\n"
         "SEARCH GUIDANCE:\n"
         "- When using search_web, READ THE SNIPPETS CAREFULLY - they often contain the answer directly\n"
         "- For time-sensitive queries (scores, news), use SPECIFIC DATES not words like 'yesterday'\n"
         "- Example: If today is Sept 29, search 'Yankees score September 28' not 'Yankees yesterday'\n"
+        "WEATHER QUERIES:\n"
+        "- For weather, ALWAYS check Home Assistant weather entities FIRST (search_devices domain=weather)\n"
+        "- The 'temperature' attribute from weather entities IS the current temperature - use it directly\n"
+        "- Only use search_web for weather if no HA weather entities are available\n"
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
         "Example tool_calls JSON: [\n"
