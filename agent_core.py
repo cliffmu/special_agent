@@ -26,9 +26,10 @@ except ImportError:  # pragma: no cover - support direct execution
 class ToolSpec:
     name: str
     description: str
-    parameters: vol.Schema
+    parameters: dict  # JSON schema (OpenAI format)
     returns: str | None
     func: Callable[..., Awaitable[Any]]
+    validate: Callable[[dict], dict] | None = None  # Optional validation function
 
 # ----------  agent ----------
 class Agent:
@@ -121,85 +122,13 @@ class Agent:
         )
 
 # ----------  helpers ----------
-_JSON_TYPES = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-    dict: "object",
-    list: "array",
-}
-
-
-def _schema_to_json(value: Any) -> Dict:
-    """Recursively convert a Voluptuous schema into JSON Schema."""
-    import voluptuous as vol
-
-    if isinstance(value, vol.Schema):
-        value = value.schema
-
-    if isinstance(value, dict):
-        props: Dict[str, Any] = {}
-        required: list[str] = []
-        for k, v in value.items():
-            name = k.schema if isinstance(k, (vol.Required, vol.Optional)) else k
-            prop_schema = _schema_to_json(v)
-            
-            # For strict mode: all properties must be required
-            # Optional fields should allow null as a type
-            if isinstance(k, vol.Optional):
-                # Make type nullable
-                if "type" in prop_schema:
-                    current_type = prop_schema["type"]
-                    prop_schema["type"] = [current_type, "null"] if isinstance(current_type, str) else current_type
-                if k.default is not vol.UNDEFINED:
-                    prop_schema["default"] = k.default()
-            
-            # All fields must be in required array for strict mode
-            required.append(str(name))
-            props[str(name)] = prop_schema
-            
-        result: Dict[str, Any] = {
-            "type": "object",
-            "properties": props,
-            "additionalProperties": False  # Required for strict mode
-        }
-        if required:
-            result["required"] = required
-        return result
-
-    if isinstance(value, list):
-        item_schema = _schema_to_json(value[0]) if value else {}
-        return {"type": "array", "items": item_schema}
-
-    if isinstance(value, vol.Any):
-        return {"oneOf": [_schema_to_json(v) for v in value.validators if v is not None]}
-
-    if isinstance(value, vol.All):
-        schema: Dict[str, Any] = {}
-        for v in value.validators:
-            schema.update(_schema_to_json(v))
-        return schema
-
-    if isinstance(value, vol.Coerce):
-        return _schema_to_json(value.type)
-
-    if isinstance(value, type):
-        return {"type": _JSON_TYPES.get(value, "string")}
-
-    return {"type": _JSON_TYPES.get(type(value), "string")}
-
-
 def _spec_to_json(spec: ToolSpec) -> Dict:
-    """Translate Voluptuous schema → JSON schema for OpenAI Responses API."""
-    params_schema = _schema_to_json(spec.parameters)
-    # Responses API uses flat structure (no nested "function" wrapper)
+    """Convert ToolSpec to OpenAI Responses API format."""
     return {
         "type": "function",
         "name": spec.name,
         "description": spec.description,
-        "parameters": params_schema,
-        "strict": True,  # Enable strict mode for reliable function calls
+        "parameters": spec.parameters,  # Already in JSON schema format
     }
 
 
@@ -524,8 +453,11 @@ async def plan_execute(
             # validate & execute
             try:
                 spec = spec_map[call_name]
-                args = spec.parameters(json.loads(raw_json))   # validate
-            except Exception as err:         # ← catches MultipleInvalid and others
+                args = json.loads(raw_json)
+                # Use custom validation if provided, otherwise skip validation
+                if spec.validate:
+                    args = spec.validate(args)
+            except Exception as err:
                 log.debug("Validation error: %s", err)
                 messages.append({
                     "role": "user",

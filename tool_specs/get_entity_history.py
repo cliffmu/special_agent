@@ -40,27 +40,46 @@ _LOGGER = logging.getLogger(__package__)
 
 MAX_EVENTS = 100
 
-_ENTITY = vol.All(
-    vol.Any(str, [str]),
-    lambda v: v[0] if isinstance(v, list) else v,
-)
-
-PARAMS = vol.Schema(
-    {
-        vol.Required("entity_id"): _ENTITY,
-        vol.Optional("lookback_hours", default=24): vol.All(
-            int, vol.Range(min=1, max=168)
-        ),
-        vol.Optional("start_iso"): str,
-        vol.Optional("end_iso"): str,
-        vol.Optional("target_state"): str,
-        vol.Optional("limit", default=1): vol.All(int, vol.Range(min=1)),
-    }
-)
+# OpenAI JSON schema format
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "entity_id": {
+            "type": "string",
+            "description": "Entity ID to get history for"
+        },
+        "lookback_hours": {
+            "type": "integer",
+            "description": "Hours to look back (1-168)",
+            "default": 24,
+            "minimum": 1,
+            "maximum": 168
+        },
+        "start_iso": {
+            "type": "string",
+            "description": "Start time in ISO format (optional)"
+        },
+        "end_iso": {
+            "type": "string",
+            "description": "End time in ISO format (optional)"
+        },
+        "target_state": {
+            "type": "string",
+            "description": "Filter for specific state value (optional)"
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Maximum number of events to return",
+            "default": 1,
+            "minimum": 1
+        }
+    },
+    "required": ["entity_id"]
+}
 
 
 async def get_entity_history(
-    entity_id: str | list[str],
+    entity_id: str,
     lookback_hours: int = 24,
     start_iso: str | None = None,
     end_iso: str | None = None,
@@ -75,8 +94,7 @@ async def get_entity_history(
     """
     if get_significant_states is None:
         raise RuntimeError("history component not available")
-    if isinstance(entity_id, list):
-        entity_id = entity_id[0]
+    # entity_id is now always a string, no parsing needed
     if start_iso or end_iso:
         start = parse_datetime(start_iso) if start_iso else None
         end = parse_datetime(end_iso) if end_iso else None

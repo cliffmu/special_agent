@@ -5,21 +5,29 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import voluptuous as vol
-
 from ..agent_core import ToolSpec
 from ..utils.spotify import search_spotify as _search
 from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
-
-PARAMS = vol.Schema(
-    {
-        vol.Required("query"): str,
-        vol.Optional("type", default="track"): vol.In(["track", "artist", "album", "playlist"]),
-    }
-)
+# OpenAI JSON schema format
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Search term for Spotify"
+        },
+        "type": {
+            "type": "string",
+            "enum": ["track", "artist", "album", "playlist"],
+            "description": "Type of content to search for",
+            "default": "track"
+        }
+    },
+    "required": ["query"]
+}
 
 
 async def search_spotify(query: str, type: str = "track", hass: Any | None = None) -> str | None:

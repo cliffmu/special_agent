@@ -5,19 +5,27 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import voluptuous as vol
-
 from ..agent_core import ToolSpec
 from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
-PARAMS = vol.Schema(
-    {
-        vol.Required("service"): str,
-        vol.Optional("data", default={}): dict,
-    }
-)
+# OpenAI JSON schema format
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "service": {
+            "type": "string",
+            "description": "Home Assistant service to call (e.g., 'light.turn_on', 'switch.turn_off')"
+        },
+        "data": {
+            "type": "object",
+            "description": "Service data including entity_id",
+            "default": {}
+        }
+    },
+    "required": ["service"]
+}
 
 
 async def control_device(
