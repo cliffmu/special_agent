@@ -143,12 +143,22 @@ def _schema_to_json(value: Any) -> Dict:
         required: list[str] = []
         for k, v in value.items():
             name = k.schema if isinstance(k, (vol.Required, vol.Optional)) else k
-            if isinstance(k, vol.Required):
-                required.append(str(name))
             prop_schema = _schema_to_json(v)
-            if isinstance(k, (vol.Optional, vol.Required)) and k.default is not vol.UNDEFINED:
-                prop_schema["default"] = k.default()
+            
+            # For strict mode: all properties must be required
+            # Optional fields should allow null as a type
+            if isinstance(k, vol.Optional):
+                # Make type nullable
+                if "type" in prop_schema:
+                    current_type = prop_schema["type"]
+                    prop_schema["type"] = [current_type, "null"] if isinstance(current_type, str) else current_type
+                if k.default is not vol.UNDEFINED:
+                    prop_schema["default"] = k.default()
+            
+            # All fields must be in required array for strict mode
+            required.append(str(name))
             props[str(name)] = prop_schema
+            
         result: Dict[str, Any] = {
             "type": "object",
             "properties": props,
