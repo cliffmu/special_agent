@@ -373,3 +373,29 @@ User: "Yankees score yesterday?"
 → Returns: "Yankees beat Red Sox 4-3"
 → Agent formats with prepare_voice_response
 ```
+
+\### 12.5 Future Enhancement: Native Response Chaining
+
+**Consider using `previous_response_id` for simpler session management:**
+
+```python
+res = client.responses.create(
+    model="gpt-5",
+    input="Follow-up query",
+    previous_response_id=last_response.id,  # OpenAI handles context!
+    store=True
+)
+```
+
+**Benefits:**
+- Automatic context preservation
+- 40-80% better prompt caching
+- No manual message management
+- Simpler code
+
+**Trade-offs:**
+- Need separate storage for `pending` confirmations and `focus` memory
+- Less control over session inspection
+- Multi-device mapping requires custom key management
+
+**Status:** Under consideration for future implementation

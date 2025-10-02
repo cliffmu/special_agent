@@ -259,9 +259,11 @@ async def plan_execute(
     log.debug("Tools_Provided: %s", tool_json)     # ← your tweak #2
 
     # ---- state ----
-    messages, mgr, focus = load_session(hass, session_key, system_prompt, prompt)
+    messages, mgr, focus, pending = load_session(hass, session_key, system_prompt, prompt)
+    
     # Check if this is a follow-up to previous conversation
-    if len(messages) > 2:  # Has previous conversation history
+    # Skip check if there's a pending confirmation (definitely a follow-up)
+    if len(messages) > 2 and not pending:  # Has history but no pending action
         try:
             follow = await _is_followup_prompt(client, messages[:-1], prompt)
         except Exception as err:  # pragma: no cover
@@ -275,6 +277,11 @@ async def plan_execute(
                 {"role": "user", "content": prompt},
             ]
             focus = None
+            pending = None
+    
+    # If there's a pending confirmation, add it to context
+    if pending:
+        log.debug("Pending confirmation exists: %s", pending)
     tried_calls: set[tuple[str, str]] = set()
     retry_budget = 2
     depth = 0
