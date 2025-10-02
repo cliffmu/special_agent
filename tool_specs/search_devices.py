@@ -98,7 +98,9 @@ SPEC = ToolSpec(
     name="search_devices",
     description=(
         f"Find matching Home Assistant entities by text query. "
-        f"This tool *always* needs a non-empty 'query' string (e.g. 'lights'). "
+        f"Check the device list in your context to see if the requested device type exists before searching. "
+        f"For weather queries, use domain='weather' to find weather entities - the 'temperature' attribute IS the current temp. "
+        f"Use the area/domain filters and set k slightly larger than the count shown in the device list. "
         f"Parameter 'k' is capped at {MAX_SEARCH_K}."
     ),
     parameters=PARAMS,

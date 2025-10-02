@@ -62,19 +62,29 @@ async def prepare_voice_response(
     # Remove brackets and technical punctuation
     voice_content = re.sub(r'[\[\]{}]', '', voice_content)
     
-    # Convert numbers and units for natural speech
-    voice_content = re.sub(r'(\d+)%', r'\1 percent', voice_content)
-    voice_content = re.sub(r'(\d+)°F', r'\1 degrees fahrenheit', voice_content)
-    voice_content = re.sub(r'(\d+)°C', r'\1 degrees celsius', voice_content)
-    
-    # Apply style adjustments
+    # Apply style adjustments BEFORE unit conversion
     if style == "brief":
-        # Truncate long responses
-        sentences = voice_content.split('. ')
+        # For brief style, keep it very concise
+        # Remove bullet points
+        voice_content = re.sub(r'[•\-]\s*', '', voice_content)
+        # Remove line breaks
+        voice_content = voice_content.replace('\n', ' ')
+        # Remove "about" and similar hedging words
+        voice_content = re.sub(r'\babout\s+', '', voice_content)
+        # Keep % symbol for brevity (don't convert to "percent")
+        # Limit to 2-3 key sentences
+        sentences = [s.strip() for s in voice_content.split('.') if s.strip()]
         if len(sentences) > 2:
             voice_content = '. '.join(sentences[:2]) + '.'
+        else:
+            voice_content = '. '.join(sentences) + '.'
+    else:
+        # For other styles, convert units to words
+        voice_content = re.sub(r'(\d+)%', r'\1 percent', voice_content)
+        voice_content = re.sub(r'(\d+)°F', r'\1 degrees fahrenheit', voice_content)
+        voice_content = re.sub(r'(\d+)°C', r'\1 degrees celsius', voice_content)
     
-    elif style == "confirmation":
+    if style == "confirmation":
         # Ensure it sounds like a question
         if not voice_content.rstrip().endswith('?'):
             voice_content = voice_content.rstrip('.') + '?'
@@ -103,10 +113,12 @@ async def prepare_voice_response(
 SPEC = ToolSpec(
     name="prepare_voice_response",
     description=(
-        "Format any content for natural voice output. Use this tool to prepare "
-        "your final response to the user, ensuring it sounds natural when spoken aloud. "
+        "Format content for natural voice output. ALWAYS use this for final answers to users. "
+        "IMPORTANT: For style='brief', provide a SHORT SUMMARY (1-2 sentences max), NOT detailed lists. "
+        "Example brief: 'You have 5 office lights on, most at full brightness' NOT listing each light individually. "
         "This tool removes technical formatting, adapts tone, and optimizes for voice assistants. "
-        "Valid styles: 'conversational' (default), 'brief', 'detailed', 'confirmation', 'informational'"
+        "Valid styles: 'conversational' (default), 'brief', 'detailed', 'confirmation', 'informational'. "
+        "Do NOT use this for confirm_action or ask_user - they format their own output."
     ),
     parameters=PARAMS,
     returns="dict with 'speak' field containing voice-optimized text",

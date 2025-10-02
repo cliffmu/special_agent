@@ -59,8 +59,9 @@ SPEC = ToolSpec(
     name="confirm_action",
     description=(
         "Ask the user for confirmation before using the 'control_device' tool to change device states. "
-        "Provide a natural‑language question meant to be spoken aloud that concisely includes both the "
-        "action and target devices."
+        "REQUIRED: You MUST include a 'question' parameter with the exact natural-language sentence to speak. "
+        "The question should concisely mention both the action and target devices. "
+        "Example: 'Do you want me to turn off the kitchen lights?'"
     ),
     parameters=PARAMS,
     returns="dict(speak, kind='confirm', pending)",
