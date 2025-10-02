@@ -149,7 +149,11 @@ def _schema_to_json(value: Any) -> Dict:
             if isinstance(k, (vol.Optional, vol.Required)) and k.default is not vol.UNDEFINED:
                 prop_schema["default"] = k.default()
             props[str(name)] = prop_schema
-        result: Dict[str, Any] = {"type": "object", "properties": props}
+        result: Dict[str, Any] = {
+            "type": "object",
+            "properties": props,
+            "additionalProperties": False  # Required for strict mode
+        }
         if required:
             result["required"] = required
         return result
@@ -177,15 +181,15 @@ def _schema_to_json(value: Any) -> Dict:
 
 
 def _spec_to_json(spec: ToolSpec) -> Dict:
-    """Translate Voluptuous schema → JSON schema for OpenAI."""
+    """Translate Voluptuous schema → JSON schema for OpenAI Responses API."""
     params_schema = _schema_to_json(spec.parameters)
+    # Responses API uses flat structure (no nested "function" wrapper)
     return {
         "type": "function",
-        "function": {
-            "name": spec.name,
-            "description": spec.description,
-            "parameters": params_schema,
-        },
+        "name": spec.name,
+        "description": spec.description,
+        "parameters": params_schema,
+        "strict": True,  # Enable strict mode for reliable function calls
     }
 
 
