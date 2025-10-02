@@ -4,24 +4,31 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-import voluptuous as vol
-
 from ..agent_core import ToolSpec
 from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
-_ENTITIES = vol.All(
-    vol.Any(str, [str]),
-    lambda v: [v] if isinstance(v, str) else list(v),
-    vol.Length(min=1),
-)
-
-PARAMS = vol.Schema({vol.Required("entity_ids"): _ENTITIES, vol.Optional("attributes"): [str]})
+# OpenAI JSON schema format
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "entity_ids": {
+            "type": "string",
+            "description": "Entity ID or comma-separated list of entity IDs"
+        },
+        "attributes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of specific attributes to return (optional)"
+        }
+    },
+    "required": ["entity_ids"]
+}
 
 
 async def get_entity_state(
-    entity_ids: List[str] | str,
+    entity_ids: str,
     attributes: List[str] | None = None,
     hass: Any | None = None,
 ) -> Dict[str, Any]:
@@ -30,12 +37,15 @@ async def get_entity_state(
     When ``attributes`` is ``None`` all available attributes from the
     entity's state are returned.
     """
-    if isinstance(entity_ids, str):
-        entity_ids = [entity_ids]
+    # Parse comma-separated entity IDs
+    if "," in entity_ids:
+        entity_ids_list = [eid.strip() for eid in entity_ids.split(",")]
+    else:
+        entity_ids_list = [entity_ids]
     result: Dict[str, Any] = {}
     hass_states = getattr(hass, "states", None)
     get_state = getattr(hass_states, "get", None) if hass_states else None
-    for eid in entity_ids:
+    for eid in entity_ids_list:
         state = get_state(eid) if callable(get_state) else None
         if not state:
             result[eid] = None

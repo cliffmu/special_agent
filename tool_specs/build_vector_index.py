@@ -7,8 +7,6 @@ from typing import Any
 import asyncio
 import functools
 
-import voluptuous as vol
-
 from ..utils import logging as log
 from ..utils.vector_index import build_vector_index
 from ..utils.data_sources import get_ha_states, enrich_states_metadata
@@ -16,7 +14,18 @@ from ..agent_core import ToolSpec
 
 _LOGGER = logging.getLogger(__package__)
 
-PARAMS = vol.Schema({vol.Optional("force", default=False): bool})
+# OpenAI JSON schema format  
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "force": {
+            "type": "boolean",
+            "description": "Force rebuild even if index exists",
+            "default": False
+        }
+    },
+    "required": []
+}
 
 
 async def build_vector_index_tool(

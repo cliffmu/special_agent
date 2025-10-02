@@ -6,22 +6,32 @@ import logging
 from typing import Any, Dict
 import re
 
-import voluptuous as vol
-
 from ..agent_core import ToolSpec
 from ..utils import logging as log
 
 _LOGGER = logging.getLogger(__package__)
 
-PARAMS = vol.Schema(
-    {
-        vol.Required("content"): str,
-        vol.Optional("style", default="conversational"): vol.In([
-            "conversational", "brief", "detailed", "confirmation", "informational"
-        ]),
-        vol.Optional("context"): dict,  # Optional context about what was asked
-    }
-)
+# OpenAI JSON schema format
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "content": {
+            "type": "string",
+            "description": "The content to format for voice output"
+        },
+        "style": {
+            "type": "string",
+            "enum": ["conversational", "brief", "detailed", "confirmation", "informational"],
+            "description": "Output style",
+            "default": "conversational"
+        },
+        "context": {
+            "type": "object",
+            "description": "Optional context about the query"
+        }
+    },
+    "required": ["content"]
+}
 
 
 async def prepare_voice_response(

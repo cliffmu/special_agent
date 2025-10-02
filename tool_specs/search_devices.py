@@ -7,8 +7,6 @@ from typing import List, Any, Dict, Tuple
 
 import re
 
-import voluptuous as vol
-
 from ..utils.vector_index import (
     async_load_vector_index,
     async_query_vector_index,
@@ -32,20 +30,37 @@ def _sanitize_info(text: str) -> Tuple[str, List[str] | None]:
     return info, keys if keys else None
 
 
-PARAMS = vol.Schema(
-    {
-        vol.Required("query"): str,
-        vol.Optional("area"): str,
-        vol.Optional("domain", default=["light", "switch"]): vol.Any(str, [str]),
-        vol.Optional("k", default=5): int,
-    }
-)
+# OpenAI JSON schema format
+PARAMS = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Text query to search for matching devices"
+        },
+        "area": {
+            "type": "string",
+            "description": "Filter by area/room name"
+        },
+        "domain": {
+            "type": "string",
+            "description": "Filter by domain (e.g., 'light', 'switch', 'weather'). Use comma-separated for multiple.",
+            "default": "light,switch"
+        },
+        "k": {
+            "type": "integer",
+            "description": f"Number of results to return (max {MAX_SEARCH_K})",
+            "default": 5
+        }
+    },
+    "required": ["query"]
+}
 
 
 async def search_devices(
     query: str,
     area: str | None = None,
-    domain: str | list[str] | None = None,
+    domain: str = "light,switch",
     k: int = 5,
     hass: Any | None = None,
 ) -> List[Dict[str, Any]]:
@@ -56,7 +71,9 @@ async def search_devices(
     if area:
         filters["area_id"] = area
     if domain:
-        filters["domain"] = domain
+        # Parse comma-separated domain string to list
+        domain_list = [d.strip() for d in domain.split(",")]
+        filters["domain"] = domain_list
     hits = await async_query_vector_index(
         index_data, query, k, filters, hass=hass
     )
