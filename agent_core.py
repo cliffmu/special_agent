@@ -421,8 +421,12 @@ async def plan_execute(
                 [(fc.name, fc.arguments) for fc in function_calls],
             )
         
-        # Add response output to messages
-        messages.extend(resp.output)
+        # Add response output to messages (convert to dict for JSON serialization)
+        for item in resp.output:
+            if hasattr(item, 'model_dump'):
+                messages.append(item.model_dump())
+            else:
+                messages.append(item)
 
         # ---------- tool branch ----------
         if function_calls:
