@@ -260,13 +260,15 @@ async def plan_execute(
 
     # ---- state ----
     messages, mgr, focus = load_session(hass, session_key, system_prompt, prompt)
-    if focus:
+    # Check if this is a follow-up to previous conversation
+    if len(messages) > 2:  # Has previous conversation history
         try:
             follow = await _is_followup_prompt(client, messages[:-1], prompt)
         except Exception as err:  # pragma: no cover
             log.debug("Follow-up check error: %s", err)
             follow = False
         if not follow:
+            # New topic - clear old session and start fresh
             clear_session(mgr, session_key)
             messages = [
                 {"role": "system", "content": system_prompt},
