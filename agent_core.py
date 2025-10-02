@@ -165,10 +165,18 @@ def _store_session(
 ) -> None:
     """Persist session state if a manager is available."""
     if mgr and session_key:
+        # Convert Pydantic objects to dicts for JSON serialization
+        serializable_messages = []
+        for msg in messages:
+            if hasattr(msg, 'model_dump'):
+                serializable_messages.append(msg.model_dump())
+            else:
+                serializable_messages.append(msg)
+        
         mgr.set(
             session_key,
             Session(
-                messages=messages,
+                messages=serializable_messages,
                 pending=pending,
                 focus=focus,
                 device_id=session_key[1],
@@ -421,12 +429,9 @@ async def plan_execute(
                 [(fc.name, fc.arguments) for fc in function_calls],
             )
         
-        # Add response output to messages (convert to dict for JSON serialization)
-        for item in resp.output:
-            if hasattr(item, 'model_dump'):
-                messages.append(item.model_dump())
-            else:
-                messages.append(item)
+        # Add entire response output to messages (Responses API native format)
+        # OpenAI handles all item types (message, function_call, reasoning, web_search_call)
+        messages.extend(resp.output)
 
         # ---------- tool branch ----------
         if function_calls:
