@@ -146,7 +146,15 @@ def _load_session(
         if session_key and mgr:
             session = mgr.get(session_key)
             if session:
-                msgs = list(session.messages)
+                # Clean loaded messages - remove fields not valid for Responses API input
+                msgs = []
+                for msg in session.messages:
+                    if isinstance(msg, dict):
+                        # Remove status, id, and other output-only fields
+                        clean_msg = {k: v for k, v in msg.items() if k not in ('status', 'id', 'encrypted_content')}
+                        msgs.append(clean_msg)
+                    else:
+                        msgs.append(msg)
                 focus = session.focus
                 msgs.append({"role": "user", "content": prompt})
                 return msgs, mgr, focus
