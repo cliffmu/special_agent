@@ -15,11 +15,13 @@ import voluptuous as vol
 try:
     from .utils import logging as log
     from . import DOMAIN
-    from .session_store import Session
+    from .utils.session_helpers import load_session, store_session, clear_session
+    from .utils.response_utils import extract_function_calls, extract_final_text, summarize_result
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
-    from __init__ import DOMAIN
-    from session_store import Session
+    from utils.session_helpers import load_session, store_session, clear_session
+    from utils.response_utils import extract_function_calls, extract_final_text, summarize_result
+    DOMAIN = "special_agent"
 
 # ----------  data classes ----------
 @dataclass
@@ -130,93 +132,6 @@ def _spec_to_json(spec: ToolSpec) -> Dict:
         "description": spec.description,
         "parameters": spec.parameters,  # Already in JSON schema format
     }
-
-
-def _load_session(
-    hass: Any | None,
-    session_key: tuple[str, str] | None,
-    system_prompt: str,
-    prompt: str,
-) -> tuple[list, Any | None, Dict[str, Any] | None]:
-    """Restore a previous session or create a new one."""
-    mgr = None
-    focus: Dict[str, Any] | None = None
-    if hass:
-        mgr = hass.data.get(DOMAIN, {}).get("sessions")
-        if session_key and mgr:
-            session = mgr.get(session_key)
-            if session:
-                # Clean loaded messages - remove fields not valid for Responses API input
-                msgs = []
-                for msg in session.messages:
-                    if isinstance(msg, dict):
-                        # Remove status, id, and other output-only fields
-                        clean_msg = {k: v for k, v in msg.items() if k not in ('status', 'id', 'encrypted_content')}
-                        msgs.append(clean_msg)
-                    else:
-                        msgs.append(msg)
-                focus = session.focus
-                msgs.append({"role": "user", "content": prompt})
-                return msgs, mgr, focus
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
-    ], mgr, focus
-
-
-def _store_session(
-    mgr: Any | None,
-    session_key: tuple[str, str] | None,
-    messages: list,
-    pending: Dict[str, Any] | None,
-    focus: Dict[str, Any] | None,
-) -> None:
-    """Persist session state if a manager is available."""
-    if mgr and session_key:
-        # Convert Pydantic objects to dicts for JSON serialization
-        serializable_messages = []
-        for msg in messages:
-            if hasattr(msg, 'model_dump'):
-                serializable_messages.append(msg.model_dump())
-            else:
-                serializable_messages.append(msg)
-        
-        mgr.set(
-            session_key,
-            Session(
-                messages=serializable_messages,
-                pending=pending,
-                focus=focus,
-                device_id=session_key[1],
-                updated=time.time(),
-            ),
-        )
-
-
-def _clear_session(mgr: Any | None, session_key: tuple[str, str] | None) -> None:
-    """Remove a persisted session."""
-    if mgr and session_key:
-        mgr.pop(session_key)
-
-
-def _extract_function_calls(resp: Any) -> list:
-    """Extract function_call items from Responses API output."""
-    function_calls = []
-    for item in resp.output:
-        if getattr(item, 'type', None) == 'function_call':
-            function_calls.append(item)
-    return function_calls
-
-
-def _extract_final_text(resp: Any) -> str | None:
-    """Extract final text response from Responses API output."""
-    for item in resp.output:
-        if getattr(item, 'type', None) == 'message':
-            content_items = getattr(item, 'content', [])
-            for content_item in content_items:
-                if getattr(content_item, 'type', None) == 'output_text':
-                    return getattr(content_item, 'text', None)
-    return None
 
 
 async def _is_followup_prompt(
@@ -344,7 +259,7 @@ async def plan_execute(
     log.debug("Tools_Provided: %s", tool_json)     # ← your tweak #2
 
     # ---- state ----
-    messages, mgr, focus = _load_session(hass, session_key, system_prompt, prompt)
+    messages, mgr, focus = load_session(hass, session_key, system_prompt, prompt)
     if focus:
         try:
             follow = await _is_followup_prompt(client, messages[:-1], prompt)
@@ -352,7 +267,7 @@ async def plan_execute(
             log.debug("Follow-up check error: %s", err)
             follow = False
         if not follow:
-            _clear_session(mgr, session_key)
+            clear_session(mgr, session_key)
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
@@ -363,31 +278,6 @@ async def plan_execute(
     depth = 0
     max_depth = 7
     spec_map = {t.name: t for t in tools}
-    needs_voice_response = True  # Track if we need to format final response
-
-    # ---- helper: summarise observation ----
-    def _summarise(result: Any) -> str:
-        try:
-            if isinstance(result, list):
-                json_txt = json.dumps(result)
-                if len(result) <= 5 and len(json_txt) <= 200:
-                    return json_txt
-                head = ", ".join(map(str, result[:5]))
-                return f"{len(result)} items: {head}{' …' if len(result) > 5 else ''}"
-
-            if isinstance(result, dict):
-                # Don't truncate tool results - agent needs to see the data
-                json_txt = json.dumps(result, ensure_ascii=False)
-                # Only truncate if extremely long (>2000 chars)
-                if len(json_txt) <= 2000:
-                    return json_txt
-                # For very long results, show first part
-                return json_txt[:2000] + "... (truncated)"
-
-            txt = str(result)
-            return txt if len(txt) <= 200 else txt[:200] + " …"
-        except Exception as err:           # pragma: no cover
-            return f"(summary error: {err})"
 
     # ---- main loop ----
     while depth < max_depth:
@@ -414,8 +304,8 @@ async def plan_execute(
             )
             
             # Extract function calls and final text from response
-            function_calls = _extract_function_calls(resp)
-            final_text = _extract_final_text(resp)
+            function_calls = extract_function_calls(resp)
+            final_text = extract_final_text(resp)
         except Exception as err:
             # Handle GPT-5 specific errors
             error_msg = str(err)
@@ -504,7 +394,7 @@ async def plan_execute(
                 retry_budget -= 1
                 if retry_budget >= 0:
                     continue
-                _clear_session(mgr, session_key)
+                clear_session(mgr, session_key)
                 return f"Error: {err}"
 
             if call_name == "control_device":
@@ -516,14 +406,14 @@ async def plan_execute(
                 focus = result["focus"]
 
             # Append function call result in Responses API format
-            result_str = _summarise(result)
+            result_str = summarize_result(result)
             messages.append({
                 "type": "function_call_output",
                 "call_id": call.call_id,
                 "output": result_str
             })
             if isinstance(result, dict) and "speak" in result:
-                _store_session(mgr, session_key, messages, result.get("pending"), focus)
+                store_session(mgr, session_key, messages, result.get("pending"), focus)
                 return {"prompt_payload": result, "messages": messages}
             depth += 1
             if retry_budget > 0:
@@ -532,7 +422,7 @@ async def plan_execute(
 
         # ---------- final answer ----------
         log.debug("Final Messages: %s", messages)
-        _store_session(mgr, session_key, messages, None, focus)
+        store_session(mgr, session_key, messages, None, focus)
         return final_text or "OK"
 
     return "Depth‑limit reached."

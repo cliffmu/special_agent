@@ -316,5 +316,60 @@ Those wrappers delegate to **`prompt_user`**, which returns `{"speak": …}`.
 `plan_execute` detects `speak`, returns early to *conversation.py*; *ConversationEntity* speaks via `assist_pipeline/run` (`listen_for_response: true`) and saves the session.
 The next utterance (same `conversation_id`, `device_id`) resumes at the top of the loop with restored messages.
 
-\### 11.4 Concurrency & logging
+\### 11.4 Concurrency & logging
 All state mutations occur inside the HA event loop; non‑blocking file I/O is handled by `utils.logging.QueueListener`.
+
+---
+
+\## 12  October 2025 Architecture Updates
+
+\### 12.1 OpenAI Responses API Migration
+
+**Switched from Chat Completions → Responses API:**
+- Native web_search support (no custom wrapper needed)
+- Real-time feeds: `oai-sports`, `oai-weather`, `oai-finance`
+- Simpler message flow (no nested API calls)
+
+\### 12.2 Tool Format Modernization
+
+**Migrated from Voluptuous → OpenAI JSON Schema:**
+- Direct JSON schema definitions in tool files
+- Removed ~75 lines of conversion code from agent_core
+- MCP-compatible tool format
+- Example:
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {"type": "string", "description": "Search query"}
+  },
+  "required": ["query"]
+}
+```
+
+\### 12.3 Code Refactoring
+
+**New utility files:**
+- `utils/session_helpers.py` – Session lifecycle management
+- `utils/response_utils.py` – Parse/format API responses
+
+**agent_core.py improvements:**
+- Reduced from ~540 to ~430 lines
+- High-level logic only
+- System prompt clearly visible
+
+\### 12.4 Web Search Integration
+
+**Built-in OpenAI web_search:**
+- Automatically added to tools array
+- GPT-5 decides when to search
+- Returns interpreted results (no parsing needed)
+- Works for: sports scores, weather, news, general queries
+
+**Example flow:**
+```
+User: "Yankees score yesterday?"
+→ GPT-5 automatically searches oai-sports
+→ Returns: "Yankees beat Red Sox 4-3"
+→ Agent formats with prepare_voice_response
+```
