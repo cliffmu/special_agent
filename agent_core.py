@@ -58,7 +58,7 @@ class Agent:
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",
             "tool_specs.prepare_voice_response",
-            "tool_specs.search_web",
+            # search_web not loaded - using OpenAI's built-in web_search instead
         ]
         
         # Google search integration (commented out - using OpenAI web search instead)
@@ -107,7 +107,6 @@ class Agent:
         session_key: tuple[str, str] | None = None,
         model: str = "gpt-5",
         reasoning_effort: str = "medium",
-        verbosity: str = "medium",
     ) -> Any:
         # Ensure tools are loaded
         await self.load_tools(hass)
@@ -119,7 +118,6 @@ class Agent:
             session_key=session_key,
             model=model,
             reasoning_effort=reasoning_effort,
-            verbosity=verbosity,
         )
 
 # ----------  helpers ----------
@@ -242,6 +240,26 @@ def _clear_session(mgr: Any | None, session_key: tuple[str, str] | None) -> None
         mgr.pop(session_key)
 
 
+def _extract_function_calls(resp: Any) -> list:
+    """Extract function_call items from Responses API output."""
+    function_calls = []
+    for item in resp.output:
+        if getattr(item, 'type', None) == 'function_call':
+            function_calls.append(item)
+    return function_calls
+
+
+def _extract_final_text(resp: Any) -> str | None:
+    """Extract final text response from Responses API output."""
+    for item in resp.output:
+        if getattr(item, 'type', None) == 'message':
+            content_items = getattr(item, 'content', [])
+            for content_item in content_items:
+                if getattr(content_item, 'type', None) == 'output_text':
+                    return getattr(content_item, 'text', None)
+    return None
+
+
 async def _is_followup_prompt(
     client: Any, history: list[Dict[str, Any]], prompt: str
 ) -> bool:
@@ -276,11 +294,10 @@ async def plan_execute(
     prompt: str,
     tools: List[ToolSpec],
     hass: Optional[Any] = None,
-    model: str = "gpt-5",       # Updated to GPT-5
-    goals: Optional[List[str]] = None,   # ← new (can be None)
+    model: str = "gpt-5",
+    goals: Optional[List[str]] = None,
     session_key: tuple[str, str] | None = None,
-    reasoning_effort: str = "medium",  # GPT-5 parameter: "minimal", "low", "medium", "high"
-    verbosity: str = "medium",         # GPT-5 parameter: "low", "medium", "high"
+    reasoning_effort: str = "medium",  # Responses API: "minimal", "low", "medium", "high"
 ) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
@@ -328,15 +345,15 @@ async def plan_execute(
         "- Decide if search_devices will help (if user asks about lights and you see 'light' listed, search for them!)\n"
         "- Choose the right area and domain for search_devices (k = count shown + a few extra)\n"
         "- Avoid searching for device types not listed (tell user they're not available)\n"
-        "WEB SEARCH TOOL:\n"
-        "- search_web uses OpenAI with real-time sports scores, weather, and news\n"
-        "- It returns an interpreted 'answer' - the search is already done for you\n"
-        "- Use it when you need current info after Oct 2024 or time-sensitive data\n"
-        "- For sports scores, include specific dates: 'Yankees score September 28' not 'yesterday'\n"
+        "WEB SEARCH:\n"
+        "- You have automatic web search access through OpenAI's built-in web_search tool\n"
+        "- It provides real-time sports scores, weather, news, and general information\n"
+        "- The system will automatically search when you need current info after Oct 2024\n"
+        "- You don't need to explicitly call it - just reason about the query and I'll search if needed\n"
         "WEATHER QUERIES:\n"
         "- For weather, ALWAYS check Home Assistant weather entities FIRST (search_devices domain=weather)\n"
         "- The 'temperature' attribute from weather entities IS the current temperature - use it directly\n"
-        "- Only use search_web for weather if no HA weather entities are available\n"
+        "- HA weather is more accurate for home location than web search\n"
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
         "Example tool_calls JSON: [\n"
@@ -416,16 +433,30 @@ async def plan_execute(
     # ---- main loop ----
     while depth < max_depth:
         try:
-            resp = await client.chat.completions.create(
+            # Add built-in web_search to tools
+            tools_with_search = tool_json + [{"type": "web_search"}]
+            
+            # Responses API uses 'instructions' instead of system message
+            # Extract system from messages if present
+            instructions = None
+            input_messages = messages
+            if messages and messages[0].get("role") == "system":
+                instructions = messages[0].get("content")
+                input_messages = messages[1:]
+            
+            # Use Responses API for GPT-5 with web search support
+            resp = await client.responses.create(
                 model=model,
-                messages=messages,
-                tools=tool_json,
+                instructions=instructions,
+                input=input_messages,
+                tools=tools_with_search,
                 tool_choice="auto",
-                reasoning_effort=reasoning_effort,  # GPT-5 reasoning depth control
-                verbosity=verbosity,                # GPT-5 response detail level
-                # temperature=0.4,
+                reasoning={"effort": reasoning_effort},
             )
-            msg = resp.choices[0].message
+            
+            # Extract function calls and final text from response
+            function_calls = _extract_function_calls(resp)
+            final_text = _extract_final_text(resp)
         except Exception as err:
             # Handle GPT-5 specific errors
             error_msg = str(err)
@@ -440,42 +471,37 @@ async def plan_execute(
             else:
                 log.error("GPT-5 API error: %s", err)
                 return f"Error calling GPT-5: {err}"
-        log.debug("AI_Response_Content: %s", msg.content)      # ← your tweak #3
-        if msg.tool_calls:
+        log.debug("AI_Response_Text: %s", final_text)
+        if function_calls:
             log.debug(
-                "AI_Response_Tools_Selected: %s",
-                [(tc.function.name, tc.function.arguments) for tc in msg.tool_calls],
+                "AI_Response_Function_Calls: %s",
+                [(fc.name, fc.arguments) for fc in function_calls],
             )
-        log.debug("AI_Response_Full: %s", msg)
+        
+        # Add response output to messages
+        messages.extend(resp.output)
 
         # ---------- tool branch ----------
-        if msg.tool_calls:
-            call = msg.tool_calls[0]
-            call_name = call.function.name
-            raw_json  = call.function.arguments or "{}"
+        if function_calls:
+            call = function_calls[0]
+            call_name = call.name
+            raw_json = call.arguments or "{}"
             canonical = (call_name, json.dumps(json.loads(raw_json), sort_keys=True))
 
             # duplicate guard
             if canonical in tried_calls:
                 log.debug("Duplicate call blocked: %s", canonical)
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": (
-                            "Thought: Duplicate of previous attempt; refining… Confidence: 30%"
-                        ),
-                    },
-                )
+                messages.append({
+                    "role": "user",
+                    "content": "That was a duplicate call. Please try a different approach."
+                })
                 depth += 1
                 retry_budget -= 1
                 if retry_budget < 0:
-                    # Force a voice response before giving up
+                    # Give up and ask for final response
                     messages.append({
-                        "role": "assistant",
-                        "content": (
-                            "Thought: Maximum retries reached. I need to prepare a voice response "
-                            "to explain the situation to the user. Confidence: 100%"
-                        )
+                        "role": "user",
+                        "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response."
                     })
                     depth += 1
                 continue
@@ -488,12 +514,8 @@ async def plan_execute(
             except Exception as err:         # ← catches MultipleInvalid and others
                 log.debug("Validation error: %s", err)
                 messages.append({
-                    "role": "assistant",
-                    "content": (
-                        "Thought: Tool arguments were invalid "
-                        f"(`{err}`); please supply the missing or "
-                        "malformed fields and try again. Confidence: 25%"
-                    )
+                    "role": "user",
+                    "content": f"Tool arguments were invalid: {err}. Please fix and try again."
                 })
                 # do NOT decrement retry_budget or depth; let the model fix itself
                 continue
@@ -511,15 +533,10 @@ async def plan_execute(
                 log.debug("Tool_Result[%s]: %s", call_name, result)
             except Exception as err:
                 log.error("Tool execution failed: %s", err)
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": (
-                            f"Thought: Execution of {call_name} failed (`{err}`). "
-                            "Please adjust the parameters and try again. Confidence: 20%"
-                        ),
-                    }
-                )
+                messages.append({
+                    "role": "user",
+                    "content": f"That tool failed: {err}. Try a different approach or explain to the user."
+                })
                 depth += 1
                 retry_budget -= 1
                 if retry_budget >= 0:
@@ -535,20 +552,13 @@ async def plan_execute(
             elif isinstance(result, dict) and result.get("focus"):
                 focus = result["focus"]
 
-            # feed back – store SUMMARISED observation
-            content_summary = _summarise(result)
-            msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else msg.dict()
-            messages.extend(
-                [
-                    {"role": "assistant", **msg_dict},
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": call_name,
-                        "content": content_summary,
-                    },
-                ]
-            )
+            # Append function call result in Responses API format
+            result_str = _summarise(result)
+            messages.append({
+                "type": "function_call_output",
+                "call_id": call.call_id,
+                "output": result_str
+            })
             if isinstance(result, dict) and "speak" in result:
                 _store_session(mgr, session_key, messages, result.get("pending"), focus)
                 return {"prompt_payload": result, "messages": messages}
@@ -558,9 +568,9 @@ async def plan_execute(
             continue
 
         # ---------- final answer ----------
-        log.debug("Final Message: %s", messages)
+        log.debug("Final Messages: %s", messages)
         _store_session(mgr, session_key, messages, None, focus)
-        return msg.content or "OK"
+        return final_text or "OK"
 
     return "Depth‑limit reached."
 
