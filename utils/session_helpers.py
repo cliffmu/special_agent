@@ -20,10 +20,11 @@ def load_session(
     session_key: tuple[str, str] | None,
     system_prompt: str,
     prompt: str,
-) -> tuple[list, Any | None, Dict[str, Any] | None]:
-    """Restore a previous session or create a new one."""
+) -> tuple[list, Any | None, Dict[str, Any] | None, Dict[str, Any] | None]:
+    """Restore a previous session or create a new one. Returns (messages, mgr, focus, pending)."""
     mgr = None
     focus: Dict[str, Any] | None = None
+    pending: Dict[str, Any] | None = None
     if hass:
         mgr = hass.data.get(DOMAIN, {}).get("sessions")
         if session_key and mgr:
@@ -39,12 +40,13 @@ def load_session(
                     else:
                         msgs.append(msg)
                 focus = session.focus
+                pending = session.pending
                 msgs.append({"role": "user", "content": prompt})
-                return msgs, mgr, focus
+                return msgs, mgr, focus, pending
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
-    ], mgr, focus
+    ], mgr, focus, None
 
 
 def store_session(
