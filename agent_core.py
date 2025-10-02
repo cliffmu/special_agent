@@ -362,7 +362,7 @@ async def plan_execute(
         "    \"arguments\": {\"action\": \"turn off\", \"targets\": [\"light.kitchen\"]}\n"
         "  }}\n"
         "]\n"
-        f"MODEL: {model} | Reasoning: {reasoning_effort} | Verbosity: {verbosity}\n"
+        f"MODEL: {model} | Reasoning: {reasoning_effort}\n"
         "After every tool result you must:\n"
         "• reflect on whether the observation fully answers the user’s goal and, if goals "
         "are listed, mark completed goals as (done);\n"
