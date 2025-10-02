@@ -109,10 +109,12 @@ class Agent:
         hass: Any | None = None,
         session_key: tuple[str, str] | None = None,
         model: str = "gpt-5",
-        reasoning_effort: str = "medium",
     ) -> Any:
         # Ensure tools are loaded
         await self.load_tools(hass)
+        
+        # Get reasoning_effort from config (defaults to "low" in plan_execute)
+        reasoning_effort = self.config.get("reasoning_effort", "low")
         
         return await plan_execute(
             user_input,
@@ -171,7 +173,7 @@ async def plan_execute(
     model: str = "gpt-5",
     goals: Optional[List[str]] = None,
     session_key: tuple[str, str] | None = None,
-    reasoning_effort: str = "medium",  # Responses API: "minimal", "low", "medium", "high"
+    reasoning_effort: str = "low",  # Responses API: "minimal", "low", "medium", "high"
 ) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
