@@ -106,4 +106,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="list of device info dicts with sanitized info and attribute_keys",
     func=search_devices,
+    can_run_parallel=True,  # Read-only operation - safe for parallel execution
 )

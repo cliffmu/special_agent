@@ -41,4 +41,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="dict(speak, kind='clarify')",
     func=ask_user,
+    can_run_parallel=False,  # Needs user response - must run alone
 )

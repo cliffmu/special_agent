@@ -71,4 +71,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="status message",
     func=build_vector_index_tool,
+    can_run_parallel=True,  # Can run in background - safe for parallel execution
 )

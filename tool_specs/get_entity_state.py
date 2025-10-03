@@ -75,4 +75,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="dict of entity states",
     func=get_entity_state,
+    can_run_parallel=True,  # Read-only operation - safe for parallel execution
 )

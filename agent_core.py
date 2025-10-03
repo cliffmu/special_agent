@@ -32,6 +32,7 @@ class ToolSpec:
     returns: str | None
     func: Callable[..., Awaitable[Any]]
     validate: Callable[[dict], dict] | None = None  # Optional validation function
+    can_run_parallel: bool = True  # Can this tool run concurrently with others?
 
 # ----------  agent ----------
 class Agent:
@@ -332,91 +333,165 @@ async def plan_execute(
 
         # ---------- tool branch ----------
         if function_calls:
-            call = function_calls[0]
-            call_name = call.name
-            raw_json = call.arguments or "{}"
-            canonical = (call_name, json.dumps(json.loads(raw_json), sort_keys=True))
+            import asyncio
+            
+            # Phase 1: Validate all calls and check parallel execution rules
+            tasks_to_run = []  # List of (call, spec, args) tuples
+            validation_errors = []  # Track validation errors
+            
+            # Check if any tool cannot run in parallel
+            non_parallel_tools = []
+            for call in function_calls:
+                if call.name in spec_map:
+                    spec = spec_map[call.name]
+                    if not spec.can_run_parallel:
+                        non_parallel_tools.append(call.name)
+            
+            # If we have multiple calls and one cannot run in parallel, enforce isolation
+            if len(function_calls) > 1 and non_parallel_tools:
+                log.warning(
+                    "Tool(s) %s cannot run in parallel. LLM called %d tools. "
+                    "Executing only the non-parallel tool.",
+                    non_parallel_tools, len(function_calls)
+                )
+                # Keep only the first non-parallel tool
+                non_parallel_name = non_parallel_tools[0]
+                function_calls = [fc for fc in function_calls if fc.name == non_parallel_name]
+            
+            # Now validate each call
+            for call in function_calls:
+                call_name = call.name
+                raw_json = call.arguments or "{}"
+                canonical = (call_name, json.dumps(json.loads(raw_json), sort_keys=True))
 
-            # duplicate guard
-            if canonical in tried_calls:
-                log.debug("Duplicate call blocked: %s", canonical)
-                messages.append({
-                    "role": "user",
-                    "content": "That was a duplicate call. Please try a different approach."
-                })
-                depth += 1
-                retry_budget -= 1
-                if retry_budget < 0:
-                    # Give up and ask for final response
-                    messages.append({
-                        "role": "user",
-                        "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response."
-                    })
-                    depth += 1
-                continue
-            tried_calls.add(canonical)
-
-            # validate & execute
-            try:
-                spec = spec_map[call_name]
-                args = json.loads(raw_json)
-                # Use custom validation if provided, otherwise skip validation
-                if spec.validate:
-                    args = spec.validate(args)
-            except Exception as err:
-                log.debug("Validation error: %s", err)
-                messages.append({
-                    "role": "user",
-                    "content": f"Tool arguments were invalid: {err}. Please fix and try again."
-                })
-                # do NOT decrement retry_budget or depth; let the model fix itself
-                continue
-            # ---------------------------------------------
-            log.debug("Action: %s %s", call_name, args)
-            try:
-                if hass and "hass" in inspect.signature(spec.func).parameters:
-                    call_args = {"hass": hass, **args}
-                    log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                    result = await spec.func(**call_args)
-                else:
-                    call_args = args
-                    log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                    result = await spec.func(**call_args)
-                log.debug("Tool_Result[%s]: %s", call_name, result)
-            except Exception as err:
-                log.error("Tool execution failed: %s", err)
-                messages.append({
-                    "role": "user",
-                    "content": f"That tool failed: {err}. Try a different approach or explain to the user."
-                })
-                depth += 1
-                retry_budget -= 1
-                if retry_budget >= 0:
+                # duplicate guard
+                if canonical in tried_calls:
+                    log.debug("Duplicate call blocked: %s", canonical)
+                    validation_errors.append((call, "Error: Duplicate call. Already tried this exact query."))
                     continue
-                clear_session(mgr, session_key)
-                return f"Error: {err}"
+                tried_calls.add(canonical)
 
-            if call_name == "control_device":
-                focus = {
-                    "targets": args["data"].get("entity_id", []),
-                    "action": args["service"],
-                }
-            elif isinstance(result, dict) and result.get("focus"):
-                focus = result["focus"]
+                # validate
+                try:
+                    spec = spec_map[call_name]
+                    args = json.loads(raw_json)
+                    # Use custom validation if provided, otherwise skip validation
+                    if spec.validate:
+                        args = spec.validate(args)
+                    tasks_to_run.append((call, spec, args))
+                except Exception as err:
+                    log.debug("Validation error: %s", err)
+                    validation_errors.append((call, f"Error: Tool arguments were invalid: {err}"))
+                    continue
+            
+            # Add validation errors to messages immediately
+            for call, error_msg in validation_errors:
+                messages.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": error_msg
+                })
+            
+            # Phase 2: Execute all valid calls in parallel
+            async def execute_tool(call, spec, args):
+                """Execute a single tool and return (call, result_or_error, is_error)"""
+                call_name = spec.name
+                log.debug("Action: %s %s", call_name, args)
+                try:
+                    if hass and "hass" in inspect.signature(spec.func).parameters:
+                        call_args = {"hass": hass, **args}
+                        log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                        result = await spec.func(**call_args)
+                    else:
+                        call_args = args
+                        log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                        result = await spec.func(**call_args)
+                    log.debug("Tool_Result[%s]: %s", call_name, result)
+                    return (call, spec, args, result, False)
+                except Exception as err:
+                    log.error("Tool execution failed: %s", err)
+                    return (call, spec, args, f"Error: Tool failed: {err}", True)
+            
+            # Run all tools in parallel
+            if tasks_to_run:
+                results = await asyncio.gather(
+                    *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
+                    return_exceptions=False
+                )
+            else:
+                results = []
+            
+            # Phase 3: Process results
+            all_results_success = len(validation_errors) == 0
+            has_prompt_response = False
+            prompt_result = None
+            
+            for call, spec, args, result, is_error in results:
+                call_name = spec.name
+                
+                if is_error:
+                    all_results_success = False
+                    messages.append({
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": result  # Already formatted as error string
+                    })
+                    continue
 
-            # Append function call result in Responses API format
-            result_str = summarize_result(result)
-            messages.append({
-                "type": "function_call_output",
-                "call_id": call.call_id,
-                "output": result_str
-            })
-            if isinstance(result, dict) and "speak" in result:
-                store_session(mgr, session_key, messages, result.get("pending"), focus)
-                return {"prompt_payload": result, "messages": messages}
+                # Update focus tracking
+                if call_name == "control_device":
+                    focus = {
+                        "targets": args["data"].get("entity_id", []),
+                        "action": args["service"],
+                    }
+                elif isinstance(result, dict) and result.get("focus"):
+                    focus = result["focus"]
+
+                # Append function call result in Responses API format
+                result_str = summarize_result(result)
+                messages.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": result_str
+                })
+                
+                # Check if any result has a prompt response
+                if isinstance(result, dict) and "speak" in result:
+                    if has_prompt_response:
+                        # Multiple tools returned "speak" - this shouldn't happen!
+                        log.warning(
+                            "Multiple tools returned 'speak' in parallel: %s and %s",
+                            prompt_result.get("kind", "unknown"),
+                            result.get("kind", "unknown")
+                        )
+                        # Prioritize: confirm > ask_user > response
+                        result_kind = result.get("kind", "")
+                        current_kind = prompt_result.get("kind", "")
+                        if result_kind == "confirm" or (result_kind == "clarify" and current_kind == "response"):
+                            prompt_result = result
+                    else:
+                        has_prompt_response = True
+                        prompt_result = result
+            
+            # If we got a prompt response, return it
+            if has_prompt_response:
+                store_session(mgr, session_key, messages, prompt_result.get("pending"), focus)
+                return {"prompt_payload": prompt_result, "messages": messages}
+            
+            # Continue the loop
             depth += 1
-            if retry_budget > 0:
+            if not all_results_success and retry_budget > 0:
                 retry_budget -= 1
+            elif retry_budget > 0:
+                retry_budget -= 1
+            
+            if retry_budget < 0:
+                # Give up and ask for final response
+                messages.append({
+                    "role": "user",
+                    "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response."
+                })
+                depth += 1
             continue
 
         # ---------- final answer ----------

@@ -66,4 +66,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="dict(speak, kind='confirm', pending)",
     func=confirm_action,
+    can_run_parallel=False,  # Needs user response - must run alone
 )
