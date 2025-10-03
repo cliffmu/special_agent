@@ -50,4 +50,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="spotify uri or null",
     func=search_spotify,
+    can_run_parallel=True,  # Read-only operation - safe for parallel execution
 )

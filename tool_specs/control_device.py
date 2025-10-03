@@ -51,4 +51,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="dict(status, focus)",
     func=control_device,
+    can_run_parallel=True,  # Can run in parallel (but usually shouldn't with dependent tools)
 )

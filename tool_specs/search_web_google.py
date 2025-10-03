@@ -142,4 +142,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="dict with search results including title, snippet, link for each result, plus total_results count",
     func=search_web,
+    can_run_parallel=True,  # Read-only operation - safe for parallel execution
 )

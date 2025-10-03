@@ -123,4 +123,5 @@ SPEC = ToolSpec(
     parameters=PARAMS,
     returns="dict with 'speak' field containing voice-optimized text",
     func=prepare_voice_response,
+    can_run_parallel=False,  # Final answer - should run alone
 )
