@@ -71,7 +71,9 @@ async def search_spotify(
             if resp.status == 200:
                 data = await resp.json()
                 plural = _SEARCH_TYPE_KEY_MAP.get(search_type, f"{search_type}s")
-                items = data.get(plural, {}).get("items", [])
+                # Handle case where data.get(plural) returns None instead of dict
+                result = data.get(plural) or {}
+                items = result.get("items", [])
                 if items:
                     return items[0].get("uri")
                 return None
