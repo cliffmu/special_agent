@@ -259,8 +259,9 @@ async def plan_execute(
         f"{parallel_execution_note}"
         "- Only call tools sequentially if one depends on the output of another\n"
         "SPOTIFY SEARCH TIPS:\n"
+        "- Start with ONE search query that best matches the user's request\n"
         "- If search_spotify returns null, try: simpler queries, genre names, or artist radio (e.g., 'Tycho Radio')\n"
-        "- Try multiple varied queries in parallel if you're unsure (e.g., 'Focus Music', 'Concentration', 'Study Beats')\n"
+        "- Only use parallel searches if the first attempt fails and you want to try different variations\n"
         "- After 2-3 failed attempts, ask user for a Spotify link or different music preference\n"
         f"MODEL: {model} | Reasoning: {reasoning_effort} | Confirmation: {'Enabled' if require_confirmation else 'Disabled'}\n"
         "After every tool result you must:\n"
@@ -280,7 +281,10 @@ async def plan_execute(
 
     log.debug("System_Prompt: %s", system_prompt)
     log.debug("User_Prompt: %s", prompt)
-    log.debug("Tools_Provided: %s", tool_json)     # ← your tweak #2
+    log.debug("Tools_Provided: %s", tool_json)
+    log.debug("Config: model=%s, reasoning=%s, require_confirmation=%s", 
+              model, reasoning_effort, require_confirmation)
+    log.debug("Loaded tools: %s", [spec.name for spec in tools])
 
     # ---- state ----
     messages, mgr, focus, pending = load_session(hass, session_key, system_prompt, prompt)

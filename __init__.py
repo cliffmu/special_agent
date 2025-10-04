@@ -59,6 +59,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         os.environ["SPOTIFY_CLIENT_ID"] = sp_id
     if sp_secret and not os.environ.get("SPOTIFY_CLIENT_SECRET"):
         os.environ["SPOTIFY_CLIENT_SECRET"] = sp_secret
+    
+    # Register update listener for when options change
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _save_sessions(_):
@@ -66,9 +70,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _save_sessions)
     async_track_time_interval(hass, lambda _: mgr.clear_expired(), timedelta(hours=1))
+    
+    _LOGGER.info("Special Agent setup complete. Model: %s, Confirmation: %s", 
+                 entry.options.get("agent_model", entry.data.get("agent_model", "gpt-5")),
+                 entry.options.get("require_confirmation", entry.data.get("require_confirmation", True)))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload the integration."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the integration when options change."""
+    await async_unload_entry(hass, entry)
+    await async_setup_entry(hass, entry)
