@@ -232,6 +232,7 @@ async def plan_execute(
         "PARALLEL EXECUTION:\n"
         "- When multiple tools are independent (e.g., search_devices + search_spotify), call them in parallel in ONE response\n"
         "- Example: To play music, call BOTH search_devices AND search_spotify together, not sequentially\n"
+        "- NEVER call confirm_action, ask_user, or prepare_voice_response in parallel with other tools - they are final-step tools\n"
         "- Only call tools sequentially if one depends on the output of another\n"
         f"MODEL: {model} | Reasoning: {reasoning_effort}\n"
         "After every tool result you must:\n"
@@ -320,10 +321,16 @@ async def plan_execute(
                 continue
             elif "modality_mismatch" in error_msg:
                 log.error("GPT-5 modality mismatch - check input format")
-                return "Error: Input format not compatible with GPT-5"
+                return "I'm having trouble processing that request. Please try again."
+            elif "No tool output found" in error_msg or "invalid_request_error" in error_msg:
+                log.error("GPT-5 tool output mismatch: %s", err)
+                # This usually means we didn't send results for all function calls
+                # Clear messages and restart conversation
+                clear_session(mgr, session_key)
+                return "I'm having issues right now. Please try your request again."
             else:
                 log.error("GPT-5 API error: %s", err)
-                return f"Error calling GPT-5: {err}"
+                return "I'm having issues right now. Please try again."
         log.debug("AI_Response_Text: %s", final_text)
         if function_calls:
             log.debug(
@@ -351,16 +358,25 @@ async def plan_execute(
                     if not spec.can_run_parallel:
                         non_parallel_tools.append(call.name)
             
-            # If we have multiple calls and one cannot run in parallel, enforce isolation
+            # If we have multiple calls and one cannot run in parallel, drop the non-parallel ones
             if len(function_calls) > 1 and non_parallel_tools:
                 log.warning(
                     "Tool(s) %s cannot run in parallel. LLM called %d tools. "
-                    "Executing only the non-parallel tool.",
+                    "Dropping non-parallel tools and executing parallel-capable tools.",
                     non_parallel_tools, len(function_calls)
                 )
-                # Keep only the first non-parallel tool
-                non_parallel_name = non_parallel_tools[0]
-                function_calls = [fc for fc in function_calls if fc.name == non_parallel_name]
+                # Drop non-parallel tools, keep parallel-capable ones
+                dropped_calls = [fc for fc in function_calls if fc.name in non_parallel_tools]
+                function_calls = [fc for fc in function_calls if fc.name not in non_parallel_tools]
+                
+                # Add error messages for dropped non-parallel tools
+                for dropped_call in dropped_calls:
+                    parallel_tools = [fc.name for fc in function_calls]
+                    validation_errors.append((
+                        dropped_call,
+                        f"Error: Tool '{dropped_call.name}' cannot run in parallel with other tools ({parallel_tools}). "
+                        f"First complete the parallel searches, then call '{dropped_call.name}' in the next turn."
+                    ))
             
             # Now validate each call
             for call in function_calls:
