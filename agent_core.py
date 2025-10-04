@@ -54,7 +54,6 @@ class Agent:
         # Base tools that are always loaded
         base_tools = [
             "tool_specs.build_vector_index",
-            "tool_specs.confirm_action",
             "tool_specs.ask_user",
             "tool_specs.search_devices",
             "tool_specs.control_device",
@@ -64,6 +63,13 @@ class Agent:
             "tool_specs.prepare_voice_response",
             # search_web not loaded - using OpenAI's built-in web_search instead
         ]
+        
+        # Conditionally load confirm_action based on config
+        if self.config.get("require_confirmation", True):
+            base_tools.insert(1, "tool_specs.confirm_action")
+            log.info("Confirmation enabled - confirm_action tool loaded")
+        else:
+            log.info("Confirmation disabled - confirm_action tool not loaded")
         
         # Google search integration (commented out - using OpenAI web search instead)
         # To re-enable Google search:
@@ -109,13 +115,15 @@ class Agent:
         user_input: str,
         hass: Any | None = None,
         session_key: tuple[str, str] | None = None,
-        model: str = "gpt-5",
+        model: str | None = None,
     ) -> Any:
         # Ensure tools are loaded
         await self.load_tools(hass)
         
-        # Get reasoning_effort from config (defaults to "low" in plan_execute)
+        # Get model and reasoning_effort from config
+        model = model or self.config.get("agent_model", "gpt-5")
         reasoning_effort = self.config.get("reasoning_effort", "low")
+        require_confirmation = self.config.get("require_confirmation", True)
         
         return await plan_execute(
             user_input,
@@ -124,6 +132,7 @@ class Agent:
             session_key=session_key,
             model=model,
             reasoning_effort=reasoning_effort,
+            require_confirmation=require_confirmation,
         )
 
 # ----------  helpers ----------
@@ -138,7 +147,7 @@ def _spec_to_json(spec: ToolSpec) -> Dict:
 
 
 async def _is_followup_prompt(
-    client: Any, history: list[Dict[str, Any]], prompt: str
+    client: Any, history: list[Dict[str, Any]], prompt: str, model: str = "gpt-5"
 ) -> bool:
     """Ask the LLM if the prompt continues the same conversation."""
     if not history:
@@ -158,7 +167,7 @@ async def _is_followup_prompt(
     ]
     try:
         resp = await client.chat.completions.create(
-            model="gpt-5", messages=eval_messages
+            model=model, messages=eval_messages
         )
         answer = resp.choices[0].message.content.strip().lower()
         return answer.startswith("yes")
@@ -175,6 +184,7 @@ async def plan_execute(
     goals: Optional[List[str]] = None,
     session_key: tuple[str, str] | None = None,
     reasoning_effort: str = "low",  # Responses API: "minimal", "low", "medium", "high"
+    require_confirmation: bool = True,
 ) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
@@ -208,6 +218,25 @@ async def plan_execute(
         time_str = current_datetime.strftime("%I:%M %p") + f" {tz_name}"
     current_year = current_datetime.year
     
+    # Build confirmation-specific instructions
+    confirmation_instructions = ""
+    parallel_execution_note = ""
+    if require_confirmation:
+        confirmation_instructions = (
+            "CONFIRMATION REQUIRED:\n"
+            "- Before using control_device to change device states, you MUST call confirm_action first\n"
+            "- When you call confirm_action you MUST include a 'question' field with the exact sentence to speak\n"
+            "- Example: 'Do you want me to turn off the kitchen lights?'\n"
+        )
+        parallel_execution_note = "- NEVER call confirm_action, ask_user, or prepare_voice_response in parallel with other tools - they are final-step tools\n"
+    else:
+        confirmation_instructions = (
+            "CONFIRMATION DISABLED:\n"
+            "- You can use control_device directly without confirmation\n"
+            "- After executing control_device, call prepare_voice_response to report the result\n"
+        )
+        parallel_execution_note = "- NEVER call ask_user or prepare_voice_response in parallel with other tools - they are final-step tools\n"
+    
     system_prompt = (
         f"CURRENT DATE & TIME: {date_str} at {time_str}\n"
         f"Current year: {current_year} - When dates are mentioned without a year, assume this year\n"
@@ -223,22 +252,17 @@ async def plan_execute(
         "- Built-in web_search provides real-time sports, weather, news when you need current info after Oct 2024\n"
         "TOOLS:\n"
         f"{json.dumps(tool_json, indent=2)}\n"
-        "Example tool_calls JSON: [\n"
-        "  {\"type\": \"function\", \"function\": {\n"
-        "    \"name\": \"confirm_action\",\n"
-        "    \"arguments\": {\"action\": \"turn off\", \"targets\": [\"light.kitchen\"]}\n"
-        "  }}\n"
-        "]\n"
+        f"{confirmation_instructions}"
         "PARALLEL EXECUTION:\n"
         "- When multiple tools are independent (e.g., search_devices + search_spotify), call them in parallel in ONE response\n"
         "- Example: To play music, call BOTH search_devices AND search_spotify together, not sequentially\n"
-        "- NEVER call confirm_action, ask_user, or prepare_voice_response in parallel with other tools - they are final-step tools\n"
+        f"{parallel_execution_note}"
         "- Only call tools sequentially if one depends on the output of another\n"
         "SPOTIFY SEARCH TIPS:\n"
         "- If search_spotify returns null, try: simpler queries, genre names, or artist radio (e.g., 'Tycho Radio')\n"
         "- Try multiple varied queries in parallel if you're unsure (e.g., 'Focus Music', 'Concentration', 'Study Beats')\n"
         "- After 2-3 failed attempts, ask user for a Spotify link or different music preference\n"
-        f"MODEL: {model} | Reasoning: {reasoning_effort}\n"
+        f"MODEL: {model} | Reasoning: {reasoning_effort} | Confirmation: {'Enabled' if require_confirmation else 'Disabled'}\n"
         "After every tool result you must:\n"
         "• reflect on whether the observation fully answers the user’s goal and, if goals "
         "are listed, mark completed goals as (done);\n"
@@ -265,7 +289,7 @@ async def plan_execute(
     # Skip check if there's a pending confirmation (definitely a follow-up)
     if len(messages) > 2 and not pending:  # Has history but no pending action
         try:
-            follow = await _is_followup_prompt(client, messages[:-1], prompt)
+            follow = await _is_followup_prompt(client, messages[:-1], prompt, model)
         except Exception as err:  # pragma: no cover
             log.debug("Follow-up check error: %s", err)
             follow = False
