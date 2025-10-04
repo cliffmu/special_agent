@@ -30,9 +30,13 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required("openai_api_key"): str,
                     vol.Optional("spotify_client_id", default=""): str,
                     vol.Optional("spotify_client_secret", default=""): str,
+                    vol.Optional("agent_model", default="gpt-5"): vol.In(
+                        ["gpt-5", "gpt-5-mini", "gpt-5-nano"]
+                    ),
                     vol.Optional("reasoning_effort", default="low"): vol.In(
                         ["minimal", "low", "medium", "high"]
                     ),
+                    vol.Optional("require_confirmation", default=True): bool,
                     # Google search fields (commented out - using OpenAI web search instead)
                     # vol.Optional("google_api_key", default=""): str,
                     # vol.Optional("google_cx", default=""): str,
@@ -79,12 +83,26 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
                     ),
                 ): str,
                 vol.Optional(
+                    "agent_model",
+                    default=current.get(
+                        "agent_model",
+                        self.config_entry.data.get("agent_model", "gpt-5"),
+                    ),
+                ): vol.In(["gpt-5", "gpt-5-mini", "gpt-5-nano"]),
+                vol.Optional(
                     "reasoning_effort",
                     default=current.get(
                         "reasoning_effort",
                         self.config_entry.data.get("reasoning_effort", "low"),
                     ),
                 ): vol.In(["minimal", "low", "medium", "high"]),
+                vol.Optional(
+                    "require_confirmation",
+                    default=current.get(
+                        "require_confirmation",
+                        self.config_entry.data.get("require_confirmation", True),
+                    ),
+                ): bool,
                 # Google search fields (commented out - using OpenAI web search instead)
                 # vol.Optional(
                 #     "google_api_key",

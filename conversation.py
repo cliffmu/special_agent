@@ -75,8 +75,9 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                     blocking=False,
                 )
             else:
-                _LOGGER.error(
-                    "Service %s.%s not found", service_domain, service_name
+                _LOGGER.debug(
+                    "Service %s.%s not available - voice pipeline continuation disabled",
+                    service_domain, service_name
                 )
             response = intent.IntentResponse(language=conversation_input.language)
             response.async_set_speech(result["prompt_payload"]["speak"])
