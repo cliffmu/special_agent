@@ -19,8 +19,12 @@ _LOGGER = logging.getLogger(__package__)
 class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     """Minimal conversation agent stub."""
 
-    def __init__(self, config: dict | None = None) -> None:
+    def __init__(self, config_entry) -> None:
         super().__init__()
+        self.config_entry = config_entry
+        # Create agent with current config
+        config = dict(config_entry.data)
+        config.update(config_entry.options)
         self.agent = Agent(config)
 
     @property
@@ -50,9 +54,22 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     async def async_process(
         self, conversation_input, context=None
     ) -> ConversationResult:
+        # Reload agent config from config_entry on each request to pick up option changes
+        config = dict(self.config_entry.data)
+        config.update(self.config_entry.options)
+        self.agent.config = config
+        # Reset tools to force reload with new config
+        self.agent._tools_loaded = False
+        self.agent.tools.clear()  # Clear existing tools
+        
         user_text = getattr(conversation_input, "text", "")
         device_id = conversation_input.device_id or ""
         sess_key = (conversation_input.conversation_id, device_id)
+        
+        _LOGGER.debug("Agent config reload: model=%s, require_confirmation=%s", 
+                     config.get("agent_model", "gpt-5"), 
+                     config.get("require_confirmation", True))
+        
         result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
 
         mgr = self.hass.data[DOMAIN]["sessions"]
@@ -94,15 +111,15 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    # Get config including both data and options
-    config = dict(config_entry.data)
-    config.update(config_entry.options)
-    
-    agent = SpecialAgentConversation(config)
+    agent = SpecialAgentConversation(config_entry)
     async_add_entities([agent])
     from homeassistant.components.conversation import async_set_agent
 
     async_set_agent(hass, config_entry, agent)
+    
+    # Log config for debugging
+    config = dict(config_entry.data)
+    config.update(config_entry.options)
     _LOGGER.debug("Special Agent conversation initialized with config: %s", 
                   {k: "***" if "key" in k or "secret" in k else v for k, v in config.items()})
     return True
