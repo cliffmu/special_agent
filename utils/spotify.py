@@ -59,23 +59,33 @@ async def search_spotify(
     hass: Any | None = None,
 ) -> str | None:
     """Search Spotify and return the first result URI."""
-    token = await get_spotify_access_token(hass)
-    if not token:
-        return None
-
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {"q": query, "type": search_type, "limit": limit, "market": market}
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{SPOTIFY_API_BASE_URL}/search", headers=headers, params=params) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                plural = _SEARCH_TYPE_KEY_MAP.get(search_type, f"{search_type}s")
-                # Handle case where data.get(plural) returns None instead of dict
-                result = data.get(plural) or {}
-                items = result.get("items", [])
-                if items:
-                    return items[0].get("uri")
-                return None
-            log.debug("Spotify search error: %s - %s", resp.status, await resp.text())
+    try:
+        token = await get_spotify_access_token(hass)
+        if not token:
+            log.debug("Spotify token unavailable")
             return None
+
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {"q": query, "type": search_type, "limit": limit, "market": market}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{SPOTIFY_API_BASE_URL}/search", headers=headers, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    log.debug("Spotify search response for '%s': %s", query, data)
+                    plural = _SEARCH_TYPE_KEY_MAP.get(search_type, f"{search_type}s")
+                    # Handle case where data.get(plural) returns None instead of dict
+                    result = data.get(plural) or {}
+                    items = result.get("items", [])
+                    if items and items[0]:
+                        # Handle case where items[0] might be None
+                        uri = items[0].get("uri") if isinstance(items[0], dict) else None
+                        log.debug("Spotify found URI: %s", uri)
+                        return uri
+                    log.debug("Spotify search returned no items for '%s'", query)
+                    return None
+                log.debug("Spotify search error: %s - %s", resp.status, await resp.text())
+                return None
+    except Exception as e:
+        log.error("Spotify search exception for '%s': %s", query, e, exc_info=True)
+        return None
