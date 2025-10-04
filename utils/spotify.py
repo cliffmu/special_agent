@@ -54,7 +54,7 @@ async def get_spotify_access_token(hass: Any | None = None) -> str | None:
 async def search_spotify(
     query: str,
     search_type: str = "track",
-    limit: int = 1,
+    limit: int = 5,  # Increased from 1 - Spotify sometimes returns [None] with limit=1
     market: str = "US",
     hass: Any | None = None,
 ) -> str | None:
@@ -74,15 +74,28 @@ async def search_spotify(
                     data = await resp.json()
                     log.debug("Spotify search response for '%s': %s", query, data)
                     plural = _SEARCH_TYPE_KEY_MAP.get(search_type, f"{search_type}s")
+                    
                     # Handle case where data.get(plural) returns None instead of dict
                     result = data.get(plural) or {}
                     items = result.get("items", [])
-                    if items and items[0]:
-                        # Handle case where items[0] might be None
-                        uri = items[0].get("uri") if isinstance(items[0], dict) else None
+                    
+                    # Filter out None items (Spotify sometimes returns [None])
+                    valid_items = [item for item in items if item is not None and isinstance(item, dict)]
+                    
+                    if valid_items:
+                        uri = valid_items[0].get("uri")
                         log.debug("Spotify found URI: %s", uri)
                         return uri
-                    log.debug("Spotify search returned no items for '%s'", query)
+                    
+                    # Log why we didn't find anything
+                    if items and not valid_items:
+                        log.warning(
+                            "Spotify API returned %d items for '%s' but all were None/invalid. "
+                            "This may indicate an API issue or auth problem. Total results: %d",
+                            len(items), query, result.get("total", 0)
+                        )
+                    else:
+                        log.debug("Spotify search returned no items for '%s'", query)
                     return None
                 log.debug("Spotify search error: %s - %s", resp.status, await resp.text())
                 return None
