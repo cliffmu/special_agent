@@ -37,6 +37,10 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         ["minimal", "low", "medium", "high"]
                     ),
                     vol.Optional("require_confirmation", default=True): bool,
+                    vol.Optional("session_timeout_minutes", default=5): vol.All(
+                        vol.Coerce(int), vol.Range(min=1, max=60)
+                    ),
+                    vol.Optional("enable_performance_tracking", default=False): bool,
                     # Google search fields (commented out - using OpenAI web search instead)
                     # vol.Optional("google_api_key", default=""): str,
                     # vol.Optional("google_cx", default=""): str,
@@ -105,6 +109,20 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
                     default=current.get(
                         "require_confirmation",
                         self.config_entry.data.get("require_confirmation", True),
+                    ),
+                ): bool,
+                vol.Optional(
+                    "session_timeout_minutes",
+                    default=current.get(
+                        "session_timeout_minutes",
+                        self.config_entry.data.get("session_timeout_minutes", 5),
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                vol.Optional(
+                    "enable_performance_tracking",
+                    default=current.get(
+                        "enable_performance_tracking",
+                        self.config_entry.data.get("enable_performance_tracking", False),
                     ),
                 ): bool,
                 # Google search fields (commented out - using OpenAI web search instead)

@@ -20,6 +20,7 @@ def load_session(
     session_key: tuple[str, str] | None,
     system_prompt: str,
     prompt: str,
+    session_timeout_minutes: int = 5,
 ) -> tuple[list, Any | None, Dict[str, Any] | None, Dict[str, Any] | None]:
     """Restore a previous session or create a new one. Returns (messages, mgr, focus, pending)."""
     mgr = None
@@ -39,8 +40,10 @@ def load_session(
                         msgs.append(clean_msg)
                     else:
                         msgs.append(msg)
+                # Focus tracking for future features (not currently used in prompts)
                 focus = session.focus
                 pending = session.pending
+                
                 msgs.append({"role": "user", "content": prompt})
                 return msgs, mgr, focus, pending
     return [

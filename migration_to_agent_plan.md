@@ -450,5 +450,73 @@ class ToolSpec:
 - can_run_parallel=True: Read-only operations (search_devices, search_spotify, get_entity_state, get_entity_history, search_web_google, uild_vector_index, control_device)
 - can_run_parallel=False: User-interaction tools (confirm_action, sk_user, prepare_voice_response)
 
-**Performance:** 20-50%% faster for multi-tool queries. Example: parallel execution = 8s (longest tool) vs 10s (sequential sum).
+**Performance:** 20-50% faster for multi-tool queries. Example: parallel execution = 8s (longest tool) vs 10s (sequential sum).
+
+---
+
+## 13  Performance Tracking  *(NEW - Oct 2024)*
+
+**Problem:** Need to monitor execution time across operations to identify bottlenecks, especially with parallel execution.
+
+**Solution:** Context manager-based tracking system that exports to CSV for analysis.
+
+### 13.1 Usage
+
+**Enable via UI:**
+- Settings → Devices & Services → Special Agent → Configure
+- Toggle "Enable Performance Tracking"
+
+**CSV Output:** `/config/special_agent_performance.csv`
+
+### 13.2 What's Tracked
+
+```python
+# Automatic tracking at key points:
+user_request              # Full request lifecycle
+├─ load_session          # Session I/O
+├─ llm_call_1, 2, ...    # OpenAI API calls
+├─ tool_<name>           # Each tool execution
+│  └─ parallel_tools_N   # Parallel execution wrapper
+└─ store_session         # Session save
+```
+
+### 13.3 CSV Format
+
+```csv
+timestamp,request_id,operation,duration_ms,parent_operation,parallel_group,metadata
+2025-10-05T14:32:15,a3f9c2e1,user_request,9456.89,,,"Play jazz"
+2025-10-05T14:32:15,a3f9c2e1,llm_call_1,1123.45,,,"{'model':'gpt-5'}"
+2025-10-05T14:32:16,a3f9c2e1,parallel_tools_2,8234.56,,f7d8e9a1,
+2025-10-05T14:32:16,a3f9c2e1,tool_search_spotify,8234.56,,f7d8e9a1,
+2025-10-05T14:32:16,a3f9c2e1,tool_search_devices,234.12,,f7d8e9a1,
+```
+
+- `request_id`: Groups all operations from one user prompt
+- `parallel_group`: Links operations that ran concurrently
+- `duration_ms`: Individual timing (parallel operations show real time, not sequential sum)
+
+### 13.4 Analysis
+
+**In Excel/Sheets:**
+1. Group by `request_id` for end-to-end timing
+2. Filter by `operation` to find bottlenecks
+3. Check `parallel_group` to verify parallel execution efficiency
+
+**Example finding:** Spotify search averaging 8s → add caching or optimize queries
+
+### 13.5 Implementation
+
+- `utils/performance.py`: Core module with `track_request()`, `track_operation()` context managers
+- Uses Python `contextvars` for async-safe context isolation
+- Zero overhead when disabled (context managers become no-ops)
+- Writes CSV after each request completes
+
+### 13.6 Services
+
+```yaml
+service: special_agent.export_performance  # Manual CSV write
+service: special_agent.clear_performance   # Clear in-memory records
+```
+
+---
 

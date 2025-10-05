@@ -1,3 +1,11 @@
-# Special Agent services
-# Currently no services are exposed
-# The integration works through the conversation interface
+reload:
+  name: Reload
+  description: Reload Special Agent configuration
+
+export_performance:
+  name: Export Performance Metrics
+  description: Write accumulated performance metrics to CSV file
+
+clear_performance:
+  name: Clear Performance Metrics
+  description: Clear accumulated performance metrics from memory

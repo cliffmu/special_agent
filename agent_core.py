@@ -17,10 +17,12 @@ try:
     from . import DOMAIN
     from .utils.session_helpers import load_session, store_session, clear_session
     from .utils.response_utils import extract_function_calls, extract_final_text, summarize_result
+    from .utils import performance
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
     from utils.session_helpers import load_session, store_session, clear_session
     from utils.response_utils import extract_function_calls, extract_final_text, summarize_result
+    from utils import performance
     DOMAIN = "special_agent"
 
 # ----------  data classes ----------
@@ -124,6 +126,7 @@ class Agent:
         model = model or self.config.get("agent_model", "gpt-5")
         reasoning_effort = self.config.get("reasoning_effort", "low")
         require_confirmation = self.config.get("require_confirmation", True)
+        session_timeout_minutes = self.config.get("session_timeout_minutes", 5)
         
         return await plan_execute(
             user_input,
@@ -133,6 +136,7 @@ class Agent:
             model=model,
             reasoning_effort=reasoning_effort,
             require_confirmation=require_confirmation,
+            session_timeout_minutes=session_timeout_minutes,
         )
 
 # ----------  helpers ----------
@@ -146,35 +150,6 @@ def _spec_to_json(spec: ToolSpec) -> Dict:
     }
 
 
-async def _is_followup_prompt(
-    client: Any, history: list[Dict[str, Any]], prompt: str, model: str = "gpt-5"
-) -> bool:
-    """Ask the LLM if the prompt continues the same conversation."""
-    if not history:
-        return False
-    hist_text = "\n".join(
-        f"{m['role']}: {m['content']}" for m in history[-4:] if m.get("content")
-    )
-    eval_messages = [
-        {
-            "role": "system",
-            "content": (
-                "Answer yes or no: Does the NEW prompt continue the same topic as "
-                "the prior conversation? Reply only 'yes' or 'no'."
-            ),
-        },
-        {"role": "user", "content": f"{hist_text}\nNEW PROMPT: {prompt}"},
-    ]
-    try:
-        resp = await client.chat.completions.create(
-            model=model, messages=eval_messages
-        )
-        answer = resp.choices[0].message.content.strip().lower()
-        return answer.startswith("yes")
-    except Exception as err:  # pragma: no cover - fallback
-        log.debug("Follow-up check failed: %s", err)
-    return False
-
 # ----------  ReAct loop ----------
 async def plan_execute(
     prompt: str,
@@ -185,6 +160,7 @@ async def plan_execute(
     session_key: tuple[str, str] | None = None,
     reasoning_effort: str = "low",  # Responses API: "minimal", "low", "medium", "high"
     require_confirmation: bool = True,
+    session_timeout_minutes: int = 5,
 ) -> Any:
     if not os.environ.get("OPENAI_API_KEY"):
         return "Sorry, I'm not ready to help yet."
@@ -282,30 +258,20 @@ async def plan_execute(
     log.debug("System_Prompt: %s", system_prompt)
     log.debug("User_Prompt: %s", prompt)
     log.debug("Tools_Provided: %s", tool_json)
-    log.debug("Config: model=%s, reasoning=%s, require_confirmation=%s", 
-              model, reasoning_effort, require_confirmation)
+    log.debug("Config: model=%s, reasoning=%s, require_confirmation=%s, timeout=%d min", 
+              model, reasoning_effort, require_confirmation, session_timeout_minutes)
     log.debug("Loaded tools: %s", [spec.name for spec in tools])
 
     # ---- state ----
-    messages, mgr, focus, pending = load_session(hass, session_key, system_prompt, prompt)
+    async with performance.track_operation("load_session"):
+        messages, mgr, focus, pending = load_session(
+            hass, session_key, system_prompt, prompt, session_timeout_minutes
+        )
+    log.debug("Session loaded: messages=%d, focus=%s, pending=%s", len(messages), focus, pending)
     
-    # Check if this is a follow-up to previous conversation
-    # Skip check if there's a pending confirmation (definitely a follow-up)
-    if len(messages) > 2 and not pending:  # Has history but no pending action
-        try:
-            follow = await _is_followup_prompt(client, messages[:-1], prompt, model)
-        except Exception as err:  # pragma: no cover
-            log.debug("Follow-up check error: %s", err)
-            follow = False
-        if not follow:
-            # New topic - clear old session and start fresh
-            clear_session(mgr, session_key)
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ]
-            focus = None
-            pending = None
+    # Session timeout naturally handles topic changes - no expensive LLM check needed
+    # If user starts new topic after timeout, session will be auto-cleared
+    # If within timeout and same conversation_id, trust it's a continuation
     
     # If there's a pending confirmation, add it to context
     if pending:
@@ -331,14 +297,18 @@ async def plan_execute(
                 input_messages = messages[1:]
             
             # Use Responses API for GPT-5 with web search support
-            resp = await client.responses.create(
-                model=model,
-                instructions=instructions,
-                input=input_messages,
-                tools=tools_with_search,
-                tool_choice="auto",
-                reasoning={"effort": reasoning_effort},
-            )
+            async with performance.track_operation(
+                f"llm_call_{depth+1}",
+                metadata={"model": model, "reasoning": reasoning_effort, "depth": depth}
+            ):
+                resp = await client.responses.create(
+                    model=model,
+                    instructions=instructions,
+                    input=input_messages,
+                    tools=tools_with_search,
+                    tool_choice="auto",
+                    reasoning={"effort": reasoning_effort},
+                )
             
             # Extract function calls and final text from response
             function_calls = extract_function_calls(resp)
@@ -450,14 +420,18 @@ async def plan_execute(
                 call_name = spec.name
                 log.debug("Action: %s %s", call_name, args)
                 try:
-                    if hass and "hass" in inspect.signature(spec.func).parameters:
-                        call_args = {"hass": hass, **args}
-                        log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                        result = await spec.func(**call_args)
-                    else:
-                        call_args = args
-                        log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                        result = await spec.func(**call_args)
+                    async with performance.track_operation(
+                        f"tool_{call_name}",
+                        metadata={"args": str(args)[:200]}  # Truncate long args
+                    ):
+                        if hass and "hass" in inspect.signature(spec.func).parameters:
+                            call_args = {"hass": hass, **args}
+                            log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                            result = await spec.func(**call_args)
+                        else:
+                            call_args = args
+                            log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                            result = await spec.func(**call_args)
                     log.debug("Tool_Result[%s]: %s", call_name, result)
                     return (call, spec, args, result, False)
                 except Exception as err:
@@ -466,10 +440,23 @@ async def plan_execute(
             
             # Run all tools in parallel
             if tasks_to_run:
-                results = await asyncio.gather(
-                    *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
-                    return_exceptions=False
-                )
+                if len(tasks_to_run) > 1:
+                    # Track parallel execution group
+                    parallel_id = str(id(tasks_to_run))
+                    async with performance.track_operation(
+                        f"parallel_tools_{len(tasks_to_run)}",
+                        metadata={"tools": [spec.name for _, spec, _ in tasks_to_run]}
+                    ):
+                        results = await asyncio.gather(
+                            *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
+                            return_exceptions=False
+                        )
+                else:
+                    # Single tool, no parallel tracking needed
+                    results = await asyncio.gather(
+                        *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
+                        return_exceptions=False
+                    )
             else:
                 results = []
             
@@ -548,7 +535,11 @@ async def plan_execute(
 
         # ---------- final answer ----------
         log.debug("Final Messages: %s", messages)
-        store_session(mgr, session_key, messages, None, focus)
+        async with performance.track_operation("store_session"):
+            store_session(mgr, session_key, messages, None, focus)
+        # Write metrics after each request completes
+        if performance.is_enabled():
+            performance.write_csv()
         return final_text or "OK"
 
     return "Depth‑limit reached."

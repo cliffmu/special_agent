@@ -12,6 +12,7 @@ from homeassistant.helpers import intent
 
 from .agent_core import Agent
 from . import DOMAIN
+from .utils import performance
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -70,7 +71,9 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                      config.get("agent_model", "gpt-5"), 
                      config.get("require_confirmation", True))
         
-        result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
+        # Track entire request lifecycle
+        async with performance.track_request(f"user_request"):
+            result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
 
         mgr = self.hass.data[DOMAIN]["sessions"]
 
