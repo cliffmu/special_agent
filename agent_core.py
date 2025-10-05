@@ -540,8 +540,16 @@ async def plan_execute(
         async with performance.track_operation("store_session"):
             store_session(mgr, session_key, messages, None, focus)
         # Write metrics after each request completes (async to avoid blocking)
-        if performance.is_enabled() and hass:
-            await hass.async_add_executor_job(performance.write_csv)
+        if performance.is_enabled():
+            record_count = len(performance.get_records())
+            try:
+                if hass:
+                    await hass.async_add_executor_job(performance.write_csv)
+                else:
+                    performance.write_csv()
+                log.debug("Performance metrics written: %d records saved to CSV", record_count)
+            except Exception as err:
+                log.error("Failed to write performance metrics: %s", err, exc_info=True)
         return final_text or "OK"
 
     return "Depth‑limit reached."
