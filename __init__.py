@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import timedelta
+from pathlib import Path
 
 try:
     from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -16,8 +17,10 @@ except Exception:  # pragma: no cover - during unit tests
 
 try:
     from .session_store import SessionManager
+    from .utils import performance
 except Exception:  # pragma: no cover
     from session_store import SessionManager
+    from utils import performance
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -41,6 +44,23 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             await hass.config_entries.async_reload(entry.entry_id)
 
     hass.services.async_register(DOMAIN, "reload", reload_service_handler)
+    
+    async def export_performance_handler(call: ServiceCall) -> None:
+        """Export performance metrics to CSV."""
+        if not performance.is_enabled():
+            _LOGGER.warning("Performance tracking is not enabled")
+            return
+        performance.write_csv()
+        _LOGGER.info("Performance metrics exported")
+    
+    async def clear_performance_handler(call: ServiceCall) -> None:
+        """Clear performance metrics."""
+        performance.clear_records()
+        _LOGGER.info("Performance metrics cleared")
+    
+    hass.services.async_register(DOMAIN, "export_performance", export_performance_handler)
+    hass.services.async_register(DOMAIN, "clear_performance", clear_performance_handler)
+    
     return True
 
 
@@ -60,6 +80,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if sp_secret and not os.environ.get("SPOTIFY_CLIENT_SECRET"):
         os.environ["SPOTIFY_CLIENT_SECRET"] = sp_secret
     
+    # Configure performance tracking
+    perf_enabled = entry.options.get("enable_performance_tracking", entry.data.get("enable_performance_tracking", False))
+    if perf_enabled:
+        perf_path = Path(hass.config.path("special_agent_performance.csv"))
+        performance.configure(enabled=True, csv_path=perf_path)
+        _LOGGER.info("Performance tracking enabled: %s", perf_path)
+    else:
+        performance.configure(enabled=False)
+    
     # Register update listener for when options change
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     
@@ -67,13 +96,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _save_sessions(_):
         await mgr.save()
+        # Write any pending performance metrics
+        if performance.is_enabled():
+            performance.write_csv()
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _save_sessions)
-    async_track_time_interval(hass, lambda _: mgr.clear_expired(), timedelta(hours=1))
     
-    _LOGGER.info("Special Agent setup complete. Model: %s, Confirmation: %s", 
+    # Get session timeout from config (in minutes, convert to seconds for clear_expired)
+    timeout_minutes = entry.options.get("session_timeout_minutes", entry.data.get("session_timeout_minutes", 5))
+    timeout_seconds = timeout_minutes * 60
+    async_track_time_interval(
+        hass, 
+        lambda _: mgr.clear_expired(ttl=timeout_seconds), 
+        timedelta(hours=1)
+    )
+    
+    _LOGGER.info("Special Agent setup complete. Model: %s, Confirmation: %s, Timeout: %d min", 
                  entry.options.get("agent_model", entry.data.get("agent_model", "gpt-5")),
-                 entry.options.get("require_confirmation", entry.data.get("require_confirmation", True)))
+                 entry.options.get("require_confirmation", entry.data.get("require_confirmation", True)),
+                 timeout_minutes)
     return True
 
 
