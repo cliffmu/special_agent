@@ -537,9 +537,9 @@ async def plan_execute(
         log.debug("Final Messages: %s", messages)
         async with performance.track_operation("store_session"):
             store_session(mgr, session_key, messages, None, focus)
-        # Write metrics after each request completes
-        if performance.is_enabled():
-            performance.write_csv()
+        # Write metrics after each request completes (async to avoid blocking)
+        if performance.is_enabled() and hass:
+            await hass.async_add_executor_job(performance.write_csv)
         return final_text or "OK"
 
     return "Depth‑limit reached."

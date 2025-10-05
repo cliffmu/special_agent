@@ -50,7 +50,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         if not performance.is_enabled():
             _LOGGER.warning("Performance tracking is not enabled")
             return
-        performance.write_csv()
+        await hass.async_add_executor_job(performance.write_csv)
         _LOGGER.info("Performance metrics exported")
     
     async def clear_performance_handler(call: ServiceCall) -> None:
@@ -98,7 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await mgr.save()
         # Write any pending performance metrics
         if performance.is_enabled():
-            performance.write_csv()
+            await hass.async_add_executor_job(performance.write_csv)
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _save_sessions)
     
