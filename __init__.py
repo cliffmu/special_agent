@@ -85,9 +85,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if perf_enabled:
         perf_path = Path(hass.config.path("special_agent_performance.csv"))
         performance.configure(enabled=True, csv_path=perf_path)
-        _LOGGER.info("Performance tracking enabled: %s", perf_path)
+        _LOGGER.info("Performance tracking ENABLED: %s", perf_path)
     else:
         performance.configure(enabled=False)
+        _LOGGER.debug("Performance tracking DISABLED")
     
     # Register update listener for when options change
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -98,7 +99,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await mgr.save()
         # Write any pending performance metrics
         if performance.is_enabled():
-            await hass.async_add_executor_job(performance.write_csv)
+            try:
+                await hass.async_add_executor_job(performance.write_csv)
+                _LOGGER.debug("Performance metrics saved on shutdown")
+            except Exception as err:
+                _LOGGER.error("Failed to write performance metrics on shutdown: %s", err)
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _save_sessions)
     
