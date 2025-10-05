@@ -247,12 +247,14 @@ async def plan_execute(
         "• if NOT satisfied, brainstorm ONE improved call (re‑phrase query, bigger k, etc.) "
         "and invoke it; do this at most 2 times per user request;\n"
         "• never repeat an identical call already tried;\n"
-        "• once satisfied, call prepare_voice_response with your answer to format it for voice output.\n"
+        "• CRITICAL: Once satisfied, you MUST call prepare_voice_response - do NOT just return text.\n"
         "When an external action is required, you MAY include both a Thought paragraph and "
         "tool_calls in the same message."
         "\nRULES:\n"
+        "- NEVER include entity IDs (e.g., media_player.office_sonos) in questions to users - use friendly names only\n"
         "- NEVER suggest checking external services - use only the tools you have available\n"
-        "- If you can't find info, just say you don't have access to that information"
+        "- If you can't find info, just say you don't have access to that information\n"
+        "- ALWAYS call prepare_voice_response for final answers - NEVER return raw text"
     )
 
     log.debug("System_Prompt: %s", system_prompt)
