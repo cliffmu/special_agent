@@ -67,7 +67,7 @@ async def build_vector_index_tool(
 
 SPEC = ToolSpec(
     name="build_vector_index",
-    description="Rebuild the smart-home vector index from HA states.",
+    description="Rebuild the smart-home vector index from HA states. You do not have visiblity if the index is built or not. Dont offer to follow up if it finishes.",
     parameters=PARAMS,
     returns="status message",
     func=build_vector_index_tool,

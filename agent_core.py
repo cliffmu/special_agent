@@ -269,7 +269,22 @@ async def plan_execute(
         messages, mgr, focus, pending = load_session(
             hass, session_key, system_prompt, prompt, session_timeout_minutes
         )
-    log.debug("Session loaded: messages=%d, focus=%s, pending=%s", len(messages), focus, pending)
+    
+    # Determine if this is a followup (session has existing messages beyond system prompt)
+    is_followup = len(messages) > 1
+    log.debug("Session loaded: messages=%d, focus=%s, pending=%s, followup=%s", 
+              len(messages), focus, pending, is_followup)
+    
+    # Update the user_request metadata with followup info
+    if performance.is_enabled():
+        request_id = performance.get_current_request_id()
+        if request_id:
+            # Find and update the user_request record with followup status
+            for record in performance.get_records():
+                if record.request_id == request_id and record.operation == "user_request":
+                    record.metadata["is_followup"] = is_followup
+                    record.metadata["session_msg_count"] = len(messages)
+                    break
     
     # Session timeout naturally handles topic changes - no expensive LLM check needed
     # If user starts new topic after timeout, session will be auto-cleared
@@ -285,82 +300,95 @@ async def plan_execute(
     spec_map = {t.name: t for t in tools}
 
     # ---- main loop ----
-    while depth < max_depth:
-        try:
-            # Add built-in web_search to tools
-            tools_with_search = tool_json + [{"type": "web_search"}]
-            
-            # Responses API uses 'instructions' instead of system message
-            # Extract system from messages if present
-            instructions = None
-            input_messages = messages
-            if messages and messages[0].get("role") == "system":
-                instructions = messages[0].get("content")
-                input_messages = messages[1:]
-            
-            # Use Responses API for GPT-5 with web search support
-            async with performance.track_operation(
-                f"llm_call_{depth+1}",
-                metadata={"model": model, "reasoning": reasoning_effort, "depth": depth}
-            ):
-                resp = await client.responses.create(
-                    model=model,
-                    instructions=instructions,
-                    input=input_messages,
-                    tools=tools_with_search,
-                    tool_choice="auto",
-                    reasoning={"effort": reasoning_effort},
+    try:
+        while depth < max_depth:
+            try:
+                # Add built-in web_search to tools
+                tools_with_search = tool_json + [{"type": "web_search"}]
+                
+                # Responses API uses 'instructions' instead of system message
+                # Extract system from messages if present
+                instructions = None
+                input_messages = messages
+                if messages and messages[0].get("role") == "system":
+                    instructions = messages[0].get("content")
+                    input_messages = messages[1:]
+                
+                # Use Responses API for GPT-5 with web search support
+                async with performance.track_operation(
+                    f"llm_call_{depth+1}",
+                    metadata={
+                        "model": model, 
+                        "reasoning": reasoning_effort, 
+                        "depth": depth,
+                        "input_messages": len(input_messages),
+                    }
+                ):
+                    resp = await client.responses.create(
+                        model=model,
+                        instructions=instructions,
+                        input=input_messages,
+                        tools=tools_with_search,
+                        tool_choice="auto",
+                        reasoning={"effort": reasoning_effort},
+                    )
+                
+                # Log token usage if available
+                if hasattr(resp, 'usage') and resp.usage:
+                    log.debug("LLM tokens: prompt=%s, completion=%s, total=%s", 
+                             getattr(resp.usage, 'prompt_tokens', 'N/A'),
+                             getattr(resp.usage, 'completion_tokens', 'N/A'),
+                             getattr(resp.usage, 'total_tokens', 'N/A'))
+                
+                # Extract function calls and final text from response
+                function_calls = extract_function_calls(resp)
+                final_text = extract_final_text(resp)
+            except Exception as err:
+                # Handle GPT-5 specific errors
+                error_msg = str(err)
+                if "context_overflow" in error_msg:
+                    log.error("GPT-5 context overflow - reducing message history")
+                    # Keep system message and last 5 user/assistant messages
+                    messages = messages[:1] + messages[-10:]
+                    continue
+                elif "modality_mismatch" in error_msg:
+                    log.error("GPT-5 modality mismatch - check input format")
+                    return "I'm having trouble processing that request. Please try again."
+                elif "No tool output found" in error_msg or "invalid_request_error" in error_msg:
+                    log.error("GPT-5 tool output mismatch: %s", err)
+                    # This usually means we didn't send results for all function calls
+                    # Clear messages and restart conversation
+                    clear_session(mgr, session_key)
+                    return "I'm having issues right now. Please try your request again."
+                else:
+                    log.error("GPT-5 API error: %s", err)
+                    return "I'm having issues right now. Please try again."
+            log.debug("AI_Response_Text: %s", final_text)
+            if function_calls:
+                log.debug(
+                    "AI_Response_Function_Calls: %s",
+                    [(fc.name, fc.arguments) for fc in function_calls],
                 )
             
-            # Extract function calls and final text from response
-            function_calls = extract_function_calls(resp)
-            final_text = extract_final_text(resp)
-        except Exception as err:
-            # Handle GPT-5 specific errors
-            error_msg = str(err)
-            if "context_overflow" in error_msg:
-                log.error("GPT-5 context overflow - reducing message history")
-                # Keep system message and last 5 user/assistant messages
-                messages = messages[:1] + messages[-10:]
-                continue
-            elif "modality_mismatch" in error_msg:
-                log.error("GPT-5 modality mismatch - check input format")
-                return "I'm having trouble processing that request. Please try again."
-            elif "No tool output found" in error_msg or "invalid_request_error" in error_msg:
-                log.error("GPT-5 tool output mismatch: %s", err)
-                # This usually means we didn't send results for all function calls
-                # Clear messages and restart conversation
-                clear_session(mgr, session_key)
-                return "I'm having issues right now. Please try your request again."
-            else:
-                log.error("GPT-5 API error: %s", err)
-                return "I'm having issues right now. Please try again."
-        log.debug("AI_Response_Text: %s", final_text)
-        if function_calls:
-            log.debug(
-                "AI_Response_Function_Calls: %s",
-                [(fc.name, fc.arguments) for fc in function_calls],
-            )
-        
-        # Add entire response output to messages (Responses API native format)
-        # OpenAI handles all item types (message, function_call, reasoning, web_search_call)
-        messages.extend(resp.output)
+            # Add entire response output to messages (Responses API native format)
+            # OpenAI handles all item types (message, function_call, reasoning, web_search_call)
+            messages.extend(resp.output)
 
-        # ---------- tool branch ----------
-        if function_calls:
-            import asyncio
-            
-            # Phase 1: Validate all calls and check parallel execution rules
-            tasks_to_run = []  # List of (call, spec, args) tuples
-            validation_errors = []  # Track validation errors
-            
-            # Check if any tool cannot run in parallel
-            non_parallel_tools = []
-            for call in function_calls:
-                if call.name in spec_map:
-                    spec = spec_map[call.name]
-                    if not spec.can_run_parallel:
-                        non_parallel_tools.append(call.name)
+            # ---------- tool branch ----------
+            if function_calls:
+                import asyncio
+                
+                # Phase 1: Validate all calls and check parallel execution rules
+                tasks_to_run = []  # List of (call, spec, args) tuples
+                validation_errors = []  # Track validation errors
+                
+                # Check if any tool cannot run in parallel
+                non_parallel_tools = []
+                for call in function_calls:
+                    if call.name in spec_map:
+                        spec = spec_map[call.name]
+                        if not spec.can_run_parallel:
+                            non_parallel_tools.append(call.name)
             
             # If we have multiple calls and one cannot run in parallel, drop the non-parallel ones
             if len(function_calls) > 1 and non_parallel_tools:
@@ -535,22 +563,27 @@ async def plan_execute(
                 depth += 1
             continue
 
-        # ---------- final answer ----------
-        log.debug("Final Messages: %s", messages)
-        async with performance.track_operation("store_session"):
-            store_session(mgr, session_key, messages, None, focus)
-        # Write metrics after each request completes (async to avoid blocking)
+            # ---------- final answer ----------
+            log.debug("Final Messages: %s", messages)
+            async with performance.track_operation("store_session"):
+                store_session(mgr, session_key, messages, None, focus)
+            return final_text or "OK"
+
+        return "Depth‑limit reached."
+    
+    finally:
+        # Always write metrics, even if there was an error
         if performance.is_enabled():
             record_count = len(performance.get_records())
-            try:
-                if hass:
-                    await hass.async_add_executor_job(performance.write_csv)
-                else:
-                    performance.write_csv()
-                log.debug("Performance metrics written: %d records saved to CSV", record_count)
-            except Exception as err:
-                log.error("Failed to write performance metrics: %s", err, exc_info=True)
-        return final_text or "OK"
-
-    return "Depth‑limit reached."
+            if record_count > 0:
+                try:
+                    if hass:
+                        await hass.async_add_executor_job(performance.write_csv)
+                    else:
+                        performance.write_csv()
+                    log.debug("Performance metrics written: %d records saved to CSV", record_count)
+                except Exception as err:
+                    log.error("Failed to write performance metrics: %s", err, exc_info=True)
+            else:
+                log.debug("No performance records to write")
 

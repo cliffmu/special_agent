@@ -71,8 +71,11 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                      config.get("agent_model", "gpt-5"), 
                      config.get("require_confirmation", True))
         
-        # Track entire request lifecycle
-        async with performance.track_request(f"user_request"):
+        # Track entire request lifecycle with user prompt in metadata
+        async with performance.track_request(
+            "user_request",
+            metadata={"prompt": user_text[:100]}  # First 100 chars
+        ):
             result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
 
         mgr = self.hass.data[DOMAIN]["sessions"]
