@@ -9,7 +9,8 @@
         "openai",
         "langchain-community",
         "numpy",
-        "tiktoken"
+        "tiktoken",
+        "plexapi"
     ],
     "codeowners": ["@cliffmu"],
     "config_flow": true,
