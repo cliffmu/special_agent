@@ -87,7 +87,7 @@ async def plex_search(
             except (TypeError, ValueError):
                 season = episode = None
 
-            if season and episode:
+            if season is not None and episode is not None:
                 try:
                     shows = server.search(cleaned_query or query, mediatype="show")
                 except Exception as err:  # pragma: no cover - API errors
