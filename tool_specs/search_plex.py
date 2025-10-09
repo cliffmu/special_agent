@@ -37,7 +37,9 @@ SPEC = ToolSpec(
     name="search_plex_library",
     description=(
         "Search the connected Plex library and return rating keys for playback. "
-        "Use the 'ratingKey' with media_player.play_media (media_content_type='plex')."
+        "Use the 'ratingKey' with media_player.play_media (media_content_type='plex'). "
+        "Fire off additional searches (the tool can run in parallel) when you need to "
+        "check multiple title variations."
     ),
     parameters=PARAMS,
     returns="{hits: array}",
