@@ -73,14 +73,14 @@ def get_current_request_id() -> Optional[str]:
 
 
 @asynccontextmanager
-async def track_request(request_name: str = "user_request"):
+async def track_request(request_name: str = "user_request", metadata: Optional[dict[str, Any]] = None):
     """Track an entire user request lifecycle.
     
     This should wrap the outermost operation (e.g., the plan_execute call).
     Creates a unique request_id that all nested operations will use.
     
     Usage:
-        async with track_request("user_query"):
+        async with track_request("user_query", metadata={"prompt": "turn on lights"}):
             result = await agent.plan(user_input)
     """
     if not _enabled:
@@ -103,6 +103,7 @@ async def track_request(request_name: str = "user_request"):
             start_time=start,
             end_time=end,
             duration_ms=duration_ms,
+            metadata=metadata or {},
         ))
         
         _current_request.reset(token)
