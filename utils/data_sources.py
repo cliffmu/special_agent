@@ -213,16 +213,47 @@ def get_plex_connection_info(hass: HomeAssistant) -> Tuple[str, str]:
     data: Dict[str, Any] = dict(getattr(entry, "data", {}) or {})
     options: Dict[str, Any] = dict(getattr(entry, "options", {}) or {})
 
-    token = data.get("token") or options.get("token")
+    # Debug: log what keys are actually present
+    log.debug(
+        "get_plex_connection_info: entry.data keys=%s, entry.options keys=%s",
+        list(data.keys()),
+        list(options.keys()),
+    )
+
+    # Try multiple possible locations for the token
+    token = (
+        data.get("token")
+        or options.get("token")
+        or data.get("server_id")  # Common in newer Plex integration
+        or options.get("server_id")
+    )
+    
+    # If still not found, check if there's a nested server dict
     if not token:
+        server = data.get("server") or options.get("server")
+        if isinstance(server, dict):
+            token = server.get("token") or server.get("accessToken")
+    
+    if not token:
+        log.error(
+            "get_plex_connection_info: token not found. Available data keys: %s, options keys: %s",
+            list(data.keys()),
+            list(options.keys()),
+        )
         raise RuntimeError("Plex token missing from config entry")
 
     base_url = _extract_plex_base_url(data, options)
     if not base_url:
+        log.error(
+            "get_plex_connection_info: base_url not found. Available data keys: %s, options keys: %s",
+            list(data.keys()),
+            list(options.keys()),
+        )
         raise RuntimeError("Plex base URL missing from config entry")
 
     log.debug(
-        "get_plex_connection_info: resolved base_url for entry_id=%s",
+        "get_plex_connection_info: resolved base_url=%s (masked) for entry_id=%s",
+        base_url[:20] + "..." if len(base_url) > 20 else base_url,
         getattr(entry, "entry_id", "unknown"),
     )
     return base_url, token
