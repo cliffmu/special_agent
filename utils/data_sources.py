@@ -7,6 +7,11 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
 
 try:  # Home Assistant may be absent during testing
+    from homeassistant.config_entries import ConfigEntry
+except ModuleNotFoundError:  # pragma: no cover - fallback stubs
+    ConfigEntry = Any  # type: ignore
+
+try:  # Home Assistant may be absent during testing
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
@@ -161,3 +166,98 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     summary = {area: dict(domains) for area, domains in summary.items()}
     log.debug("get_devices_by_area: returning %d device details", len(detail))
     return summary, detail
+
+
+def get_integration_entry(hass: HomeAssistant, domain: str) -> ConfigEntry | None:
+    """Return the first config entry for ``domain`` if available."""
+
+    if hass is None:
+        log.debug("get_integration_entry: hass is None for domain=%s", domain)
+        return None
+
+    config_entries = getattr(hass, "config_entries", None)
+    if config_entries is None:
+        log.debug(
+            "get_integration_entry: hass has no config_entries attribute for domain=%s",
+            domain,
+        )
+        return None
+
+    try:
+        entries = config_entries.async_entries(domain)  # type: ignore[attr-defined]
+    except Exception as err:  # pragma: no cover - defensive
+        log.error(
+            "get_integration_entry: failed to fetch entries for domain=%s: %s",
+            domain,
+            err,
+        )
+        return None
+
+    if not entries:
+        log.debug("get_integration_entry: no entries for domain=%s", domain)
+        return None
+
+    entry = entries[0]
+    entry_id = getattr(entry, "entry_id", "unknown")
+    log.debug("get_integration_entry: using entry_id=%s for domain=%s", entry_id, domain)
+    return entry
+
+
+def get_plex_connection_info(hass: HomeAssistant) -> Tuple[str, str]:
+    """Return ``(base_url, token)`` required to connect to Plex."""
+
+    entry = get_integration_entry(hass, "plex")
+    if entry is None:
+        raise RuntimeError("Plex integration is not configured")
+
+    data: Dict[str, Any] = dict(getattr(entry, "data", {}) or {})
+    options: Dict[str, Any] = dict(getattr(entry, "options", {}) or {})
+
+    token = data.get("token") or options.get("token")
+    if not token:
+        raise RuntimeError("Plex token missing from config entry")
+
+    base_url = _extract_plex_base_url(data, options)
+    if not base_url:
+        raise RuntimeError("Plex base URL missing from config entry")
+
+    log.debug(
+        "get_plex_connection_info: resolved base_url for entry_id=%s",
+        getattr(entry, "entry_id", "unknown"),
+    )
+    return base_url, token
+
+
+def _extract_plex_base_url(data: Dict[str, Any], options: Dict[str, Any]) -> str | None:
+    """Best-effort extraction of the Plex server base URL."""
+
+    for key in ("base_url", "url"):
+        url = data.get(key) or options.get(key)
+        if isinstance(url, str) and url:
+            return url
+
+    server = data.get("server") or options.get("server")
+    if isinstance(server, dict):
+        for key in ("uri", "url", "baseurl", "base_url"):
+            url = server.get(key)
+            if isinstance(url, str) and url:
+                return url
+
+    host = data.get("host") or options.get("host")
+    if isinstance(host, str) and host:
+        ssl = bool(data.get("ssl") or options.get("ssl"))
+        port = (
+            data.get("port")
+            or options.get("port")
+            or (server.get("port") if isinstance(server, dict) else None)
+        )
+        try:
+            port_int = int(port) if port else None
+        except (TypeError, ValueError):
+            port_int = None
+        if not port_int:
+            port_int = 32400 if not ssl else 443
+        scheme = "https" if ssl or port_int == 443 else "http"
+        return f"{scheme}://{host}:{port_int}"
+
+    return None
