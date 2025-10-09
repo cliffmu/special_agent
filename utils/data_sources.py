@@ -262,25 +262,46 @@ def get_plex_connection_info(hass: HomeAssistant) -> Tuple[str, str]:
 def _extract_plex_base_url(data: Dict[str, Any], options: Dict[str, Any]) -> str | None:
     """Best-effort extraction of the Plex server base URL."""
 
+    # Check top-level keys first
     for key in ("base_url", "url"):
         url = data.get(key) or options.get(key)
         if isinstance(url, str) and url:
             return url
 
+    # Check inside server dict
     server = data.get("server") or options.get("server")
     if isinstance(server, dict):
-        for key in ("uri", "url", "baseurl", "base_url"):
+        log.debug("_extract_plex_base_url: server dict keys=%s", list(server.keys()))
+        for key in ("uri", "url", "baseurl", "base_url", "address", "local_address"):
             url = server.get(key)
             if isinstance(url, str) and url:
+                log.debug("_extract_plex_base_url: found url in server[%s]=%s", key, url[:30])
                 return url
 
+    # Check inside server_config dict (common in newer Plex integration)
+    server_config = data.get("server_config") or options.get("server_config")
+    if isinstance(server_config, dict):
+        log.debug("_extract_plex_base_url: server_config dict keys=%s", list(server_config.keys()))
+        for key in ("uri", "url", "baseurl", "base_url", "address", "local_address"):
+            url = server_config.get(key)
+            if isinstance(url, str) and url:
+                log.debug("_extract_plex_base_url: found url in server_config[%s]=%s", key, url[:30])
+                return url
+
+    # Try to construct from host/port
     host = data.get("host") or options.get("host")
+    if not host and isinstance(server, dict):
+        host = server.get("host") or server.get("address")
+    if not host and isinstance(server_config, dict):
+        host = server_config.get("host") or server_config.get("address")
+    
     if isinstance(host, str) and host:
         ssl = bool(data.get("ssl") or options.get("ssl"))
         port = (
             data.get("port")
             or options.get("port")
             or (server.get("port") if isinstance(server, dict) else None)
+            or (server_config.get("port") if isinstance(server_config, dict) else None)
         )
         try:
             port_int = int(port) if port else None
@@ -289,6 +310,8 @@ def _extract_plex_base_url(data: Dict[str, Any], options: Dict[str, Any]) -> str
         if not port_int:
             port_int = 32400 if not ssl else 443
         scheme = "https" if ssl or port_int == 443 else "http"
-        return f"{scheme}://{host}:{port_int}"
+        constructed_url = f"{scheme}://{host}:{port_int}"
+        log.debug("_extract_plex_base_url: constructed url from host/port=%s", constructed_url[:30])
+        return constructed_url
 
     return None
