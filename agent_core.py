@@ -64,6 +64,9 @@ class Agent:
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",
             "tool_specs.prepare_voice_response",
+            "tool_specs.get_preferences",
+            "tool_specs.set_preferences",
+            "tool_specs.run_sequence",
             # search_web not loaded - using OpenAI's built-in web_search instead
         ]
         
