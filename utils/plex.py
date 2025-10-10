@@ -24,22 +24,26 @@ async def plex_search(
     query: str,
     kind: Optional[str] = None,
     limit: int = 5,
-) -> List[Dict[str, Any]]:
-    """Search Plex for media matching ``query``."""
+) -> Dict[str, Any]:
+    """Search Plex for media matching ``query``.
+    
+    Returns dict with 'hits' (list) and optional 'error' (str) fields.
+    """
 
     if not query:
         log.debug("plex_search: empty query")
-        return []
+        return {"hits": [], "error": None}
 
     if hass is None:
         log.error("plex_search: hass instance is required")
-        return []
+        return {"hits": [], "error": "Home Assistant instance not available"}
 
     try:
         base_url, token = get_plex_connection_info(hass)
     except Exception as err:  # pragma: no cover - defensive
-        log.error("plex_search: unable to resolve Plex connection info: %s", err)
-        return []
+        error_msg = str(err)
+        log.error("plex_search: unable to resolve Plex connection info: %s", error_msg)
+        return {"hits": [], "error": f"Plex connection error: {error_msg}"}
 
     log.debug(
         "plex_search: query=%s kind=%s limit=%s base_url_resolved=%s",
@@ -49,19 +53,20 @@ async def plex_search(
         bool(base_url),
     )
 
-    def _run_search() -> List[Dict[str, Any]]:
+    def _run_search() -> tuple[List[Dict[str, Any]], Optional[str]]:
+        """Returns (hits, error_message)."""
         try:
             from plexapi.exceptions import NotFound  # type: ignore
             from plexapi.server import PlexServer  # type: ignore
         except ModuleNotFoundError as exc:  # pragma: no cover - dependency missing
             log.error("plex_search: plexapi not installed: %s", exc)
-            return []
+            return [], "PlexAPI library not installed"
 
         try:
             server = PlexServer(base_url, token)
         except Exception as err:  # pragma: no cover - network issues
             log.error("plex_search: failed to connect to Plex server: %s", err)
-            return []
+            return [], f"Failed to connect to Plex server: {err}"
 
         machine_id = getattr(server, "machineIdentifier", None)
         results: List[Any] = []
@@ -78,7 +83,7 @@ async def plex_search(
             results.extend(server.search(query, **search_kwargs))
         except Exception as err:  # pragma: no cover - API errors
             log.error("plex_search: search failed: %s", err)
-            return []
+            return [], f"Plex search failed: {err}"
 
         if season_episode:
             try:
@@ -140,16 +145,18 @@ async def plex_search(
             if len(hits) >= limit:
                 break
 
-        return hits
+        return hits, None  # Success: return hits with no error
 
     if hasattr(hass, "async_add_executor_job"):
         try:
-            return await hass.async_add_executor_job(_run_search)
+            hits, error = await hass.async_add_executor_job(_run_search)
+            return {"hits": hits, "error": error}
         except Exception as err:  # pragma: no cover - defensive
             log.error("plex_search: executor job failed: %s", err)
-            return []
+            return {"hits": [], "error": f"Executor job failed: {err}"}
 
-    return _run_search()
+    hits, error = _run_search()
+    return {"hits": hits, "error": error}
 
 
 def _safe_int(value: Any) -> Optional[int]:

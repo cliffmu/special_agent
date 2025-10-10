@@ -48,8 +48,9 @@ async def get_entity_state(
     for eid in entity_ids_list:
         state = get_state(eid) if callable(get_state) else None
         if not state:
-            result[eid] = None
+            result[eid] = {"state": "not_found", "error": "Entity does not exist"}
             continue
+        
         attr_keys = attributes or list(state.attributes)
         attrs = {}
         for k in attr_keys:
@@ -60,7 +61,16 @@ async def get_entity_state(
                     attrs[k] = val.value
                 else:
                     attrs[k] = val
-        result[eid] = {"state": state.state, **attrs}
+        
+        entity_result = {"state": state.state, **attrs}
+        
+        # Add helpful flags for common states
+        if state.state in ("unavailable", "unknown"):
+            entity_result["available"] = False
+        else:
+            entity_result["available"] = True
+            
+        result[eid] = entity_result
     log.debug("get_entity_state -> %s", result)
     return result
 
@@ -68,12 +78,15 @@ async def get_entity_state(
 SPEC = ToolSpec(
     name="get_entity_state",
     description=(
-        "Return current state and requested attributes for entities. "
-        "Parameter 'entity_ids' accepts a single string or list of strings; "
-        "a single value will be wrapped into a list."
+        "Return current state and attributes for entities. Returns {state, available, ...attributes}. "
+        "Use this to: (1) Check if entity is available before controlling it, "
+        "(2) Validate an action succeeded by checking state after, "
+        "(3) Wait/delay for device startup (call this tool to introduce ~1-2 second delay while checking state). "
+        "Media players: 'unavailable'=device off, 'idle'=on but nothing playing, 'playing'=active playback. "
+        "The 'available' field is True unless state is 'unavailable' or 'unknown'."
     ),
     parameters=PARAMS,
-    returns="dict of entity states",
+    returns="dict of {entity_id: {state, available, ...attributes}}",
     func=get_entity_state,
     can_run_parallel=True,  # Read-only operation - safe for parallel execution
 )
