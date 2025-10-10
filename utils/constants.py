@@ -6,7 +6,7 @@ EXCLUDED_DOMAINS = {
     "update",
     "number",
     "select",
-    "button",
+    # "button",
     "event",
     "alarm_control_panel",
     "assist_satellite",
@@ -35,6 +35,7 @@ PREFERRED_DOMAINS = {
     "remote",
     "vacuum",
     "weather",
+    "button",
 }
 
 LOCATION_WORDS = {
