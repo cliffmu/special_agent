@@ -1,6 +1,6 @@
 import json
 
-from special_agent.utils.vector_index import build_vector_index
+from special_agent.utils.vector_index import build_device_index
 from special_agent.utils import constants
 
 
@@ -21,7 +21,7 @@ def test_vector_meta(tmp_path):
     ]
 
     persist = tmp_path / "index"
-    build_vector_index(states, persist_dir=str(persist))
+    build_device_index(states, persist_dir=str(persist))
 
     with open(persist / "meta.json", encoding="utf-8") as f:
         meta = json.load(f)

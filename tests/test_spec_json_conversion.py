@@ -11,7 +11,7 @@ async def dummy_func(force: bool = False):
 
 
 SPEC = ToolSpec(
-    name="build_vector_index",
+    name="build_device_index",
     description="Rebuild index",
     parameters=vol.Schema({vol.Optional("force", default=False): bool}),
     returns="done",

@@ -8,7 +8,7 @@ from typing import List, Any, Dict, Tuple
 import re
 
 from ..utils.vector_index import (
-    async_load_vector_index,
+    async_load_device_index,
     async_query_vector_index,
 )
 from ..utils.constants import MAX_SEARCH_K
@@ -66,7 +66,7 @@ async def search_devices(
 ) -> List[Dict[str, Any]]:
     """Return matching devices with sanitized info and attribute keys."""
     k = min(k, MAX_SEARCH_K)
-    index_data = await async_load_vector_index(hass=hass)
+    index_data = await async_load_device_index(hass=hass)
     filters: dict[str, Any] = {}
     if area:
         filters["area_id"] = area

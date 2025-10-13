@@ -41,6 +41,7 @@ class SpecialAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         vol.Coerce(int), vol.Range(min=1, max=60)
                     ),
                     vol.Optional("enable_performance_tracking", default=False): bool,
+                    vol.Optional("scene_memory_enabled", default=False): bool,
                     # Google search fields (commented out - using OpenAI web search instead)
                     # vol.Optional("google_api_key", default=""): str,
                     # vol.Optional("google_cx", default=""): str,
@@ -123,6 +124,13 @@ class SpecialAgentOptionsFlow(config_entries.OptionsFlow):
                     default=current.get(
                         "enable_performance_tracking",
                         self.config_entry.data.get("enable_performance_tracking", False),
+                    ),
+                ): bool,
+                vol.Optional(
+                    "scene_memory_enabled",
+                    default=current.get(
+                        "scene_memory_enabled",
+                        self.config_entry.data.get("scene_memory_enabled", False),
                     ),
                 ): bool,
                 # Google search fields (commented out - using OpenAI web search instead)

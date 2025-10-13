@@ -1,7 +1,7 @@
 import asyncio
 import importlib
 
-from special_agent.utils.vector_index import build_vector_index
+from special_agent.utils.vector_index import build_device_index
 
 
 def test_search_device_filter(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_search_device_filter(tmp_path, monkeypatch):
     ]
 
     persist = tmp_path / "index"
-    build_vector_index(states, persist_dir=str(persist))
+    build_device_index(states, persist_dir=str(persist))
 
     monkeypatch.setenv("SPECIAL_AGENT_PERSIST_DIR", str(persist))
     import special_agent.utils.vector_index as vi

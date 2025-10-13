@@ -12,6 +12,14 @@ from datetime import datetime
 
 import voluptuous as vol
 
+# Scene Memory configuration (hardcoded for easy tweaking)
+SCENE_MEMORY_CONFIG = {
+    "retrieval_k": 1,                          # Default scenes to retrieve
+    "session_window_seconds": 360,             # Episode grouping window (6 min)
+    "post_condition_timeout_ms": 4000,         # Per-step verification timeout
+    "session_close_idle_seconds": 120,         # Episode flush after idle (2 min)
+}
+
 try:
     from .utils import logging as log
     from . import DOMAIN
@@ -55,7 +63,7 @@ class Agent:
         
         # Base tools that are always loaded
         base_tools = [
-            "tool_specs.build_vector_index",
+            "tool_specs.build_device_index",
             "tool_specs.ask_user",
             "tool_specs.search_devices",
             "tool_specs.control_device",
@@ -64,8 +72,6 @@ class Agent:
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",
             "tool_specs.prepare_voice_response",
-            "tool_specs.get_preferences",
-            "tool_specs.set_preferences",
             "tool_specs.run_sequence",
             # search_web not loaded - using OpenAI's built-in web_search instead
         ]
@@ -76,6 +82,17 @@ class Agent:
             log.info("Confirmation enabled - confirm_action tool loaded")
         else:
             log.info("Confirmation disabled - confirm_action tool not loaded")
+        
+        # Scene Memory tools (conditional)
+        scene_memory_enabled = self.config.get("scene_memory_enabled", False)
+        if scene_memory_enabled:
+            base_tools.extend([
+                "tool_specs.get_scene",
+                "tool_specs.set_scene",
+            ])
+            log.info("Scene memory enabled - scene tools loaded")
+        else:
+            log.debug("Scene memory disabled - scene tools not loaded")
         
         # Google search integration (commented out - using OpenAI web search instead)
         # To re-enable Google search:
