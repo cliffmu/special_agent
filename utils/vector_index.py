@@ -17,6 +17,7 @@ from . import logging as log
 from .constants import (
     EXCLUDED_DOMAINS,
     EXCLUDED_SUFFIXES,
+    INCLUDED_ENTITY_IDS,
     EMBED_MODEL,
     EMBED_DIM,
     FALLBACK_MODEL,
@@ -175,7 +176,9 @@ def build_vector_index(
     for st in states:
         entity_id = st.get("entity_id", "")
         domain = st.get("domain") or entity_id.split(".")[0]
-        if domain in EXCLUDED_DOMAINS or entity_id.endswith(EXCLUDED_SUFFIXES):
+        excluded_domain = domain in EXCLUDED_DOMAINS
+        excluded_suffix = entity_id.endswith(EXCLUDED_SUFFIXES)
+        if entity_id not in INCLUDED_ENTITY_IDS and (excluded_domain or excluded_suffix):
             excluded_count += 1
             continue
 
