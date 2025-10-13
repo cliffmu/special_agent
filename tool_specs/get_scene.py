@@ -48,50 +48,39 @@ async def get_scene(
     log.debug("get_scene: intent=%s, area=%s, k=%d", intent, area, k)
     
     try:
-        # Import scene memory modules (will be created in Phase 5)
-        try:
-            from ..utils.scene_memory_index import search_scenes
-            
-            # Search for matching scenes
-            results = await search_scenes(intent, area=area, k=k, hass=hass)
-            
-            if not results:
-                log.debug("No scenes found for intent=%s, area=%s", intent, area)
-                return {
-                    "commands_list": None,
-                    "confidence": 0.0,
-                    "strategy_item": None,
-                    "message": f"No learned scenes found for '{intent}'"
-                }
-            
-            # Return top result
-            top_result = results[0]
-            log.info("Found scene: intent=%s, confidence=%.2f", intent, top_result.get("confidence", 0))
-            
-            # Format strategy item if available
-            strategy_item = None
-            if top_result.get("strategy"):
-                strategy_item = {
-                    "title": top_result.get("intent", intent),
-                    "description": top_result.get("summary", ""),
-                    "content": top_result.get("strategy", "")
-                }
-            
-            return {
-                "commands_list": top_result.get("steps"),
-                "confidence": top_result.get("confidence", 0.0),
-                "strategy_item": strategy_item
-            }
-            
-        except ImportError:
-            # Scene memory modules not yet implemented
-            log.debug("Scene memory modules not available yet")
+        from ..utils.scene_memory_index import async_search_scenes
+        
+        # Search for matching scenes
+        results = await async_search_scenes(intent, area=area, k=k, hass=hass)
+        
+        if not results:
+            log.debug("No scenes found for intent=%s, area=%s", intent, area)
             return {
                 "commands_list": None,
                 "confidence": 0.0,
                 "strategy_item": None,
-                "message": "Scene memory system not initialized (Phase 4-5 pending)"
+                "message": f"No learned scenes found for '{intent}'"
             }
+        
+        # Return top result
+        top_result = results[0]
+        log.info("Found scene: intent=%s, confidence=%.2f, score=%.3f", 
+                 intent, top_result.get("confidence", 0), top_result.get("search_score", 0))
+        
+        # Format strategy item if available
+        strategy_item = None
+        if top_result.get("strategy"):
+            strategy_item = {
+                "title": top_result.get("intent", intent),
+                "description": top_result.get("summary", ""),
+                "content": top_result.get("strategy", "")
+            }
+        
+        return {
+            "commands_list": top_result.get("steps"),
+            "confidence": top_result.get("confidence", 0.0),
+            "strategy_item": strategy_item
+        }
         
     except Exception as err:
         log.error("Error retrieving scene: %s", err, exc_info=True)

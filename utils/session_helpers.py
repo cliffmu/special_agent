@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 import time
+import uuid
 
 try:
     from . import logging as log
@@ -13,6 +14,11 @@ except ImportError:
     from utils import logging as log
     from session_store import Session
     DOMAIN = "special_agent"
+
+
+def generate_message_id() -> str:
+    """Generate a unique message ID for Responses API."""
+    return f"msg_{uuid.uuid4().hex[:16]}"
 
 
 def load_session(
@@ -32,11 +38,15 @@ def load_session(
             session = mgr.get(session_key)
             if session:
                 # Clean loaded messages - remove fields not valid for Responses API input
+                # KEEP 'id' field - it's required by Responses API
                 msgs = []
                 for msg in session.messages:
                     if isinstance(msg, dict):
-                        # Remove status, id, and other output-only fields
-                        clean_msg = {k: v for k, v in msg.items() if k not in ('status', 'id', 'encrypted_content')}
+                        # Remove output-only fields but KEEP id
+                        clean_msg = {k: v for k, v in msg.items() if k not in ('status', 'encrypted_content')}
+                        # Ensure message has an id (add one if missing from old sessions)
+                        if 'id' not in clean_msg:
+                            clean_msg['id'] = generate_message_id()
                         msgs.append(clean_msg)
                     else:
                         msgs.append(msg)
@@ -44,11 +54,13 @@ def load_session(
                 focus = session.focus
                 pending = session.pending
                 
-                msgs.append({"role": "user", "content": prompt})
+                # Add new user message with ID
+                user_msg = {"role": "user", "content": prompt, "id": generate_message_id()}
+                msgs.append(user_msg)
                 return msgs, mgr, focus, pending
     return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
+        {"role": "system", "content": system_prompt, "id": generate_message_id()},
+        {"role": "user", "content": prompt, "id": generate_message_id()},
     ], mgr, focus, None
 
 
