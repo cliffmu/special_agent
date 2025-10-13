@@ -463,7 +463,7 @@ async def plan_execute(
                     "type": "function_call_output",
                     "call_id": call.call_id,
                     "output": error_msg,
-                    "id": generate_message_id()
+                    "id": generate_message_id("fc")
                 })
             
             # Phase 2: Execute all valid calls in parallel
@@ -526,7 +526,7 @@ async def plan_execute(
                         "type": "function_call_output",
                         "call_id": call.call_id,
                         "output": result,  # Already formatted as error string
-                        "id": generate_message_id()
+                        "id": generate_message_id("fc")
                     })
                     continue
 
@@ -545,7 +545,7 @@ async def plan_execute(
                     "type": "function_call_output",
                     "call_id": call.call_id,
                     "output": result_str,
-                    "id": generate_message_id()
+                    "id": generate_message_id("fc")
                 })
                 
                 # Check if any result has a prompt response

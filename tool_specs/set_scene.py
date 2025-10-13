@@ -64,7 +64,7 @@ async def set_scene(
             "tool_set_scene",
             metadata={"intent": intent, "outcome": outcome, "steps": len(steps)}
         ):
-            from ..utils.scene_memory_index import async_upsert_scene
+            from ..utils.vector_index import async_upsert_scene
             import time
             
             # Build memory entry

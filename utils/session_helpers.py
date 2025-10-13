@@ -16,9 +16,16 @@ except ImportError:
     DOMAIN = "special_agent"
 
 
-def generate_message_id() -> str:
-    """Generate a unique message ID for Responses API."""
-    return f"msg_{uuid.uuid4().hex[:16]}"
+def generate_message_id(msg_type: str = "msg") -> str:
+    """
+    Generate a unique message ID for Responses API.
+    
+    Args:
+        msg_type: Type prefix for the ID. 
+                  - 'fc' for function_call_output
+                  - 'msg' for other messages (default)
+    """
+    return f"{msg_type}_{uuid.uuid4().hex[:16]}"
 
 
 def load_session(
@@ -46,7 +53,9 @@ def load_session(
                         clean_msg = {k: v for k, v in msg.items() if k not in ('status', 'encrypted_content')}
                         # Ensure message has an id (add one if missing from old sessions)
                         if 'id' not in clean_msg:
-                            clean_msg['id'] = generate_message_id()
+                            # Use correct prefix based on message type
+                            msg_type_prefix = "fc" if clean_msg.get("type") == "function_call_output" else "msg"
+                            clean_msg['id'] = generate_message_id(msg_type_prefix)
                         msgs.append(clean_msg)
                     else:
                         msgs.append(msg)

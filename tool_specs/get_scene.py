@@ -48,7 +48,7 @@ async def get_scene(
     log.debug("get_scene: intent=%s, area=%s, k=%d", intent, area, k)
     
     try:
-        from ..utils.scene_memory_index import async_search_scenes
+        from ..utils.vector_index import async_search_scenes
         
         # Search for matching scenes
         results = await async_search_scenes(intent, area=area, k=k, hass=hass)
