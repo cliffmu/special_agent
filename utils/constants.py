@@ -6,7 +6,7 @@ EXCLUDED_DOMAINS = {
     "update",
     "number",
     "select",
-    # "button",
+    "button",
     "event",
     "alarm_control_panel",
     "assist_satellite",
@@ -35,7 +35,11 @@ PREFERRED_DOMAINS = {
     "remote",
     "vacuum",
     "weather",
-    "button",
+}
+
+INCLUDED_ENTITY_IDS = {
+    # Allowlist for critical entities we want even if their domain is excluded
+    "button.lex_2_0_scan_clients",
 }
 
 LOCATION_WORDS = {
