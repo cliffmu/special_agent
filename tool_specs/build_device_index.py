@@ -1,4 +1,4 @@
-"""Tool to rebuild the vector index from Home Assistant states."""
+"""Tool to rebuild the device/entity vector index from Home Assistant states."""
 from __future__ import annotations
 
 import logging
@@ -8,7 +8,7 @@ import asyncio
 import functools
 
 from ..utils import logging as log
-from ..utils.vector_index import build_vector_index
+from ..utils.vector_index import build_device_index
 from ..utils.data_sources import get_ha_states, enrich_states_metadata
 from ..agent_core import ToolSpec
 
@@ -28,12 +28,12 @@ PARAMS = {
 }
 
 
-async def build_vector_index_tool(
+async def build_device_index_tool(
     force: bool = False,
     hass: Any | None = None,
 ) -> str:
-    """Build or refresh the vector index from Home Assistant states."""
-    log.debug("build_vector_index_tool start force=%s hass=%s", force, bool(hass))
+    """Build or refresh the device/entity vector index from Home Assistant states."""
+    log.debug("build_device_index_tool start force=%s hass=%s", force, bool(hass))
 
     async def _worker() -> None:
         add_job = getattr(hass, "async_add_executor_job", None) if hass else None
@@ -42,7 +42,7 @@ async def build_vector_index_tool(
             states = enrich_states_metadata(hass, states)
             log.debug("Retrieved %d states from Home Assistant", len(states))
             await add_job(
-                functools.partial(build_vector_index, force_rebuild=force), states
+                functools.partial(build_device_index, force_rebuild=force), states
             )
         else:
             states = get_ha_states(hass)
@@ -50,26 +50,27 @@ async def build_vector_index_tool(
             log.debug("Retrieved %d states from Home Assistant", len(states))
             await asyncio.get_running_loop().run_in_executor(
                 None,
-                functools.partial(build_vector_index, states, force_rebuild=force),
+                functools.partial(build_device_index, states, force_rebuild=force),
             )
-        log.info("Vector index built with %d states", len(states))
-        log.debug("build_vector_index_tool completed")
+        log.info("Device index built with %d states", len(states))
+        log.debug("build_device_index_tool completed")
 
     create_task = (
         getattr(hass, "async_create_background_task", None) if hass else None
     )
     if callable(create_task) and create_task.__class__.__name__ != "MagicMock":
-        create_task(_worker(), "rebuild_vector_index")
-        return "rebuild started in background"
+        create_task(_worker(), "rebuild_device_index")
+        return "Device index rebuild started in background"
 
     asyncio.create_task(_worker())
-    return "rebuild scheduled"
+    return "Device index rebuild scheduled"
 
 SPEC = ToolSpec(
-    name="build_vector_index",
-    description="Rebuild the smart-home vector index from HA states. You do not have visiblity if the index is built or not. Dont offer to follow up if it finishes.",
+    name="build_device_index",
+    description="Rebuild the device/entity vector index from HA states. This indexes all controllable devices for search. You do not have visibility if the index is built or not. Don't offer to follow up if it finishes.",
     parameters=PARAMS,
     returns="status message",
-    func=build_vector_index_tool,
+    func=build_device_index_tool,
     can_run_parallel=True,  # Can run in background - safe for parallel execution
 )
+

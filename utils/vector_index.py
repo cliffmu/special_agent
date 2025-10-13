@@ -40,6 +40,7 @@ DEFAULT_PERSIST_DIR = os.environ.get(
     "SPECIAL_AGENT_PERSIST_DIR",
     str(Path(BASE_DIR) / "sa_vector_index"),
 )
+DEFAULT_DEVICE_PERSIST_DIR = os.path.join(DEFAULT_PERSIST_DIR, "devices")
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -126,15 +127,15 @@ def _semantic_embed(text: str) -> np.ndarray:
     return vec
 
 
-def build_vector_index(
+def build_device_index(
     states: Iterable[Dict],
-    persist_dir: str = DEFAULT_PERSIST_DIR,
+    persist_dir: str = DEFAULT_DEVICE_PERSIST_DIR,
     force_rebuild: bool = False,
 ) -> Tuple[np.ndarray, List[Dict]]:
-    """Build or load a NumPy index from Home Assistant states."""
+    """Build or load a NumPy index from Home Assistant device/entity states."""
     states = list(states)
     log.debug(
-        "build_vector_index: dir=%s force_rebuild=%s states=%d",
+        "build_device_index: dir=%s force_rebuild=%s states=%d",
         persist_dir,
         force_rebuild,
         len(states),
@@ -222,19 +223,19 @@ def build_vector_index(
         )
 
     log.info(
-        "Vector index rebuilt with %d docs (excluded=%d)", len(docs), excluded_count
+        "Device index rebuilt with %d docs (excluded=%d)", len(docs), excluded_count
     )
-    log.debug("build_vector_index: completed")
+    log.debug("build_device_index: completed")
     return matrix, docs
 
 
-def load_vector_index(
-    persist_dir: str = DEFAULT_PERSIST_DIR,
+def load_device_index(
+    persist_dir: str = DEFAULT_DEVICE_PERSIST_DIR,
 ) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
-    """Load a previously built NumPy index if available."""
+    """Load a previously built device/entity index if available."""
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
-    log.debug("load_vector_index from %s", persist_dir)
+    log.debug("load_device_index from %s", persist_dir)
     if os.path.exists(index_file) and os.path.exists(mapping_file):
         try:
             matrix = np.load(index_file)
@@ -249,14 +250,14 @@ def load_vector_index(
     return None, None
 
 
-async def async_load_vector_index(
-    persist_dir: str = DEFAULT_PERSIST_DIR,
+async def async_load_device_index(
+    persist_dir: str = DEFAULT_DEVICE_PERSIST_DIR,
     hass: Any | None = None,
 ) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
-    """Asynchronously load a previously built NumPy index if available."""
+    """Asynchronously load a previously built device/entity index if available."""
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
-    log.debug("async_load_vector_index from %s", persist_dir)
+    log.debug("async_load_device_index from %s", persist_dir)
     if os.path.exists(index_file) and os.path.exists(mapping_file):
         try:
             add_job = getattr(hass, "async_add_executor_job", None) if hass else None

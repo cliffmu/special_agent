@@ -1,6 +1,6 @@
 import os
 import json
-from utils.vector_index import build_vector_index, load_vector_index, query_vector_index
+from utils.vector_index import build_device_index, load_device_index, query_vector_index
 
 
 def test_build_and_query_vector_index(tmp_path):
@@ -9,18 +9,18 @@ def test_build_and_query_vector_index(tmp_path):
         {"entity_id": "switch.garage", "name": "Garage Switch", "attributes": {"friendly_name": "Garage"}},
     ]
     persist = tmp_path / "index"
-    index, docs = build_vector_index(states, persist_dir=str(persist))
+    index, docs = build_device_index(states, persist_dir=str(persist))
 
     assert os.path.exists(persist / "matrix.npy")
     assert len(docs) == 2
 
-    loaded = load_vector_index(str(persist))
+    loaded = load_device_index(str(persist))
     results = query_vector_index(loaded, "kitchen", k=2)
     ids = [r["metadata"]["entity_id"] for r in results]
     assert "light.kitchen" in ids
 
 
-def test_build_vector_index_includes_area(tmp_path):
+def test_build_device_index_includes_area(tmp_path):
     states = [
         {
             "entity_id": "light.bedroom",
@@ -31,7 +31,7 @@ def test_build_vector_index_includes_area(tmp_path):
     ]
 
     persist = tmp_path / "index_area"
-    _, docs = build_vector_index(states, persist_dir=str(persist))
+    _, docs = build_device_index(states, persist_dir=str(persist))
 
     assert docs[0]["metadata"].get("area_id") == "bedroom"
 
@@ -52,7 +52,7 @@ def test_mapping_contains_light_area(tmp_path):
     ]
 
     persist = tmp_path / "index_check"
-    build_vector_index(states, persist_dir=str(persist))
+    build_device_index(states, persist_dir=str(persist))
 
     with open(persist / "mapping.json", encoding="utf-8") as f:
         mapping = json.load(f)
@@ -82,7 +82,7 @@ def test_query_vector_index_with_filters(tmp_path):
     ]
 
     persist = tmp_path / "index_filter"
-    index = build_vector_index(states, persist_dir=str(persist))
+    index = build_device_index(states, persist_dir=str(persist))
 
     results = query_vector_index(
         index,

@@ -31,7 +31,7 @@ def test_embedding_dimensions_and_ranking(tmp_path, monkeypatch):
     ]
 
     persist = tmp_path / "index"
-    matrix, docs = vi.build_vector_index(states, persist_dir=str(persist))
+    matrix, docs = vi.build_device_index(states, persist_dir=str(persist))
 
     assert matrix.shape[1] == constants.EMBED_DIM
 
