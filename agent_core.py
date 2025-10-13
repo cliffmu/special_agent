@@ -23,12 +23,12 @@ SCENE_MEMORY_CONFIG = {
 try:
     from .utils import logging as log
     from . import DOMAIN
-    from .utils.session_helpers import load_session, store_session, clear_session
+    from .utils.session_helpers import load_session, store_session, clear_session, generate_message_id
     from .utils.response_utils import extract_function_calls, extract_final_text, summarize_result
     from .utils import performance
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
-    from utils.session_helpers import load_session, store_session, clear_session
+    from utils.session_helpers import load_session, store_session, clear_session, generate_message_id
     from utils.response_utils import extract_function_calls, extract_final_text, summarize_result
     from utils import performance
     DOMAIN = "special_agent"
@@ -462,7 +462,8 @@ async def plan_execute(
                 messages.append({
                     "type": "function_call_output",
                     "call_id": call.call_id,
-                    "output": error_msg
+                    "output": error_msg,
+                    "id": generate_message_id()
                 })
             
             # Phase 2: Execute all valid calls in parallel
@@ -524,7 +525,8 @@ async def plan_execute(
                     messages.append({
                         "type": "function_call_output",
                         "call_id": call.call_id,
-                        "output": result  # Already formatted as error string
+                        "output": result,  # Already formatted as error string
+                        "id": generate_message_id()
                     })
                     continue
 
@@ -542,7 +544,8 @@ async def plan_execute(
                 messages.append({
                     "type": "function_call_output",
                     "call_id": call.call_id,
-                    "output": result_str
+                    "output": result_str,
+                    "id": generate_message_id()
                 })
                 
                 # Check if any result has a prompt response
@@ -579,7 +582,8 @@ async def plan_execute(
                 # Give up and ask for final response
                 messages.append({
                     "role": "user",
-                    "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response."
+                    "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response.",
+                    "id": generate_message_id()
                 })
                 depth += 1
             continue

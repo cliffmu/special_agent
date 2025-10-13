@@ -64,40 +64,53 @@ async def set_scene(
             "tool_set_scene",
             metadata={"intent": intent, "outcome": outcome, "steps": len(steps)}
         ):
-            # Import scene memory modules (will be created in Phase 4-5)
-            try:
-                from ..utils.scene_memory_store import upsert as store_upsert
-                from ..utils.scene_memory_index import upsert_scene
-                
-                # Build memory entry
-                import time
-                entry = {
-                    "id": f"{intent}_{area or 'global'}_{int(time.time())}",
-                    "intent": intent,
-                    "area_hint": area,
-                    "steps": steps,
-                    "outcome": outcome,
-                    "notes": notes or "",
-                    "updated_at": time.time(),
-                }
-                
-                # Update store
-                await store_upsert(entry, hass=hass)
-                
-                # Rebuild scene index (full rebuild for now)
-                await upsert_scene(entry, hass=hass)
-                
-                log.info("Scene learning recorded: intent=%s, outcome=%s", intent, outcome)
-                
-                return {"status": "ok", "message": f"Scene '{intent}' learning recorded"}
-                
-            except ImportError:
-                # Scene memory modules not yet implemented
-                log.debug("Scene memory modules not available yet - write-back skipped")
-                return {
-                    "status": "ok", 
-                    "message": "Scene memory backend not initialized (Phase 4-5 pending)"
-                }
+            from ..utils.scene_memory_index import async_upsert_scene
+            import time
+            
+            # Build memory entry
+            entry_id = f"{intent}_{area or 'global'}_{int(time.time())}"
+            
+            # Calculate confidence based on outcome
+            # Start with base confidence and adjust based on outcomes over time
+            confidence = 0.5  # Default for new entries
+            if outcome == "success":
+                confidence = 0.8
+            elif outcome == "fail":
+                confidence = 0.3
+            elif outcome == "corrected":
+                confidence = 0.6
+            
+            # Build summary from steps
+            step_types = [s.get("type", "unknown") for s in steps]
+            summary = f"{len(steps)} steps: {', '.join(step_types[:3])}"
+            if len(step_types) > 3:
+                summary += f", +{len(step_types) - 3} more"
+            
+            # Build strategy hint
+            strategy = notes or f"Learned from {outcome} execution"
+            
+            entry = {
+                "id": entry_id,
+                "intent": intent,
+                "area_hint": area,
+                "summary": summary,
+                "steps": steps,
+                "strategy": strategy,
+                "confidence": confidence,
+                "updated_at": time.time(),
+            }
+            
+            # Update store and rebuild index
+            await async_upsert_scene(entry, hass=hass)
+            
+            log.info("Scene learning recorded: intent=%s, outcome=%s, id=%s", 
+                     intent, outcome, entry_id)
+            
+            return {
+                "status": "ok", 
+                "message": f"Scene '{intent}' learning recorded with confidence {confidence:.2f}",
+                "entry_id": entry_id
+            }
         
     except Exception as err:
         log.error("Error writing scene result: %s", err, exc_info=True)

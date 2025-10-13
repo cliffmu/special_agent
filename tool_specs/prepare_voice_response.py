@@ -51,6 +51,12 @@ async def prepare_voice_response(
     # Clean up technical content for voice
     voice_content = content
     
+    # Remove LLM citation markers (Unicode private use area characters)
+    # Pattern: \ue200cite\ue202<reference>\ue201 or similar variations
+    voice_content = re.sub(r'[\ue200-\ue2ff]+[^\ue200-\ue2ff]*[\ue200-\ue2ff]+', '', voice_content)
+    # Also remove any stray private use area characters
+    voice_content = re.sub(r'[\ue000-\uf8ff]+', '', voice_content)
+    
     # Remove URLs (they don't speak well)
     voice_content = re.sub(r'https?://\S+', 'from the web', voice_content)
     

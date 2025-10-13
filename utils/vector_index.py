@@ -41,6 +41,7 @@ DEFAULT_PERSIST_DIR = os.environ.get(
     str(Path(BASE_DIR) / "sa_vector_index"),
 )
 DEFAULT_DEVICE_PERSIST_DIR = os.path.join(DEFAULT_PERSIST_DIR, "devices")
+DEFAULT_SCENE_PERSIST_DIR = os.path.join(DEFAULT_PERSIST_DIR, "scenes")
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -425,3 +426,161 @@ async def async_query_vector_index(
     return await asyncio.to_thread(
         query_vector_index, index_data, query, k, filters, return_scores
     )
+
+
+# ---------- Scene Memory Index Functions ----------
+
+
+def build_scene_index(
+    docs: List[Dict],
+    persist_dir: str = DEFAULT_SCENE_PERSIST_DIR,
+    force_rebuild: bool = False,
+) -> Tuple[np.ndarray, List[Dict]]:
+    """
+    Build or load a scene memory index from memory entry documents.
+    
+    Args:
+        docs: List of dicts with {"page_content": str, "metadata": dict}
+        persist_dir: Directory to store scene index (default: .../scenes/)
+        force_rebuild: Force rebuild even if index exists
+        
+    Returns:
+        Tuple of (matrix, docs) for use with query_vector_index
+    """
+    log.debug(
+        "build_scene_index: dir=%s force_rebuild=%s docs=%d",
+        persist_dir,
+        force_rebuild,
+        len(docs),
+    )
+    os.makedirs(persist_dir, exist_ok=True)
+    index_file = os.path.join(persist_dir, "matrix.npy")
+    mapping_file = os.path.join(persist_dir, "mapping.json")
+    meta_file = os.path.join(persist_dir, "meta.json")
+
+    if (
+        not force_rebuild
+        and os.path.exists(index_file)
+        and os.path.exists(mapping_file)
+        and os.path.exists(meta_file)
+    ):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("embedding_model") == EMBED_MODEL:
+                log.debug("Loading existing scene index from %s", persist_dir)
+                matrix = np.load(index_file)
+                with open(mapping_file, "r", encoding="utf-8") as f2:
+                    mapping = json.load(f2)
+                log.debug(
+                    "Loaded scene index shape=%s docs=%d",
+                    matrix.shape,
+                    len(mapping),
+                )
+                return matrix, mapping
+            log.debug("Embedding model changed; rebuilding scene index")
+        except Exception as err:
+            log.debug("Failed loading existing scene index: %s", err, exc_info=True)
+            # fallthrough to rebuild
+
+    if not docs:
+        log.debug("No docs provided; creating empty scene index")
+        # Create empty index
+        matrix = np.zeros((0, DIMENSION), dtype=np.float32)
+        docs = []
+    else:
+        # Build embeddings for each doc
+        vectors = []
+        for doc in docs:
+            text = doc.get("page_content", "")
+            if not text:
+                log.warning("Empty page_content in scene doc, skipping")
+                continue
+            vec = _semantic_embed(text)
+            vectors.append(vec)
+        
+        if not vectors:
+            log.debug("No valid vectors generated; creating empty scene index")
+            matrix = np.zeros((0, DIMENSION), dtype=np.float32)
+            docs = []
+        else:
+            matrix = np.vstack(vectors).astype("float32")
+
+    # Save to disk
+    log.debug("Saving scene index matrix to %s", index_file)
+    np.save(index_file, matrix)
+    log.debug("Writing scene index mapping to %s", mapping_file)
+    with open(mapping_file, "w", encoding="utf-8") as f:
+        json.dump(docs, f, indent=2)
+    log.debug("Writing scene index meta to %s", meta_file)
+    with open(meta_file, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "doc_count": len(docs),
+                "embedding_model": EMBED_MODEL,
+            },
+            f,
+        )
+
+    log.info("Scene index built with %d docs", len(docs))
+    log.debug("build_scene_index: completed")
+    return matrix, docs
+
+
+def load_scene_index(
+    persist_dir: str = DEFAULT_SCENE_PERSIST_DIR,
+) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+    """Load a previously built scene index if available."""
+    index_file = os.path.join(persist_dir, "matrix.npy")
+    mapping_file = os.path.join(persist_dir, "mapping.json")
+    log.debug("load_scene_index from %s", persist_dir)
+    if os.path.exists(index_file) and os.path.exists(mapping_file):
+        try:
+            matrix = np.load(index_file)
+            with open(mapping_file, "r", encoding="utf-8") as f:
+                mapping = json.load(f)
+            log.debug("Loaded scene index shape=%s docs=%d", matrix.shape, len(mapping))
+            return matrix, mapping
+        except Exception as err:
+            log.debug("Error loading scene index: %s", err, exc_info=True)
+            return None, None
+    log.debug("No scene index found in %s", persist_dir)
+    return None, None
+
+
+async def async_load_scene_index(
+    persist_dir: str = DEFAULT_SCENE_PERSIST_DIR,
+    hass: Any | None = None,
+) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
+    """Asynchronously load a previously built scene index if available."""
+    index_file = os.path.join(persist_dir, "matrix.npy")
+    mapping_file = os.path.join(persist_dir, "mapping.json")
+    log.debug("async_load_scene_index from %s", persist_dir)
+    if os.path.exists(index_file) and os.path.exists(mapping_file):
+        try:
+            add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+            if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+                matrix = await add_job(np.load, index_file)
+
+                def _load_json(path: str) -> Any:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                mapping = await add_job(_load_json, mapping_file)
+            else:
+                matrix = await asyncio.to_thread(np.load, index_file)
+
+                def _load_json() -> Any:
+                    with open(mapping_file, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                mapping = await asyncio.to_thread(_load_json)
+            log.debug(
+                "Loaded scene index shape=%s docs=%d", matrix.shape, len(mapping)
+            )
+            return matrix, mapping
+        except Exception as err:
+            log.debug("Error loading scene index: %s", err, exc_info=True)
+            return None, None
+    log.debug("No scene index found in %s", persist_dir)
+    return None, None
