@@ -584,3 +584,278 @@ async def async_load_scene_index(
             return None, None
     log.debug("No scene index found in %s", persist_dir)
     return None, None
+
+
+# ---------- Scene Memory Operations (uses scene_memory_store.py) ----------
+
+
+def _scene_entry_to_doc(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert a scene memory entry to a vector index document.
+    
+    Args:
+        entry: Memory entry dict from scene_memory_store
+        
+    Returns:
+        Document dict with page_content and metadata
+    """
+    # Build searchable text from intent, summary, and strategy
+    intent = entry.get("intent", "")
+    summary = entry.get("summary", "")
+    strategy = entry.get("strategy", "")
+    area = entry.get("area_hint", "")
+    
+    # Combine for embedding
+    parts = [f"Intent: {intent}"]
+    if area:
+        parts.append(f"Area: {area}")
+    if summary:
+        parts.append(f"Summary: {summary}")
+    if strategy:
+        parts.append(f"Strategy: {strategy}")
+    
+    page_content = "\n".join(parts)
+    
+    # Store full entry in metadata for retrieval
+    return {
+        "page_content": page_content,
+        "metadata": {
+            "entry_id": entry.get("id"),
+            "intent": intent,
+            "area_hint": area,
+            "summary": summary,
+            "steps": entry.get("steps", []),
+            "strategy": strategy,
+            "confidence": entry.get("confidence", 0.0),
+            "updated_at": entry.get("updated_at"),
+        }
+    }
+
+
+def rebuild_scene_index(hass: Any | None = None) -> None:
+    """
+    Rebuild the entire scene index from scene_memory_store.
+    
+    Args:
+        hass: Home Assistant instance (optional)
+    """
+    log.debug("Rebuilding scene index from store")
+    
+    try:
+        from . import scene_memory_store
+        from . import performance
+        
+        # Get all entries from store
+        all_entries = scene_memory_store.get_all()
+        
+        # Convert to docs
+        docs = [_scene_entry_to_doc(entry) for entry in all_entries]
+        
+        # Build index (full rebuild)
+        with performance.track_operation(
+            "scene_index_rebuild",
+            metadata={"doc_count": len(docs)}
+        ):
+            build_scene_index(docs, force_rebuild=True)
+        
+        log.info("Scene index rebuilt with %d entries", len(docs))
+    except ImportError:
+        log.error("scene_memory_store not available for rebuild")
+
+
+async def async_rebuild_scene_index(hass: Any | None = None) -> None:
+    """Async version of rebuild_scene_index."""
+    add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+    if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+        await add_job(rebuild_scene_index, hass)
+    else:
+        await asyncio.to_thread(rebuild_scene_index, hass)
+
+
+def upsert_scene(entry: Dict[str, Any], hass: Any | None = None) -> None:
+    """
+    Insert or update a scene memory entry and rebuild index.
+    
+    Args:
+        entry: Memory entry dict with at least "id" field
+        hass: Home Assistant instance (optional)
+    """
+    log.debug("Upserting scene: %s", entry.get("id"))
+    
+    try:
+        from . import scene_memory_store
+        
+        # Update store
+        scene_memory_store.upsert(entry)
+        
+        # Rebuild index
+        rebuild_scene_index(hass)
+    except ImportError:
+        log.error("scene_memory_store not available for upsert")
+
+
+async def async_upsert_scene(entry: Dict[str, Any], hass: Any | None = None) -> None:
+    """Async version of upsert_scene."""
+    log.debug("Async upserting scene: %s", entry.get("id"))
+    
+    try:
+        from . import scene_memory_store
+        
+        # Update store
+        add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+        if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+            await add_job(scene_memory_store.upsert, entry)
+        else:
+            await asyncio.to_thread(scene_memory_store.upsert, entry)
+        
+        # Rebuild index
+        await async_rebuild_scene_index(hass)
+    except ImportError:
+        log.error("scene_memory_store not available for async upsert")
+
+
+def search_scenes(
+    intent_text: str,
+    area: str | None = None,
+    k: int = 1,
+    hass: Any | None = None,
+) -> List[Dict[str, Any]]:
+    """
+    Search for matching scene memories.
+    
+    Args:
+        intent_text: Text to search for (e.g., "movie", "cozy")
+        area: Optional area filter
+        k: Number of results to return
+        hass: Home Assistant instance (optional)
+        
+    Returns:
+        List of memory entry dicts from metadata
+    """
+    log.debug("Searching scenes: query='%s', area=%s, k=%d", intent_text, area, k)
+    
+    # Load index
+    index_data = load_scene_index()
+    if index_data[0] is None:
+        log.debug("No scene index found, returning empty results")
+        return []
+    
+    # Build filters
+    filters = {}
+    if area:
+        filters["area_hint"] = area
+    
+    # Query index
+    results = query_vector_index(
+        index_data,
+        intent_text,
+        k=k,
+        filters=filters if filters else None,
+        return_scores=True,
+    )
+    
+    # Extract metadata (which contains full entry data)
+    entries = []
+    for doc, score in results:
+        entry = doc.get("metadata", {})
+        entry["search_score"] = score  # Add search score for debugging
+        entries.append(entry)
+    
+    log.debug("Found %d matching scenes", len(entries))
+    return entries
+
+
+async def async_search_scenes(
+    intent_text: str,
+    area: str | None = None,
+    k: int = 1,
+    hass: Any | None = None,
+) -> List[Dict[str, Any]]:
+    """Async version of search_scenes."""
+    log.debug("Async searching scenes: query='%s', area=%s, k=%d", intent_text, area, k)
+    
+    # Load index
+    index_data = await async_load_scene_index(hass=hass)
+    if index_data[0] is None:
+        log.debug("No scene index found, returning empty results")
+        return []
+    
+    # Build filters
+    filters = {}
+    if area:
+        filters["area_hint"] = area
+    
+    # Query index
+    results = await async_query_vector_index(
+        index_data,
+        intent_text,
+        k=k,
+        filters=filters if filters else None,
+        return_scores=True,
+        hass=hass,
+    )
+    
+    # Extract metadata (which contains full entry data)
+    entries = []
+    for doc, score in results:
+        entry = doc.get("metadata", {})
+        entry["search_score"] = score  # Add search score for debugging
+        entries.append(entry)
+    
+    log.debug("Found %d matching scenes", len(entries))
+    return entries
+
+
+def remove_scene(entry_id: str, hass: Any | None = None) -> bool:
+    """
+    Remove a scene memory entry and rebuild index.
+    
+    Args:
+        entry_id: Entry ID to remove
+        hass: Home Assistant instance (optional)
+        
+    Returns:
+        True if removed, False if not found
+    """
+    log.debug("Removing scene: %s", entry_id)
+    
+    try:
+        from . import scene_memory_store
+        
+        # Delete from store
+        deleted = scene_memory_store.delete(entry_id)
+        
+        if deleted:
+            # Rebuild index
+            rebuild_scene_index(hass)
+            log.info("Scene removed and index rebuilt: %s", entry_id)
+        
+        return deleted
+    except ImportError:
+        log.error("scene_memory_store not available for remove")
+        return False
+
+
+async def async_remove_scene(entry_id: str, hass: Any | None = None) -> bool:
+    """Async version of remove_scene."""
+    log.debug("Async removing scene: %s", entry_id)
+    
+    try:
+        from . import scene_memory_store
+        
+        # Delete from store
+        add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+        if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+            deleted = await add_job(scene_memory_store.delete, entry_id)
+        else:
+            deleted = await asyncio.to_thread(scene_memory_store.delete, entry_id)
+        
+        if deleted:
+            # Rebuild index
+            await async_rebuild_scene_index(hass)
+            log.info("Scene removed and index rebuilt: %s", entry_id)
+        
+        return deleted
+    except ImportError:
+        log.error("scene_memory_store not available for async remove")
+        return False
