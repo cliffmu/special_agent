@@ -75,10 +75,11 @@ async def control_device(
                 verified_state = state_obj.state
                 log.debug("control_device: verified state after %ds: %s", verify_after_seconds, verified_state)
     
-    # Build result with validation info
+    # Build result with state data for agent to interpret
     targets = entity_id if isinstance(entity_id, list) else [entity_id] if entity_id else None
+    
     result = {
-        "status": "called",
+        "service_called": service,
         "focus": {"targets": targets, "action": service}
     }
     
@@ -97,17 +98,17 @@ async def control_device(
             result["verified_state"] = verified_state
             result["verified_after_seconds"] = verify_after_seconds
         
-        # Flag if entity is unavailable after action
-        if final_state in ("unavailable", "unknown"):
+        # Add helpful context for common failure patterns
+        if final_state in ("unavailable", "unknown", None):
             # Special handling for Plex/client entities
             if "plex" in entity_id.lower() and service == "media_player.turn_on":
-                result["warning"] = (
-                    f"Entity is {final_state} - Plex client entities cannot be turned on directly. "
+                result["note"] = (
+                    "Plex client entities cannot be turned on directly. "
                     "Ensure parent device (Apple TV/Roku/etc) is on and Plex app is open, "
                     "then send media directly with play_media service."
                 )
             else:
-                result["warning"] = f"Entity is {final_state} after action - may need related device turned on first"
+                result["note"] = "Entity unavailable - may need related device turned on first"
     
     log.debug("control_device result: %s", result)
     return result
@@ -116,23 +117,13 @@ async def control_device(
 SPEC = ToolSpec(
     name="control_device",
     description=(
-        "Call a Home Assistant service like 'light.turn_on'. This tool requires explicit entity_ids. "
-        "Returns: {status, entity_id, before_state, after_state, verified_state?, available, warning}. "
-        "\n\nVERIFICATION: Use 'verify_after_seconds' parameter to wait N seconds then auto-check state."
-        "\n- Media playback (play_media): verify_after_seconds=4 (recommended)"
-        "\n- Lights/switches: verify_after_seconds=1"
-        "\n- No verification needed: omit parameter"
-        "\n- Result includes 'verified_state' field when verification used"
-        "\n\nDevice Orchestration for Media Playback:"
-        "\n1. For Plex/Emby/Jellyfin: ALWAYS send play_media to the Plex INTEGRATION entity (e.g., 'plex_plex_for_apple_tv_...'), NOT the Apple TV/Roku entity"
-        "\n2. If Plex entity unavailable: (a) Ensure parent device (Apple TV/Roku) is on, (b) Open Plex app with select_source on parent, (c) Send play_media to Plex entity anyway with verify_after_seconds=4"
-        "\n3. Check 'verified_state' or 'after_state': If 'paused', immediately send media_player.media_play to resume"
-        "\n4. Success validation: State should be 'playing', not just 'paused' or 'idle'"
-        "\n\nIMPORTANT: Plex entities may stay 'unavailable' until media actually starts playing. "
-        "Using verify_after_seconds handles this automatically in a single call."
+        "Call a Home Assistant service like 'light.turn_on'. Requires explicit entity_ids. "
+        "Returns before/after state for you to evaluate success. "
+        "Use 'verify_after_seconds' to wait before checking state (4s for media players, 1s for lights). "
+        "For Plex: Always send play_media to the Plex integration entity, not the device itself."
     ),
     parameters=PARAMS,
-    returns="dict(status, entity_id, before_state, after_state, verified_state?, verified_after_seconds?, available, warning, focus)",
+    returns="dict(service_called, entity_id, before_state, after_state, verified_state?, available, note?, focus)",
     func=control_device,
-    can_run_parallel=True,  # Can run in parallel (but usually shouldn't with dependent tools)
+    can_run_parallel=True,
 )

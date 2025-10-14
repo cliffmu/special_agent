@@ -643,7 +643,6 @@ def rebuild_scene_index(hass: Any | None = None) -> None:
     
     try:
         from . import scene_memory_store
-        from . import performance
         
         # Get all entries from store
         all_entries = scene_memory_store.get_all()
@@ -652,11 +651,8 @@ def rebuild_scene_index(hass: Any | None = None) -> None:
         docs = [_scene_entry_to_doc(entry) for entry in all_entries]
         
         # Build index (full rebuild)
-        with performance.track_operation(
-            "scene_index_rebuild",
-            metadata={"doc_count": len(docs)}
-        ):
-            build_scene_index(docs, force_rebuild=True)
+        # Note: Performance tracking done in async version
+        build_scene_index(docs, force_rebuild=True)
         
         log.info("Scene index rebuilt with %d entries", len(docs))
     except ImportError:
@@ -664,12 +660,26 @@ def rebuild_scene_index(hass: Any | None = None) -> None:
 
 
 async def async_rebuild_scene_index(hass: Any | None = None) -> None:
-    """Async version of rebuild_scene_index."""
-    add_job = getattr(hass, "async_add_executor_job", None) if hass else None
-    if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
-        await add_job(rebuild_scene_index, hass)
-    else:
-        await asyncio.to_thread(rebuild_scene_index, hass)
+    """Async version of rebuild_scene_index with performance tracking."""
+    try:
+        from . import performance
+        
+        async with performance.track_operation(
+            "scene_index_rebuild",
+            metadata={}
+        ):
+            add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+            if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+                await add_job(rebuild_scene_index, hass)
+            else:
+                await asyncio.to_thread(rebuild_scene_index, hass)
+    except ImportError:
+        # Performance module not available, just rebuild
+        add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+        if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+            await add_job(rebuild_scene_index, hass)
+        else:
+            await asyncio.to_thread(rebuild_scene_index, hass)
 
 
 def upsert_scene(entry: Dict[str, Any], hass: Any | None = None) -> None:
