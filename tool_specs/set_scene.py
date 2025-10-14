@@ -54,9 +54,21 @@ async def set_scene(
     
     This updates the memory store and rebuilds the scene index incrementally.
     Performance is tracked to determine if async write-back is needed.
+    
+    IMPORTANT: This should only be called AFTER run_sequence has been tested.
+    Steps with malformed formats or missing entity_ids will be rejected.
     """
     log.debug("set_scene: intent=%s, area=%s, outcome=%s, steps=%d", 
               intent, area, outcome, len(steps))
+    
+    # Validate we have actual steps
+    if not steps or len(steps) == 0:
+        log.warning("set_scene called with no steps, rejecting")
+        return {
+            "status": "error",
+            "error": "Cannot save scene with no steps",
+            "message": "Provide the actual steps that were executed"
+        }
     
     try:
         # Track performance of this operation
@@ -65,93 +77,43 @@ async def set_scene(
             metadata={"intent": intent, "outcome": outcome, "steps": len(steps)}
         ):
             from ..utils.vector_index import async_upsert_scene
+            from ..utils.scene_memory_store import normalize_and_validate_steps
             import time
             
-            # Build memory entry
+            # Normalize and validate steps using utility
+            normalized_steps, validation_errors = normalize_and_validate_steps(steps)
+            
+            # If too many validation errors, reject the save
+            if len(validation_errors) >= len(steps) / 2:
+                error_msg = "Too many malformed steps:\n" + "\n".join(validation_errors[:5])
+                log.error("Rejecting set_scene: %s", error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "message": "Scene not saved - use entity_ids from search_devices, not friendly names"
+                }
+            
+            # Log warnings for skipped steps
+            if validation_errors:
+                for err in validation_errors:
+                    log.warning("Scene validation: %s", err)
+            
+            # Build entry
             entry_id = f"{intent}_{area or 'global'}_{int(time.time())}"
+            confidence = 0.8 if outcome == "success" else 0.3 if outcome == "fail" else 0.6
             
-            # Calculate confidence based on outcome
-            # Start with base confidence and adjust based on outcomes over time
-            confidence = 0.5  # Default for new entries
-            if outcome == "success":
-                confidence = 0.8
-            elif outcome == "fail":
-                confidence = 0.3
-            elif outcome == "corrected":
-                confidence = 0.6
-            
-            # Normalize steps to proper run_sequence format
-            normalized_steps = []
-            for s in steps:
-                if isinstance(s, str):
-                    # String step - skip, can't normalize
-                    log.warning("String step in set_scene, skipping: %s", s[:50])
-                    continue
-                elif not isinstance(s, dict):
-                    log.warning("Invalid step type: %s", type(s))
-                    continue
-                
-                # Normalize dict step
-                normalized = {}
-                
-                # Determine step type
-                if "wait_seconds" in s or s.get("type") == "wait":
-                    # Delay step
-                    normalized["type"] = "delay"
-                    normalized["seconds"] = s.get("wait_seconds") or s.get("seconds", 0)
-                elif "service" in s:
-                    # Service call step
-                    normalized["type"] = "service_call"
-                    normalized["service"] = s["service"]
-                    
-                    # Normalize data field
-                    if "data" in s:
-                        normalized["data"] = s["data"]
-                    elif "entity_id" in s:
-                        # Build data from entity_id + other fields
-                        data = {"entity_id": s["entity_id"]}
-                        if "source" in s:
-                            data["source"] = s["source"]
-                        if "params" in s:
-                            # Try to parse params
-                            if isinstance(s["params"], dict):
-                                data.update(s["params"])
-                        normalized["data"] = data
-                    elif "entity" in s:
-                        # Has friendly name - can't use, log warning
-                        log.warning("Step has 'entity' with friendly name, need entity_id: %s", s)
-                        continue
-                    else:
-                        normalized["data"] = {}
-                elif s.get("type") == "delay":
-                    # Already proper delay format
-                    normalized = s
-                elif s.get("type") == "service_call":
-                    # Already proper service_call format
-                    normalized = s
-                else:
-                    # Unknown format
-                    log.warning("Unknown step format: %s", s)
-                    continue
-                
-                normalized_steps.append(normalized)
-            
-            # Build summary from normalized steps
             step_types = [s.get("type", "unknown") for s in normalized_steps]
             summary = f"{len(normalized_steps)} steps: {', '.join(step_types[:3])}"
             if len(step_types) > 3:
                 summary += f", +{len(step_types) - 3} more"
-            
-            # Build strategy hint
-            strategy = notes or f"Learned from {outcome} execution"
             
             entry = {
                 "id": entry_id,
                 "intent": intent,
                 "area_hint": area,
                 "summary": summary,
-                "steps": normalized_steps,  # Use normalized steps
-                "strategy": strategy,
+                "steps": normalized_steps,
+                "strategy": notes or f"Learned from {outcome} execution",
                 "confidence": confidence,
                 "updated_at": time.time(),
             }
@@ -159,12 +121,12 @@ async def set_scene(
             # Update store and rebuild index
             await async_upsert_scene(entry, hass=hass)
             
-            log.info("Scene learning recorded: intent=%s, outcome=%s, id=%s", 
-                     intent, outcome, entry_id)
+            log.info("Scene saved: intent=%s, outcome=%s, steps=%d", 
+                     intent, outcome, len(normalized_steps))
             
             return {
                 "status": "ok", 
-                "message": f"Scene '{intent}' learning recorded with confidence {confidence:.2f}",
+                "message": f"Scene '{intent}' saved with confidence {confidence:.2f}",
                 "entry_id": entry_id
             }
         
@@ -176,14 +138,16 @@ async def set_scene(
 SPEC = ToolSpec(
     name="set_scene",
     description=(
-        "Record the outcome of a scene execution for continual learning. "
-        "Call this after running a scene routine via run_sequence. "
-        "Provide the intent, steps executed, and outcome (success/fail/corrected). "
-        "This helps the system learn and improve scene routines over time."
+        "Save scene routine after successful run_sequence test. "
+        "ONLY call if run_sequence returned result='completed' with all steps status='ok'. "
+        "Steps must have: type='service_call' with data.entity_id (from search_devices), or type='delay' with seconds. "
+        "Use entity_ids NOT friendly names. Validates format and REJECTS malformed steps. "
+        "Outcome: 'success' (worked first try), 'corrected' (user tweaked), 'fail' (didn't work). "
+        "If returns error='malformed steps': you used friendly names instead of entity_ids - search_devices to get proper IDs and retry."
     ),
     parameters=PARAMS,
     returns="dict with status",
     func=set_scene,
-    can_run_parallel=True,  # Can track learning in background
+    can_run_parallel=True,
 )
 

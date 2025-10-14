@@ -157,6 +157,48 @@ async def run_sequence(
                 data = _substitute_vars(step.get("data", {}), vars)
                 await _call_service(hass, service, data)
                 step_result["status"] = "ok"
+                
+                # Post-condition verification (optional)
+                post_condition = step.get("post_condition")
+                if post_condition:
+                    # Get timeout (default from config or step override)
+                    try:
+                        from ..agent_core import SCENE_MEMORY_CONFIG
+                        default_timeout_ms = SCENE_MEMORY_CONFIG.get("post_condition_timeout_ms", 4000)
+                    except ImportError:
+                        default_timeout_ms = 4000
+                    
+                    timeout_ms = post_condition.get("timeout_ms", default_timeout_ms)
+                    timeout_seconds = timeout_ms / 1000.0
+                    
+                    # Poll entity state
+                    entity_id = post_condition.get("entity_id")
+                    expected_state = post_condition.get("state")
+                    expected_attr = post_condition.get("attribute")
+                    expected_value = post_condition.get("value")
+                    
+                    if entity_id and (expected_state or expected_attr):
+                        success = await _wait_state(
+                            hass,
+                            entity_id,
+                            in_states=[expected_state] if expected_state else None,
+                            attr=expected_attr,
+                            equals=expected_value,
+                            timeout=int(timeout_seconds)
+                        )
+                        
+                        if not success:
+                            # Post-condition failed
+                            state_obj = hass.states.get(entity_id)
+                            current = state_obj.state if state_obj else "unknown"
+                            step_result["status"] = "error"
+                            step_result["error"] = (
+                                f"Post-condition failed: {entity_id} expected {expected_state or expected_value}, "
+                                f"got {current} after {timeout_ms}ms"
+                            )
+                            step_result["post_condition_failed"] = True
+                        else:
+                            step_result["post_condition_verified"] = True
             
             elif step_type == "wait_state":
                 entity = _substitute_vars(step["entity_id"], vars)
@@ -210,9 +252,27 @@ async def run_sequence(
             step_result["error"] = str(e)
         
         results.append(step_result)
+        
+        # Abort sequence if post-condition failed
+        if step_result.get("post_condition_failed"):
+            log.warning("Aborting sequence due to post-condition failure on step: %s", 
+                       step_result.get("name"))
+            return {
+                "result": "failed",
+                "steps": results,
+                "total_steps": len(steps),
+                "completed_steps": len(results),
+                "error": "Sequence aborted due to post-condition failure"
+            }
+    
+    # Determine overall result
+    all_ok = all(s["status"] in ("ok", "skipped") for s in results)
+    any_error = any(s["status"] == "error" for s in results)
+    result = "completed" if all_ok else ("failed" if any_error else "partial")
     
     # Return step results for agent to interpret
     return {
+        "result": result,
         "steps": results,
         "total_steps": len(steps),
         "completed_steps": len(results)
@@ -221,14 +281,14 @@ async def run_sequence(
 SPEC = ToolSpec(
     name="run_sequence",
     description=(
-        "Execute a multi-step sequence with service calls, waits, and conditional guards. "
-        "Returns per-step results with status ('ok', 'error', 'skipped', 'timeout') and error details. "
-        "Use for complex operations requiring precise timing or state coordination.\n\n"
-        "REQUIRED STEP FORMATS (use exact 'type' values):\n"
-        "1. Service: {\"type\": \"service_call\", \"service\": \"light.turn_on\", \"data\": {\"entity_id\": \"light.kitchen\"}}\n"
-        "2. Delay: {\"type\": \"delay\", \"seconds\": 2}\n"
-        "3. Wait state: {\"type\": \"wait_state\", \"entity_id\": \"media_player.tv\", \"in\": [\"playing\"], \"timeout\": 10}\n"
-        "CRITICAL: Use 'service_call' (not 'service'/'call_service'), 'delay' (not 'wait'), 'data' (not 'service_data' or 'target')."
+        "Execute multi-step sequence with service calls, delays, waits, and optional post-condition verification. "
+        "Returns per-step results with status ('ok', 'error', 'skipped', 'timeout'). "
+        "Step formats: "
+        "1) Service: {\"type\":\"service_call\",\"service\":\"light.turn_on\",\"data\":{\"entity_id\":\"light.kitchen\"}} "
+        "2) Delay: {\"type\":\"delay\",\"seconds\":2} "
+        "3) Wait: {\"type\":\"wait_state\",\"entity_id\":\"media_player.tv\",\"in\":[\"playing\"],\"timeout\":10} "
+        "4) Optional post_condition on service_call: {\"post_condition\":{\"entity_id\":\"media_player.tv\",\"state\":\"playing\",\"timeout_ms\":4000}} "
+        "verifies state after action. Use 'service_call' not 'service', 'delay' not 'wait', 'data' not 'service_data'."
     ),
     parameters=PARAMS,
     returns="dict(steps, total_steps, completed_steps)",
