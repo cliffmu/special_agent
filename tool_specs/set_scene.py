@@ -81,7 +81,16 @@ async def set_scene(
                 confidence = 0.6
             
             # Build summary from steps
-            step_types = [s.get("type", "unknown") for s in steps]
+            # Handle both dict steps and string steps
+            step_types = []
+            for s in steps:
+                if isinstance(s, dict):
+                    step_types.append(s.get("type") or s.get("service") or "step")
+                elif isinstance(s, str):
+                    step_types.append(s[:30])  # Use first 30 chars of string
+                else:
+                    step_types.append("unknown")
+            
             summary = f"{len(steps)} steps: {', '.join(step_types[:3])}"
             if len(step_types) > 3:
                 summary += f", +{len(step_types) - 3} more"

@@ -19,3 +19,5 @@ Switch off to return to normal (INFO) logging.
 index of Home Assistant entities. `async_load_vector_index` asynchronously loads
 the saved index using a background thread (or Home Assistant's executor when
 available).
+
+Plex issue fix Close session in Plex on AppleTV. Force close Plex on AppleTV. Open Plex on AppleTV. Skip login/register. Activate “Announce as player”. Login again and check “Announce as Player” is active.

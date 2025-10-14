@@ -113,7 +113,6 @@ async def run_sequence(
         if time.monotonic() - started > timeout:
             return {
                 "status": "error",
-                "result": "timeout",
                 "steps": results,
                 "error": "Sequence timeout exceeded"
             }
@@ -161,6 +160,7 @@ async def run_sequence(
             
             elif step_type == "wait_state":
                 entity = _substitute_vars(step["entity_id"], vars)
+                wait_timeout = step.get("timeout", 10)
                 success = await _wait_state(
                     hass,
                     entity,
@@ -168,9 +168,17 @@ async def run_sequence(
                     not_in=step.get("not_in"),
                     attr=step.get("attr"),
                     equals=step.get("equals"),
-                    timeout=step.get("timeout", 10)
+                    timeout=wait_timeout
                 )
-                step_result["status"] = "ok" if success else "timeout"
+                if success:
+                    step_result["status"] = "ok"
+                else:
+                    step_result["status"] = "timeout"
+                    # Add current state for context
+                    state_obj = hass.states.get(entity)
+                    current = state_obj.state if state_obj else "unknown"
+                    expected = step.get("in") or step.get("equals") or step.get("not_in")
+                    step_result["error"] = f"Timeout after {wait_timeout}s waiting for {entity}, current state: {current}, expected: {expected}"
             
             elif step_type == "delay":
                 seconds = step.get("seconds", 0)
@@ -193,7 +201,8 @@ async def run_sequence(
                 step_result["status"] = "ok"
             
             else:
-                step_result["status"] = "unknown_type"
+                step_result["status"] = "error"
+                step_result["error"] = f"Unknown step type: {step_type}"
         
         except Exception as e:
             log.error(f"Step {step_result['name']} failed: {e}")
@@ -202,28 +211,22 @@ async def run_sequence(
         
         results.append(step_result)
     
-    # Determine overall result
-    all_ok = all(s["status"] in ("ok", "skipped") for s in results)
-    any_error = any(s["status"] == "error" for s in results)
-    
-    overall = "completed" if all_ok else ("failed" if any_error else "partial")
-    
+    # Return step results for agent to interpret
     return {
-        "status": "ok",
-        "result": overall,
         "steps": results,
-        "error": None if all_ok else "Some steps failed"
+        "total_steps": len(steps),
+        "completed_steps": len(results)
     }
 
 SPEC = ToolSpec(
     name="run_sequence",
     description=(
-        "Execute a sequence of steps (service calls, waits, delays, conditions). "
-        "Each step can have guards (only_if_state) and waits ensure previous steps complete before next. "
-        "Use for complex multi-step operations like media playback or scene activation with timing."
+        "Execute a multi-step sequence with service calls, waits, and conditional guards. "
+        "Returns per-step results with status ('ok', 'error', 'skipped', 'timeout') and error details. "
+        "Use for complex operations requiring precise timing or state coordination."
     ),
     parameters=PARAMS,
-    returns="dict with result and per-step statuses",
+    returns="dict(steps, total_steps, completed_steps)",
     func=run_sequence
 )
 
