@@ -223,7 +223,12 @@ SPEC = ToolSpec(
     description=(
         "Execute a multi-step sequence with service calls, waits, and conditional guards. "
         "Returns per-step results with status ('ok', 'error', 'skipped', 'timeout') and error details. "
-        "Use for complex operations requiring precise timing or state coordination."
+        "Use for complex operations requiring precise timing or state coordination.\n\n"
+        "REQUIRED STEP FORMATS (use exact 'type' values):\n"
+        "1. Service: {\"type\": \"service_call\", \"service\": \"light.turn_on\", \"data\": {\"entity_id\": \"light.kitchen\"}}\n"
+        "2. Delay: {\"type\": \"delay\", \"seconds\": 2}\n"
+        "3. Wait state: {\"type\": \"wait_state\", \"entity_id\": \"media_player.tv\", \"in\": [\"playing\"], \"timeout\": 10}\n"
+        "CRITICAL: Use 'service_call' (not 'service'/'call_service'), 'delay' (not 'wait'), 'data' (not 'service_data' or 'target')."
     ),
     parameters=PARAMS,
     returns="dict(steps, total_steps, completed_steps)",

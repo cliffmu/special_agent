@@ -80,18 +80,65 @@ async def set_scene(
             elif outcome == "corrected":
                 confidence = 0.6
             
-            # Build summary from steps
-            # Handle both dict steps and string steps
-            step_types = []
+            # Normalize steps to proper run_sequence format
+            normalized_steps = []
             for s in steps:
-                if isinstance(s, dict):
-                    step_types.append(s.get("type") or s.get("service") or "step")
-                elif isinstance(s, str):
-                    step_types.append(s[:30])  # Use first 30 chars of string
+                if isinstance(s, str):
+                    # String step - skip, can't normalize
+                    log.warning("String step in set_scene, skipping: %s", s[:50])
+                    continue
+                elif not isinstance(s, dict):
+                    log.warning("Invalid step type: %s", type(s))
+                    continue
+                
+                # Normalize dict step
+                normalized = {}
+                
+                # Determine step type
+                if "wait_seconds" in s or s.get("type") == "wait":
+                    # Delay step
+                    normalized["type"] = "delay"
+                    normalized["seconds"] = s.get("wait_seconds") or s.get("seconds", 0)
+                elif "service" in s:
+                    # Service call step
+                    normalized["type"] = "service_call"
+                    normalized["service"] = s["service"]
+                    
+                    # Normalize data field
+                    if "data" in s:
+                        normalized["data"] = s["data"]
+                    elif "entity_id" in s:
+                        # Build data from entity_id + other fields
+                        data = {"entity_id": s["entity_id"]}
+                        if "source" in s:
+                            data["source"] = s["source"]
+                        if "params" in s:
+                            # Try to parse params
+                            if isinstance(s["params"], dict):
+                                data.update(s["params"])
+                        normalized["data"] = data
+                    elif "entity" in s:
+                        # Has friendly name - can't use, log warning
+                        log.warning("Step has 'entity' with friendly name, need entity_id: %s", s)
+                        continue
+                    else:
+                        normalized["data"] = {}
+                elif s.get("type") == "delay":
+                    # Already proper delay format
+                    normalized = s
+                elif s.get("type") == "service_call":
+                    # Already proper service_call format
+                    normalized = s
                 else:
-                    step_types.append("unknown")
+                    # Unknown format
+                    log.warning("Unknown step format: %s", s)
+                    continue
+                
+                normalized_steps.append(normalized)
             
-            summary = f"{len(steps)} steps: {', '.join(step_types[:3])}"
+            # Build summary from normalized steps
+            step_types = [s.get("type", "unknown") for s in normalized_steps]
+            summary = f"{len(normalized_steps)} steps: {', '.join(step_types[:3])}"
             if len(step_types) > 3:
                 summary += f", +{len(step_types) - 3} more"
             
@@ -103,7 +150,7 @@ async def set_scene(
                 "intent": intent,
                 "area_hint": area,
                 "summary": summary,
-                "steps": steps,
+                "steps": normalized_steps,  # Use normalized steps
                 "strategy": strategy,
                 "confidence": confidence,
                 "updated_at": time.time(),

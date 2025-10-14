@@ -9,3 +9,7 @@ export_performance:
 clear_performance:
   name: Clear Performance Metrics
   description: Clear accumulated performance metrics from memory
+
+clear_scene_memory:
+  name: Clear Scene Memory
+  description: Delete all learned scene memory entries and rebuild empty index
