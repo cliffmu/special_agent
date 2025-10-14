@@ -234,3 +234,82 @@ def import_template(template: Dict[str, Any]) -> None:
     get_store().upsert(template)
     log.info("Imported template scene: %s", template["id"])
 
+
+def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
+    """
+    Normalize steps to proper run_sequence format and validate.
+    
+    Args:
+        steps: Raw steps from agent (may be malformed)
+        
+    Returns:
+        Tuple of (normalized_steps, validation_errors)
+    """
+    normalized_steps = []
+    validation_errors = []
+    
+    for idx, s in enumerate(steps):
+        if isinstance(s, str):
+            validation_errors.append(f"Step {idx}: String steps not supported")
+            continue
+        elif not isinstance(s, dict):
+            validation_errors.append(f"Step {idx}: Invalid type {type(s)}")
+            continue
+        
+        normalized = {}
+        
+        # Delay step
+        if "wait_seconds" in s or s.get("type") == "wait":
+            normalized["type"] = "delay"
+            normalized["seconds"] = s.get("wait_seconds") or s.get("seconds", 0)
+            
+        # Service call step
+        elif "service" in s:
+            normalized["type"] = "service_call"
+            normalized["service"] = s["service"]
+            
+            # Build data field
+            if "data" in s and isinstance(s["data"], dict):
+                data = s["data"].copy()
+            elif "entity_id" in s:
+                data = {"entity_id": s["entity_id"]}
+                if "source" in s:
+                    data["source"] = s["source"]
+                if "params" in s and isinstance(s["params"], dict):
+                    data.update(s["params"])
+                elif "params" in s and isinstance(s["params"], str):
+                    data["source"] = s["params"]
+            elif "entity" in s and "entity_id" not in s:
+                validation_errors.append(
+                    f"Step {idx}: Has friendly name '{s['entity']}' instead of entity_id"
+                )
+                continue
+            else:
+                data = {}
+            
+            # Validate entity_id for services that need it
+            if "entity_id" not in data and s["service"] not in ["scene.turn_on", "script.turn_on"]:
+                validation_errors.append(f"Step {idx}: Service '{s['service']}' missing entity_id")
+                continue
+            
+            normalized["data"] = data
+            
+        # Already proper format
+        elif s.get("type") == "delay":
+            normalized = s
+        elif s.get("type") == "service_call":
+            if "data" not in s or not isinstance(s["data"], dict):
+                validation_errors.append(f"Step {idx}: service_call missing data dict")
+                continue
+            if "entity_id" not in s["data"] and s.get("service", "").split(".")[0] not in ["scene", "script"]:
+                validation_errors.append(f"Step {idx}: service_call missing entity_id")
+                continue
+            normalized = s
+        else:
+            validation_errors.append(f"Step {idx}: Unknown format")
+            continue
+        
+        normalized_steps.append(normalized)
+    
+    return normalized_steps, validation_errors
+
