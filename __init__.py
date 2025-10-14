@@ -61,6 +61,20 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.services.async_register(DOMAIN, "export_performance", export_performance_handler)
     hass.services.async_register(DOMAIN, "clear_performance", clear_performance_handler)
     
+    async def clear_scene_memory_handler(call: ServiceCall) -> None:
+        """Clear all scene memory entries."""
+        from .utils import scene_memory_store
+        from .utils.vector_index import async_rebuild_scene_index
+        
+        count = await hass.async_add_executor_job(scene_memory_store.clear_all)
+        _LOGGER.info("Cleared %d scene memory entries", count)
+        
+        # Rebuild empty index
+        await async_rebuild_scene_index(hass)
+        _LOGGER.info("Scene index rebuilt (empty)")
+    
+    hass.services.async_register(DOMAIN, "clear_scene_memory", clear_scene_memory_handler)
+    
     return True
 
 

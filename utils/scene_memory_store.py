@@ -204,3 +204,33 @@ def count() -> int:
     """Count total entries."""
     return get_store().count()
 
+
+def clear_all() -> int:
+    """
+    Delete all scene memory entries.
+    
+    Returns:
+        Number of entries deleted
+    """
+    store = get_store()
+    entries = store._load()
+    count = len(entries)
+    store._save({})
+    log.info("Cleared all %d scene memory entries", count)
+    return count
+
+
+def import_template(template: Dict[str, Any]) -> None:
+    """
+    Import a template scene entry.
+    
+    Args:
+        template: Scene entry dict with proper format
+    """
+    if "id" not in template:
+        log.error("Template must have 'id' field")
+        return
+    
+    get_store().upsert(template)
+    log.info("Imported template scene: %s", template["id"])
+
