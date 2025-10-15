@@ -117,10 +117,14 @@ async def control_device(
 SPEC = ToolSpec(
     name="control_device",
     description=(
-        "Call a Home Assistant service like 'light.turn_on'. Requires explicit entity_ids. "
-        "Returns before/after state for you to evaluate success. "
-        "Use 'verify_after_seconds' to wait before checking state (4s for media players, 1s for lights). "
-        "For Plex: Always send play_media to the Plex integration entity, not the device itself."
+        "Call Home Assistant service. Returns before/after state for validation. "
+        "VERIFY TIMING - wait before checking state (devices take time to boot/respond): "
+        "Power on (turn_on): 8-10s for Apple TV/Roku, 6s for other devices. "
+        "App switching (select_source): 3-4s. "
+        "Lights/switches: 1-2s. "
+        "Media commands: 4-5s. "
+        "Use verify_after_seconds parameter with appropriate timing for device type."
+        "If you have high confidence that the control command should work but returns false, you can follow up with another get entity state tool call"
     ),
     parameters=PARAMS,
     returns="dict(service_called, entity_id, before_state, after_state, verified_state?, available, note?, focus)",
