@@ -89,7 +89,8 @@ async def get_scene(
         return {
             "commands_list": top_result.get("steps"),
             "confidence": top_result.get("confidence", 0.0),
-            "strategy_item": strategy_item
+            "strategy_item": strategy_item,
+            "client_config": top_result.get("client_config", {})  # Tool parameters (e.g., client_ip)
         }
         
     except Exception as err:
@@ -111,7 +112,7 @@ SPEC = ToolSpec(
         "3) If found: adapt entity_ids for target room via search_devices, TEST with run_sequence, "
         "4) If none: search_devices + compose steps + ask user to confirm, TEST before saving. "
         "If confidence >0.6: execute with run_sequence then set_scene to reinforce. "
-        "Strategy_item has context/hints. Returns commands_list (or null), confidence, strategy_item."
+        "Returns: commands_list (steps), confidence, strategy_item (hints), client_config (tool params like client_ip for play_plex_media)."
     ),
     parameters=PARAMS,
     returns="dict with commands_list, confidence, strategy_item",

@@ -90,11 +90,15 @@ async def play_plex_media(
         # Check if playback started
         if state_obj and state_obj.state in ("playing", "paused"):
             log.info("play_plex_media: Success via HA service, state=%s", state_obj.state)
-            return {
+            result = {
                 "status": "success",
                 "method": "ha_service",
                 "state": state_obj.state
             }
+            # Include discovered IP so agent can save it
+            if client_ip:
+                result["client_ip"] = client_ip
+            return result
         
         # HA service didn't work - try Companion if client_ip available
         if client_ip:
@@ -103,15 +107,26 @@ async def play_plex_media(
             result = await companion_play_media(
                 client_ip, rating_key, hass, verify_after_seconds, plex_client_entity
             )
+            # Include IP in response so agent can save it
+            if "client_ip" not in result:
+                result["client_ip"] = client_ip
             return result
         
-        # No fallback available
-        return {
-            "status": "partial",
-            "method": "ha_service",
-            "state": state_obj.state if state_obj else "unknown",
-            "message": "HA service called but playback not confirmed. Client may be unavailable - setup needed."
-        }
+        # No fallback available - provide helpful message
+        if not client_ip:
+            return {
+                "status": "partial",
+                "method": "ha_service",
+                "state": state_obj.state if state_obj else "unknown",
+                "message": "HA service called but playback not verified. Could not auto-discover device IP for Companion fallback. Provide client_ip parameter or ensure device is registered in HA with IP address."
+            }
+        else:
+            return {
+                "status": "partial",
+                "method": "ha_service",
+                "state": state_obj.state if state_obj else "unknown",
+                "message": "HA service called but playback not confirmed. Client may be unavailable - setup needed."
+            }
         
     except Exception as err:
         log.error("play_plex_media: HA service failed: %s", err)
@@ -123,6 +138,9 @@ async def play_plex_media(
             result = await companion_play_media(
                 client_ip, rating_key, hass, verify_after_seconds, plex_client_entity
             )
+            # Include IP in response so agent can save it
+            if "client_ip" not in result:
+                result["client_ip"] = client_ip
             return result
         
         return {
@@ -136,19 +154,16 @@ async def play_plex_media(
 SPEC = ToolSpec(
     name="play_plex_media",
     description=(
-        "Push Plex content to Plex client entity. Simple playback only - does NOT handle device setup.\n\n"
-        "PREREQUISITES (agent must handle separately):\n"
-        "- Parent device powered on (Apple TV, Roku, etc.)\n"
-        "- Plex app open on device (use media_player.select_source with source='Plex')\n"
-        "- Plex clients scanned (press button with 'scan clients' in name)\n\n"
-        "FINDING PLEX CLIENT:\n"
-        "search_devices(query='plex', area='gym', platform='plex') returns Plex CLIENT entity (platform='plex').\n"
-        "Use that entity, NOT parent device.\n\n"
-        "WHAT THIS TOOL DOES:\n"
-        "Tries HA media_player.play_media service. If fails/unavailable, uses Plex Companion HTTP API.\n"
-        "Auto-discovers client_ip from device registry if not provided.\n\n"
-        "Returns: {status, method, state, message/error}.\n"
-        "If status='error' with 'unavailable': Setup needed first (power on, open app, scan)."
+        "Push Plex content to client. Does NOT handle setup - agent must power on, open Plex app, scan clients first.\n\n"
+        "FINDING CLIENT: search_devices(query='plex', area='gym', platform='plex') → platform='plex' entities.\n\n"
+        "IP HANDLING:\n"
+        "- Tool auto-discovers client_ip from device registry (fast, works for most devices)\n"
+        "- Returns discovered client_ip in response\n"
+        "- If auto-discovery fails: ask user for IP, pass as parameter\n"
+        "- Save IP in scene: set_scene(client_config={'client_ip': result.client_ip})\n"
+        "- Reuse from scene: play_plex_media(client_ip=scene.client_config.get('client_ip'))\n\n"
+        "Tries HA service → Companion HTTP fallback.\n\n"
+        "Returns: {status, method, state, client_ip (if discovered)}."
     ),
     parameters=PARAMS,
     returns="dict with status, method, state",

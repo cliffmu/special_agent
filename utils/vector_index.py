@@ -639,6 +639,7 @@ def _scene_entry_to_doc(entry: Dict[str, Any]) -> Dict[str, Any]:
             "strategy": strategy,
             "confidence": entry.get("confidence", 0.0),
             "updated_at": entry.get("updated_at"),
+            "client_config": entry.get("client_config", {}),  # Tool params (client_ip, etc.)
         }
     }
 
