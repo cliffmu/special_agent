@@ -96,12 +96,22 @@ async def run_sequence(
     """
     log.debug(f"run_sequence: ref={sequence_ref}, inline={bool(sequence)}")
     
-    # Load sequence from preferences if ref provided
+    # Load sequence from scene memory if ref provided
     if sequence_ref:
-        from .get_preferences import get_preferences
-        result = await get_preferences(namespace="sequences", key=sequence_ref, hass=hass)
-        seq_data = result.get("data", {})
-        steps = seq_data.get("steps", [])
+        try:
+            from ..utils.vector_index import async_search_scenes
+            # Try to find scene by intent matching the ref
+            results = await async_search_scenes(sequence_ref, area=None, k=1, hass=hass)
+            if results and results[0].get("steps"):
+                steps = results[0]["steps"]
+                log.debug("Loaded scene steps from memory: %s (%d steps)", 
+                         sequence_ref, len(steps))
+            else:
+                log.warning("Scene ref '%s' not found in memory", sequence_ref)
+                steps = []
+        except Exception as err:
+            log.error("Failed to load scene ref '%s': %s", sequence_ref, err)
+            steps = []
     else:
         steps = (sequence or {}).get("steps", [])
     
