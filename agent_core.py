@@ -68,6 +68,7 @@ class Agent:
             "tool_specs.search_devices",
             "tool_specs.control_device",
             "tool_specs.search_plex",
+            "tool_specs.play_plex_media",
             "tool_specs.search_spotify",
             "tool_specs.get_entity_state",
             "tool_specs.get_entity_history",

@@ -166,3 +166,142 @@ def _safe_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+async def companion_play_media(
+    client_ip: str,
+    rating_key: str,
+    hass: HomeAssistant,
+    verify_after_seconds: int = 4,
+    plex_client_entity: str | None = None,
+) -> Dict[str, Any]:
+    """
+    Play Plex content via Companion API (bypasses HA entity).
+    
+    This works even when HA entity shows 'unavailable'.
+    
+    Args:
+        client_ip: Client device IP (e.g., '192.168.86.208')
+        rating_key: Plex content rating key
+        hass: Home Assistant instance
+        verify_after_seconds: Wait time to verify playback started
+        plex_client_entity: Optional HA entity to check state after
+        
+    Returns:
+        Dict with status, state, and error/message
+    """
+    try:
+        # Get Plex server details
+        from .data_sources import get_integration_entry
+        
+        plex_entry = get_integration_entry(hass, "plex")
+        if not plex_entry:
+            return {"status": "error", "error": "Plex integration not configured"}
+        
+        data = dict(getattr(plex_entry, "data", {}) or {})
+        server_config = data.get("server_config", {})
+        
+        # Extract token
+        token = server_config.get("token") or data.get("token")
+        if not token:
+            server = data.get("server", {})
+            token = server.get("token") if isinstance(server, dict) else None
+        
+        if not token:
+            return {"status": "error", "error": "Plex token not found"}
+        
+        # Extract server ID
+        server_id = data.get("server_id") or server_config.get("client_id")
+        if not server_id:
+            return {"status": "error", "error": "Plex server_id not found"}
+        
+        # Extract PMS IP
+        pms_ip = server_config.get("url", "").replace("http://", "").replace("https://", "").split(":")[0]
+        if not pms_ip:
+            pms_ip = data.get("host", "127.0.0.1")
+        
+        log.debug(
+            "companion_play_media: client_ip=%s, server_id=%s, pms_ip=%s",
+            client_ip, server_id[:8] + "...", pms_ip
+        )
+        
+        # HTTP requests
+        try:
+            import aiohttp
+        except ImportError:
+            return {"status": "error", "error": "aiohttp library not available"}
+        
+        async with aiohttp.ClientSession() as session:
+            # Get client identifier
+            try:
+                async with session.get(
+                    f"http://{client_ip}:32500/resources",
+                    timeout=aiohttp.ClientTimeout(total=3)
+                ) as resp:
+                    if resp.status != 200:
+                        return {
+                            "status": "error",
+                            "error": f"Client resources returned {resp.status}. Is Plex app open?"
+                        }
+                    
+                    text = await resp.text()
+                    import re
+                    match = re.search(r'clientIdentifier="([^"]+)"', text)
+                    if not match:
+                        return {
+                            "status": "error",
+                            "error": "Could not find clientIdentifier. Is Plex app open?"
+                        }
+                    
+                    client_id = match.group(1)
+                    log.debug("companion_play_media: Found client_id=%s", client_id[:8] + "...")
+            
+            except asyncio.TimeoutError:
+                return {"status": "error", "error": "Timeout getting client ID - check client IP"}
+            
+            # Send play command
+            play_url = (
+                f"http://{client_ip}:32500/player/playback/playMedia"
+                f"?key=/library/metadata/{rating_key}"
+                f"&machineIdentifier={server_id}"
+                f"&address={pms_ip}&port=32400&protocol=http"
+                f"&token={token}"
+            )
+            
+            try:
+                async with session.get(
+                    play_url,
+                    headers={
+                        "X-Plex-Client-Identifier": "special-agent",
+                        "X-Plex-Target-Client-Identifier": client_id
+                    },
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        return {
+                            "status": "error",
+                            "error": f"Companion API returned {resp.status}: {error_text[:100]}"
+                        }
+                    
+                    log.info("companion_play_media: Companion API success")
+                    
+                    # Wait and verify HA entity state (if provided)
+                    await asyncio.sleep(verify_after_seconds)
+                    final_state = "unknown"
+                    if plex_client_entity:
+                        state_obj = hass.states.get(plex_client_entity)
+                        final_state = state_obj.state if state_obj else "unknown"
+                    
+                    return {
+                        "status": "success",
+                        "state": final_state,
+                        "message": f"Playing via Companion API (state: {final_state})"
+                    }
+            
+            except asyncio.TimeoutError:
+                return {"status": "error", "error": "Companion API timeout"}
+    
+    except Exception as err:
+        log.error("companion_play_media: Failed: %s", err, exc_info=True)
+        return {"status": "error", "error": str(err)}
