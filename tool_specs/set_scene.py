@@ -144,11 +144,11 @@ async def set_scene(
 SPEC = ToolSpec(
     name="set_scene",
     description=(
-        "Save scene after successful execution. ONLY call if run_sequence result='completed' (all steps ok). "
-        "Steps need entity_ids from search_devices (not friendly names). Validates & rejects malformed. "
-        "client_config (optional): Dict for tool parameters not in steps - e.g., {\"client_ip\": \"192.168.86.208\"} for Plex. "
-        "Stored with scene, retrieved by get_scene for reuse. "
-        "Outcome: 'success'/'corrected'/'fail'. If error returned: fix entity_ids and retry."
+        "Save scene after successful execution. Call IMMEDIATELY after verifying success.\n"
+        "When to call: After control_device or play_plex_media returns success AND you verify with get_entity_state.\n"
+        "Steps need entity_ids. client_config (optional): Tool params like {\"client_ip\": \"192.168.86.208\"}.\n"
+        "Example: Turned on TV → opened app → played media → verified playing → call set_scene NOW.\n"
+        "Outcome: 'success' if worked first try. Validates & rejects malformed."
     ),
     parameters=PARAMS,
     returns="dict with status",
