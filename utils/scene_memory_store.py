@@ -235,6 +235,59 @@ def import_template(template: Dict[str, Any]) -> None:
     log.info("Imported template scene: %s", template["id"])
 
 
+def should_update_scene(existing_entry: dict | None, new_steps: list, outcome: str) -> tuple[bool, str]:
+    """
+    Determine if scene should be updated based on comparison with existing.
+    
+    Args:
+        existing_entry: Existing scene entry or None
+        new_steps: New steps being saved
+        outcome: Execution outcome ('success', 'fail', 'corrected')
+        
+    Returns:
+        Tuple of (should_update: bool, reason: str)
+    """
+    if not existing_entry:
+        return True, "created"
+    
+    # Don't overwrite working scene with failed attempt
+    if outcome == "fail":
+        return False, "skipped_failed_execution"
+    
+    existing_steps = existing_entry.get("steps", [])
+    
+    # Compare steps (ignore metadata)
+    def steps_equal(s1, s2):
+        """Check if two step lists are functionally identical."""
+        if len(s1) != len(s2):
+            return False
+        for a, b in zip(s1, s2):
+            if a.get("type") != b.get("type"):
+                return False
+            if a.get("service") != b.get("service"):
+                return False
+            if a.get("data") != b.get("data"):
+                return False
+            if a.get("seconds") != b.get("seconds"):
+                return False
+        return True
+    
+    if steps_equal(existing_steps, new_steps):
+        # Steps identical - only update if correction flag
+        if outcome == "corrected":
+            return True, "corrected_after_failure"
+        return False, "unchanged"
+    
+    # Steps changed and succeeded - check if optimization
+    total_delays_old = sum(s.get("seconds", 0) for s in existing_steps if s.get("type") == "delay")
+    total_delays_new = sum(s.get("seconds", 0) for s in new_steps if s.get("type") == "delay")
+    
+    if total_delays_new < total_delays_old:
+        return True, f"optimized_from_{total_delays_old}s_to_{total_delays_new}s"
+    
+    return True, "updated_workflow"
+
+
 def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
     """
     Normalize steps to proper run_sequence format and validate.
@@ -262,6 +315,11 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
         if "wait_seconds" in s or s.get("type") == "wait":
             normalized["type"] = "delay"
             normalized["seconds"] = s.get("wait_seconds") or s.get("seconds", 0)
+            # Preserve guards
+            if "only_if_state" in s:
+                normalized["only_if_state"] = s["only_if_state"]
+            if "only_if" in s:
+                normalized["only_if"] = s["only_if"]
             
         # Service call step
         elif "service" in s:
@@ -294,6 +352,12 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
             
             normalized["data"] = data
             
+            # Preserve guards
+            if "only_if_state" in s:
+                normalized["only_if_state"] = s["only_if_state"]
+            if "only_if" in s:
+                normalized["only_if"] = s["only_if"]
+            
         # Already proper format
         elif s.get("type") == "delay":
             normalized = s
@@ -304,7 +368,14 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
             if "entity_id" not in s["data"] and s.get("service", "").split(".")[0] not in ["scene", "script"]:
                 validation_errors.append(f"Step {idx}: service_call missing entity_id")
                 continue
-            normalized = s
+            # Preserve guards (only_if_state, only_if)
+            normalized = s.copy()
+            # Validate guard if present
+            if "only_if_state" in normalized:
+                guard = normalized["only_if_state"]
+                if not isinstance(guard, dict) or "entity_id" not in guard:
+                    validation_errors.append(f"Step {idx}: only_if_state guard missing entity_id")
+                    del normalized["only_if_state"]
         # Reject invalid types with helpful messages
         elif s.get("type") == "wait_state":
             validation_errors.append(f"Step {idx}: wait_state not allowed - use delay instead")

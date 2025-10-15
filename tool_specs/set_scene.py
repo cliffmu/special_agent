@@ -82,30 +82,46 @@ async def set_scene(
             metadata={"intent": intent, "outcome": outcome, "steps": len(steps)}
         ):
             from ..utils.vector_index import async_upsert_scene
-            from ..utils.scene_memory_store import normalize_and_validate_steps
+            from ..utils.scene_memory_store import (
+                normalize_and_validate_steps, 
+                should_update_scene,
+                SceneMemoryStore
+            )
             import time
             
-            # Normalize and validate steps using utility
+            # Normalize and validate steps
             normalized_steps, validation_errors = normalize_and_validate_steps(steps)
             
-            # If too many validation errors, reject the save
+            # Reject if too many errors
             if len(validation_errors) >= len(steps) / 2:
                 error_msg = "Too many malformed steps:\n" + "\n".join(validation_errors[:5])
                 log.error("Rejecting set_scene: %s", error_msg)
                 return {
                     "status": "error",
                     "error": error_msg,
-                    "message": "Scene not saved - use entity_ids from search_devices, not friendly names"
+                    "message": "Scene not saved - use entity_ids from search_devices"
                 }
             
             # Log warnings for skipped steps
-            if validation_errors:
-                for err in validation_errors:
-                    log.warning("Scene validation: %s", err)
+            for err in validation_errors:
+                log.warning("Scene validation: %s", err)
             
-            # Build entry - use stable ID so same intent+area updates existing scene
-            entry_id = f"{intent}_{area or 'global'}"  # No timestamp - updates in place
+            # Stable ID for updates
+            entry_id = f"{intent}_{area or 'global'}"
             confidence = 0.8 if outcome == "success" else 0.3 if outcome == "fail" else 0.6
+            
+            # Check if update needed
+            store = SceneMemoryStore()
+            existing = store.get(entry_id)
+            should_update, update_reason = should_update_scene(existing, normalized_steps, outcome)
+            
+            if not should_update:
+                log.debug("Scene '%s' %s, skipping update", entry_id, update_reason)
+                return {
+                    "status": "skipped",
+                    "message": f"Scene '{intent}' unchanged, no update needed",
+                    "entry_id": entry_id
+                }
             
             step_types = [s.get("type", "unknown") for s in normalized_steps]
             summary = f"{len(normalized_steps)} steps: {', '.join(step_types[:3])}"
@@ -127,12 +143,12 @@ async def set_scene(
             # Update store and rebuild index
             await async_upsert_scene(entry, hass=hass)
             
-            log.info("Scene saved: intent=%s, outcome=%s, steps=%d", 
-                     intent, outcome, len(normalized_steps))
+            log.info("Scene %s: intent=%s, reason=%s, steps=%d", 
+                     update_reason, intent, update_reason, len(normalized_steps))
             
             return {
                 "status": "ok", 
-                "message": f"Scene '{intent}' saved with confidence {confidence:.2f}",
+                "message": f"Scene '{intent}' {update_reason} with confidence {confidence:.2f}",
                 "entry_id": entry_id
             }
         
@@ -144,23 +160,22 @@ async def set_scene(
 SPEC = ToolSpec(
     name="set_scene",
     description=(
-        "Save scene after successful execution. Updates existing scene with same intent+area.\n\n"
-        "WHAT TO INCLUDE IN steps:\n"
-        "✓ {\"type\":\"service_call\",\"service\":\"media_player.turn_on\",\"data\":{\"entity_id\":\"...\"}}\n"
-        "✓ {\"type\":\"delay\",\"seconds\":8}\n"
-        "✗ NO wait_state - use delay instead\n"
-        "✗ NO tool calls - exclude play_plex_media, get_entity_state, etc.\n\n"
-        "Scene stores what run_sequence executes (service calls + delays only).\n"
-        "client_config: Tool parameters for later use, e.g., {\"client_ip\":\"192.168.86.208\"}.\n\n"
-        "WORKFLOW:\n"
-        "1. run_sequence([turn_on, delay 8s, select_source, delay 3s])\n"
-        "2. play_plex_media(client_config)\n"
-        "3. verify state\n"
-        "4. set_scene(steps=[service calls from step 1], client_config={ip, entity})\n\n"
-        "Outcome: 'success' if worked first try. Validates & rejects tool calls."
+        "Save scene after successful execution. Auto-detects when update needed vs unchanged.\n\n"
+        "WHEN TO CALL:\n"
+        "✓ New workflow executed successfully\n"
+        "✓ Fixed failed scene (outcome='corrected')\n"
+        "✓ Optimized workflow (shorter delays tested)\n"
+        "✗ Routine replay unchanged (auto-skips)\n\n"
+        "STEPS FORMAT:\n"
+        "✓ Service: {\"type\":\"service_call\",\"service\":\"...\",\"data\":{...}}\n"
+        "✓ Delay: {\"type\":\"delay\",\"seconds\":N}\n"
+        "✓ Guards: Add only_if_state to skip when device ready\n"
+        "✗ NO tool calls (play_plex_media, get_entity_state, etc.)\n\n"
+        "client_config: Optional tool params (e.g., client_ip).\n"
+        "Returns: {status:'ok'/'skipped', message, entry_id}"
     ),
     parameters=PARAMS,
-    returns="dict with status",
+    returns="dict with status and message",
     func=set_scene,
     can_run_parallel=True,
 )

@@ -272,13 +272,20 @@ This way tools don't need to check the flag - they simply won't be available to 
 - `steps: list` — steps that were executed
 - `outcome: "success" | "fail" | "corrected"`
 - `notes: string?`
+- `client_config: dict?` — tool parameters (e.g., client_ip for play_plex_media)
 
-**Output:** `"ok"`
+**Output:** `{status: "ok"/"skipped", message: string}`
 
 **Implementation:**
 - Import from `utils.scene_memory_store` and `utils.scene_memory_index`
-- Upsert memory entry
-- Rebuild scene index
+- **Smart update logic** (IMPLEMENTED):
+  - Compare existing scene steps to new steps
+  - Skip update if steps identical (unless outcome='corrected')
+  - Don't overwrite working scene with failed attempt
+  - Detect optimizations (reduced delay timings)
+  - Return status='skipped' if no update needed
+- Upsert memory entry only if update warranted
+- Rebuild scene index only when changed
 - **Track timing** with performance monitoring (`tool_set_scene`)
 
 **DoD**
@@ -345,10 +352,11 @@ sa_vector_index/              # Outside custom_components
 
 **DoD**
 
-* [ ] Can build/query scenes index without affecting device index
-* [ ] Both use same embedding/query functions
-* [ ] Stored in `.../sa_vector_index/scenes/` subdirectory
-* [ ] Performance tracking shows scene index rebuild time
+* [x] Can build/query scenes index without affecting device index
+* [x] Both use same embedding/query functions
+* [x] Stored in `.../sa_vector_index/scenes/` subdirectory
+* [x] Performance tracking shows scene index rebuild time
+* [x] Smart update logic prevents unnecessary rebuilds
 
 ---
 
@@ -593,6 +601,22 @@ Minimal stable contracts:
 3. **Incremental scene index updates:** If full rebuild is too slow (>1s for <100 scenes)
 4. **System prompt injection:** If user message strategy injection doesn't provide enough weight
 5. **LLM-based distillation:** If rule-based labeling produces poor results
+
+**Optimization Features (User-Initiated Only):**
+
+6. **Progressive wait optimization:** Agent learns minimum required delays through testing during normal usage
+   - Track scene execution success rate and delay timings
+   - After 5+ successful executions with same delays, agent can test reduced timing on next user request
+   - If reduced delay succeeds, save optimized scene (auto-detected by smart update logic)
+   - If reduced delay fails, revert to previous working timing and mark min_wait_found=True
+   - Never test optimizations in background/low-traffic periods (no phantom device activations)
+   - Store optimization metadata: `{"optimization_history": [...], "min_wait_found": bool}`
+   
+7. **Conditional step guards:** Add `only_if_state` guards to skip unnecessary setup steps (IMPLEMENTED)
+   - Guards checked internally by run_sequence using direct hass.states.get() (~1-2ms overhead)
+   - Example: Skip turn_on + 8s delay if device already in ['idle', 'playing'] state
+   - Zero additional LLM calls or tool invocations required
+   - Agent learns to add guards when discovering devices already in ready state
 
 ---
 

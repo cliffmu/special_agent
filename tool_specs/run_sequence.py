@@ -291,17 +291,23 @@ async def run_sequence(
 SPEC = ToolSpec(
     name="run_sequence",
     description=(
-        "Execute multi-step sequence with service calls, delays, waits, and optional post-condition verification. "
-        "Returns per-step results with status ('ok', 'error', 'skipped', 'timeout'). "
-        "Step formats: "
-        "1) Service: {\"type\":\"service_call\",\"service\":\"light.turn_on\",\"data\":{\"entity_id\":\"light.kitchen\"}} "
-        "2) Delay: {\"type\":\"delay\",\"seconds\":2} "
-        "3) Wait: {\"type\":\"wait_state\",\"entity_id\":\"media_player.tv\",\"in\":[\"playing\"],\"timeout\":10} "
-        "4) Optional post_condition on service_call: {\"post_condition\":{\"entity_id\":\"media_player.tv\",\"state\":\"playing\",\"timeout_ms\":4000}} "
-        "verifies state after action. Use 'service_call' not 'service', 'delay' not 'wait', 'data' not 'service_data'."
+        "Execute multi-step sequence with service calls, delays, and guards. Guards skip steps instantly (~1ms check).\n\n"
+        "STEP FORMATS:\n"
+        "1) Service: {\"type\":\"service_call\",\"service\":\"light.turn_on\",\"data\":{\"entity_id\":\"...\"}} \n"
+        "2) Delay: {\"type\":\"delay\",\"seconds\":8} \n"
+        "3) Guarded service (skip if device ready): "
+        "{\"type\":\"service_call\",...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"not_in\":[\"idle\",\"playing\"]}}\n"
+        "4) Guarded delay (skip wait if not needed): "
+        "{\"type\":\"delay\",\"seconds\":8,\"only_if_state\":{\"entity_id\":\"...\",\"not_in\":[\"idle\"]}}\n\n"
+        "GUARDS (checked internally, zero LLM overhead):\n"
+        "- only_if_state: Skip step if entity in/not_in specific states\n"
+        "- Checked using direct hass.states.get() (~1-2ms)\n"
+        "- Returns status='skipped' for guarded steps\n"
+        "- Example: Skip turn_on + 8s delay if TV already playing\n\n"
+        "Returns: dict with steps[], each with status='ok'/'skipped'/'error'/'timeout'"
     ),
     parameters=PARAMS,
-    returns="dict(steps, total_steps, completed_steps)",
+    returns="dict(result, steps, total_steps, completed_steps)",
     func=run_sequence
 )
 
