@@ -305,8 +305,15 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
                 validation_errors.append(f"Step {idx}: service_call missing entity_id")
                 continue
             normalized = s
+        # Reject invalid types with helpful messages
+        elif s.get("type") == "wait_state":
+            validation_errors.append(f"Step {idx}: wait_state not allowed - use delay instead")
+            continue
+        elif s.get("type") in ["play_plex_media", "search_devices", "get_entity_state"]:
+            validation_errors.append(f"Step {idx}: {s.get('type')} is a TOOL call, not a service call - exclude from scene")
+            continue
         else:
-            validation_errors.append(f"Step {idx}: Unknown format")
+            validation_errors.append(f"Step {idx}: Unknown step type '{s.get('type', 'missing')}' - use service_call or delay")
             continue
         
         normalized_steps.append(normalized)

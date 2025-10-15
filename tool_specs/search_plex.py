@@ -41,10 +41,13 @@ SPEC = ToolSpec(
     name="search_plex_library",
     description=(
         "Search the connected Plex library and return rating keys for playback. "
-        "Use the 'ratingKey' with media_player.play_media (media_content_type='plex'). "
-        "Fire off additional searches (the tool can run in parallel) when you need to "
-        "check multiple title variations. If 'error' field is present, Plex connection "
-        "failed - inform the user briefly about the connection issue."
+        "Use the 'ratingKey' with play_plex_media tool (NOT media_player.play_media - use the dedicated tool). "
+        "IMPORTANT: Results show what's ACTUALLY IN THE LIBRARY - if user asks for 'latest' episode, "
+        "check year/season/episode in results. The highest season/episode returned IS the latest available. "
+        "Don't search for future seasons/years - Plex only has what's downloaded. "
+        "Example: Results show 'Season 27 Episode 10 (2002)' → that IS the latest, don't search '2025'. "
+        "If user wants newer: 'Your latest episode is S27E10 from 2002. Ready to play it?' "
+        "Fire off parallel searches for title variations. If 'error' field present, connection failed."
     ),
     parameters=PARAMS,
     returns="{hits: array, error: string|null}",
