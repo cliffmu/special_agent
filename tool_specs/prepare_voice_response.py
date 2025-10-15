@@ -119,6 +119,11 @@ async def prepare_voice_response(
 SPEC = ToolSpec(
     name="prepare_voice_response",
     description=(
+        "Format final response for voice. Provide CONCISE, natural content.\n"
+        "DO NOT include: reflections, confidence scores, bullet lists, step-by-step recaps.\n"
+        "DO include: What happened and next steps (1-2 sentences).\n"
+        "Example GOOD: 'Now playing Seinfeld in the gym.'\n"
+        "Example BAD: 'Reflections: searched scene (done, 60%), discovered devices (done, 98%)...'\n\n"
         "Format content for natural voice output. ALWAYS use this for final answers to users. "
         "IMPORTANT: For style='brief', provide a SHORT SUMMARY (1-2 sentences max), NOT detailed lists. "
         "Example brief: 'You have 5 office lights on, most at full brightness' NOT listing each light individually. "
