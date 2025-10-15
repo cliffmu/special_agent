@@ -175,6 +175,8 @@ def build_device_index(
     vectors = []
     excluded_count = 0
     area_summary: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    platform_summary: Dict[str, int] = defaultdict(int)
+    platforms_by_area: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for st in states:
         entity_id = st.get("entity_id", "")
         domain = st.get("domain") or entity_id.split(".")[0]
@@ -195,11 +197,18 @@ def build_device_index(
             "domain": domain,
             "area_id": st.get("area_id") or st.get("attributes", {}).get("area_id"),
             "friendly_name": st.get("attributes", {}).get("friendly_name"),
+            "platform": st.get("platform"),  # Integration that provides this entity
         }
         docs.append({"page_content": text, "metadata": meta})
         vectors.append(vec)
         area = meta.get("area_id") or "Unassigned"
         area_summary[str(area)][domain] += 1
+        
+        # Track platforms
+        platform = meta.get("platform")
+        if platform:
+            platform_summary[platform] += 1
+            platforms_by_area[str(area)][platform] += 1
 
     if not vectors:
         log.debug("No vectors generated; raising error")
@@ -219,6 +228,8 @@ def build_device_index(
                 "excluded_count": excluded_count,
                 "embedding_model": EMBED_MODEL,
                 "area_summary": {a: dict(d) for a, d in area_summary.items()},
+                "platform_summary": dict(platform_summary),
+                "platforms_by_area": {a: dict(p) for a, p in platforms_by_area.items()},
             },
             f,
         )

@@ -47,6 +47,10 @@ PARAMS = {
             "description": "Filter by domain (e.g., 'light', 'switch', 'weather'). Use comma-separated for multiple.",
             "default": "light,switch"
         },
+        "platform": {
+            "type": "string",
+            "description": "Optional filter by integration platform (e.g., 'plex', 'apple_tv'). Rarely needed."
+        },
         "k": {
             "type": "integer",
             "description": f"Number of results to return (max {MAX_SEARCH_K})",
@@ -61,6 +65,7 @@ async def search_devices(
     query: str,
     area: str | None = None,
     domain: str = "light,switch",
+    platform: str | None = None,
     k: int = 5,
     hass: Any | None = None,
 ) -> List[Dict[str, Any]]:
@@ -69,11 +74,14 @@ async def search_devices(
     index_data = await async_load_device_index(hass=hass)
     filters: dict[str, Any] = {}
     if area:
-        filters["area_id"] = area
+        # Normalize to lowercase for case-insensitive matching
+        filters["area_id"] = area.lower().replace(" ", "_")
     if domain:
         # Parse comma-separated domain string to list
         domain_list = [d.strip() for d in domain.split(",")]
         filters["domain"] = domain_list
+    if platform:
+        filters["platform"] = platform
     hits = await async_query_vector_index(
         index_data, query, k, filters, hass=hass
     )
@@ -86,6 +94,7 @@ async def search_devices(
             "domain": meta.get("domain"),
             "area_id": meta.get("area_id"),
             "friendly_name": meta.get("friendly_name"),
+            "platform": meta.get("platform"),  # Integration (plex, apple_tv, etc.)
             "info": info,
         }
         if attr_keys:
@@ -101,10 +110,11 @@ SPEC = ToolSpec(
         f"Check the device list in your context to see if the requested device type exists before searching. "
         f"For weather queries, use domain='weather' to find weather entities - the 'temperature' attribute IS the current temp. "
         f"Use the area/domain filters and set k slightly larger than the count shown in the device list. "
+        f"Results include platform (integration name like 'plex', 'apple_tv') to help identify entity types. "
         f"Parameter 'k' is capped at {MAX_SEARCH_K}."
     ),
     parameters=PARAMS,
-    returns="list of device info dicts with sanitized info and attribute_keys",
+    returns="list of device info dicts with entity_id, domain, area_id, friendly_name, platform, attribute_keys",
     func=search_devices,
-    can_run_parallel=True,  # Read-only operation - safe for parallel execution
+    can_run_parallel=True,
 )
