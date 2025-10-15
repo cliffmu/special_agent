@@ -591,6 +591,17 @@ async def plan_execute(
                     "id": generate_message_id()
                 })
                 depth += 1
+            
+            # Check if we're about to hit depth limit - give one final turn
+            if depth >= max_depth:
+                log.warning("Depth limit reached. Requesting final response.")
+                messages.append({
+                    "role": "user",
+                    "content": "Iteration limit reached. Call prepare_voice_response now with a brief apology and suggest rephrasing the request.",
+                    "id": generate_message_id()
+                })
+                max_depth += 1  # Allow one final iteration
+            
             continue
 
             # ---------- final answer ----------
@@ -599,7 +610,9 @@ async def plan_execute(
                 store_session(mgr, session_key, messages, None, focus)
             return final_text or "OK"
 
-        return "Depth‑limit reached."
+        # Fallback if loop exits without returning (shouldn't happen)
+        log.error("Agent loop exited without response")
+        return "I apologize, but I wasn't able to complete your request."
     
     finally:
         # Always write metrics, even if there was an error
