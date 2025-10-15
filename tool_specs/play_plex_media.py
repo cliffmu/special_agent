@@ -45,9 +45,10 @@ async def play_plex_media(
     hass: Any | None = None
 ) -> Dict[str, Any]:
     """
-    Play Plex content with automatic fallback to Companion API if entity unavailable.
+    Push Plex content to client entity - does NOT handle setup.
     
-    Thin wrapper - delegates to utils for complex logic.
+    Simple: Try HA service, fallback to Companion HTTP if needed.
+    Agent must handle setup (power on, open app, scan) separately.
     """
     log.debug("play_plex_media: rating_key=%s, entity=%s, client_ip=%s", 
               rating_key, plex_client_entity, client_ip)
@@ -55,40 +56,21 @@ async def play_plex_media(
     if not hass:
         return {"status": "error", "error": "hass instance required"}
     
-    # Check current Plex client state to determine if setup needed
-    state_obj = hass.states.get(plex_client_entity)
-    current_state = state_obj.state if state_obj else "unknown"
+    # Auto-discover client IP if not provided
+    if not client_ip:
+        from ..utils.data_sources import get_device_ip_from_entity
+        # Try to find parent device to get IP
+        if "plex" in plex_client_entity.lower():
+            parts = plex_client_entity.split("_")
+            if len(parts) > 3:
+                area_hint = parts[-1]
+                possible_atv = f"media_player.{area_hint}_atv"
+                discovered_ip = get_device_ip_from_entity(hass, possible_atv)
+                if discovered_ip:
+                    client_ip = discovered_ip
+                    log.info("play_plex_media: Auto-discovered IP %s", client_ip)
     
-    log.debug("play_plex_media: Plex client state=%s", current_state)
-    
-    # If idle/paused/playing: Plex app is already open, just play
-    if current_state in ("idle", "paused", "playing"):
-        log.info("play_plex_media: Plex client ready (state=%s), playing directly", current_state)
-    # If unavailable: Need to open Plex app first - delegate to util for setup
-    elif current_state == "unavailable":
-        log.info("play_plex_media: Plex client unavailable, attempting auto-setup")
-        from ..utils.plex import setup_and_play_plex
-        
-        # Auto-discover client IP if not provided
-        if not client_ip:
-            from ..utils.data_sources import get_device_ip_from_entity
-            # Try common patterns to find parent device
-            if "plex" in plex_client_entity.lower():
-                parts = plex_client_entity.split("_")
-                if len(parts) > 3:
-                    area_hint = parts[-1]
-                    possible_atv = f"media_player.{area_hint}_atv"
-                    discovered_ip = get_device_ip_from_entity(hass, possible_atv)
-                    if discovered_ip:
-                        client_ip = discovered_ip
-                        log.info("play_plex_media: Auto-discovered IP %s", client_ip)
-        
-        # Delegate to util for intelligent setup + play
-        return await setup_and_play_plex(
-            rating_key, plex_client_entity, client_ip, verify_after_seconds, hass
-        )
-    
-    # Try standard HA service first
+    # Try HA service first
     try:
         await hass.services.async_call(
             "media_player",
@@ -106,7 +88,7 @@ async def play_plex_media(
         state_obj = hass.states.get(plex_client_entity)
         
         # Check if playback started
-        if state_obj and state_obj.state in ("playing", "paused", "idle"):
+        if state_obj and state_obj.state in ("playing", "paused"):
             log.info("play_plex_media: Success via HA service, state=%s", state_obj.state)
             return {
                 "status": "success",
@@ -114,21 +96,21 @@ async def play_plex_media(
                 "state": state_obj.state
             }
         
-        # Still unavailable - try Companion if client_ip provided
-        if state_obj and state_obj.state == "unavailable" and client_ip:
-            log.info("play_plex_media: HA unavailable, trying Companion fallback")
+        # HA service didn't work - try Companion if client_ip available
+        if client_ip:
+            log.info("play_plex_media: HA service didn't start playback, trying Companion")
             from ..utils.plex import companion_play_media
             result = await companion_play_media(
                 client_ip, rating_key, hass, verify_after_seconds, plex_client_entity
             )
-            result["method"] = "companion"
             return result
         
-        # Success but state unclear
+        # No fallback available
         return {
-            "status": "success",
+            "status": "partial",
             "method": "ha_service",
-            "state": state_obj.state if state_obj else "unknown"
+            "state": state_obj.state if state_obj else "unknown",
+            "message": "HA service called but playback not confirmed. Client may be unavailable - setup needed."
         }
         
     except Exception as err:
@@ -136,41 +118,40 @@ async def play_plex_media(
         
         # Try Companion fallback if client_ip provided
         if client_ip:
-            log.info("play_plex_media: HA failed, trying Companion fallback")
+            log.info("play_plex_media: HA failed, trying Companion")
             from ..utils.plex import companion_play_media
             result = await companion_play_media(
                 client_ip, rating_key, hass, verify_after_seconds, plex_client_entity
             )
-            result["method"] = "companion"
             return result
         
         return {
             "status": "error",
             "method": "ha_service",
-            "error": str(err)
+            "error": str(err),
+            "message": "HA service failed. Client setup may be needed (power on device, open Plex app, scan clients)."
         }
 
 
 SPEC = ToolSpec(
     name="play_plex_media",
     description=(
-        "Play Plex content on Plex client entity. Tool handles setup automatically.\n\n"
-        "FINDING THE RIGHT ENTITY:\n"
-        "Use search_devices with platform='plex' in target area to find Plex CLIENT entity:\n"
-        "  search_devices(query='plex', area='gym', platform='plex')\n"
-        "Returns entities with platform='plex' (these are Plex clients, NOT parent devices).\n"
-        "Platform field in results identifies entity type: platform='plex' vs platform='apple_tv'.\n\n"
-        "WHAT TOOL DOES:\n"
-        "Checks Plex client state:\n"
-        "- If idle/playing: Ready, plays directly\n"
-        "- If unavailable: Auto-setup sequence (power on parent, open Plex app, scan clients, play)\n"
-        "Auto-discovers parent device, client IP, Plex source name, scan button.\n"
-        "Skips steps already done (checks states first).\n"
-        "Uses Companion API fallback if HA service fails.\n\n"
-        "Returns: {status, method, state, steps_performed}."
+        "Push Plex content to Plex client entity. Simple playback only - does NOT handle device setup.\n\n"
+        "PREREQUISITES (agent must handle separately):\n"
+        "- Parent device powered on (Apple TV, Roku, etc.)\n"
+        "- Plex app open on device (use media_player.select_source with source='Plex')\n"
+        "- Plex clients scanned (press button with 'scan clients' in name)\n\n"
+        "FINDING PLEX CLIENT:\n"
+        "search_devices(query='plex', area='gym', platform='plex') returns Plex CLIENT entity (platform='plex').\n"
+        "Use that entity, NOT parent device.\n\n"
+        "WHAT THIS TOOL DOES:\n"
+        "Tries HA media_player.play_media service. If fails/unavailable, uses Plex Companion HTTP API.\n"
+        "Auto-discovers client_ip from device registry if not provided.\n\n"
+        "Returns: {status, method, state, message/error}.\n"
+        "If status='error' with 'unavailable': Setup needed first (power on, open app, scan)."
     ),
     parameters=PARAMS,
-    returns="dict with status, method, state, steps_performed",
+    returns="dict with status, method, state",
     func=play_plex_media,
     can_run_parallel=False,
 )

@@ -108,6 +108,9 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                 conversation_id=conversation_input.conversation_id,
                 response=response,
             )
+        
+        # Error or non-standard result path - still save session to preserve context
+        await mgr.save()
         response = intent.IntentResponse(language=conversation_input.language)
         response.async_set_speech(str(result))
         return ConversationResult(

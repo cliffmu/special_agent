@@ -400,15 +400,26 @@ async def setup_and_play_plex(
             log.debug("setup_and_play_plex: Plex app already selected")
         
         # 4. Scan for Plex clients (find scan button)
-        # Search all button entities for scan clients
+        # Search all button entities for scan clients (async-safe)
         scan_button = None
-        for state in hass.states.all():
-            if state.domain == "button":
-                friendly_name = state.attributes.get("friendly_name", "").lower()
-                if "scan" in friendly_name and "client" in friendly_name:
-                    scan_button = state.entity_id
-                    log.debug("setup_and_play_plex: Found scan button: %s", scan_button)
-                    break
+        
+        def _find_scan_button():
+            for state in hass.states.all():
+                if state.domain == "button":
+                    friendly_name = state.attributes.get("friendly_name", "").lower()
+                    if "scan" in friendly_name and "client" in friendly_name:
+                        return state.entity_id
+            return None
+        
+        # Run in executor to avoid blocking event loop
+        add_job = getattr(hass, "async_add_executor_job", None)
+        if callable(add_job):
+            scan_button = await add_job(_find_scan_button)
+        else:
+            scan_button = _find_scan_button()
+        
+        if scan_button:
+            log.debug("setup_and_play_plex: Found scan button: %s", scan_button)
         
         if scan_button:
             log.info("setup_and_play_plex: Scanning for Plex clients")
