@@ -106,16 +106,17 @@ async def get_scene(
 SPEC = ToolSpec(
     name="get_scene",
     description=(
-        "Retrieve learned scene routines. ALWAYS call FIRST for TV/media playback or multi-device requests.\n"
-        "Flow: 1) get_scene(intent='play_media_ROOM', area=ROOM) for exact match, "
-        "2) If null: get_scene(intent='play_media', k=3) to find similar TV setups in other rooms, "
-        "3) If found: adapt entity_ids for target room via search_devices, TEST with run_sequence, "
-        "4) If none: search_devices + compose steps + ask user to confirm, TEST before saving. "
-        "If confidence >0.6: execute with run_sequence then set_scene to reinforce. "
-        "Returns: commands_list (steps), confidence, strategy_item (hints), client_config (tool params like client_ip for play_plex_media)."
+        "Retrieve learned scene routines. ALWAYS call FIRST for multi-step requests.\n\n"
+        "SEARCH STRATEGY:\n"
+        "1. Try exact: get_scene(intent='ACTION_ROOM', area=ROOM)\n"
+        "2. Try similar: get_scene(intent='ACTION', k=3) if null\n"
+        "3. Adapt steps for target room if found\n"
+        "4. Compose new if none found\n\n"
+        "Returns: commands_list (steps for run_sequence), confidence, strategy_item, client_config.\n"
+        "Execute with run_sequence - guards handle device state automatically."
     ),
     parameters=PARAMS,
-    returns="dict with commands_list, confidence, strategy_item",
+    returns="dict with commands_list, confidence, strategy_item, client_config",
     func=get_scene,
     can_run_parallel=True,
 )
