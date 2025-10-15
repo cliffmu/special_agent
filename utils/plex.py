@@ -242,16 +242,17 @@ async def companion_play_media(
                     if resp.status != 200:
                         return {
                             "status": "error",
-                            "error": f"Client resources returned {resp.status}. Is Plex app open?"
+                            "error": f"Client resources endpoint returned HTTP {resp.status}. Plex app may not be open or 'Announce as Player' not enabled."
                         }
                     
                     text = await resp.text()
                     import re
                     match = re.search(r'clientIdentifier="([^"]+)"', text)
                     if not match:
+                        log.debug("companion_play_media: Resources response: %s", text[:200])
                         return {
                             "status": "error",
-                            "error": "Could not find clientIdentifier. Is Plex app open?"
+                            "error": "Device not announcing as Plex player. In Plex app on device: Settings → Network → Enable 'Advertise as player'"
                         }
                     
                     client_id = match.group(1)

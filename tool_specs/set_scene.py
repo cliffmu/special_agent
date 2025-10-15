@@ -35,6 +35,10 @@ PARAMS = {
         "notes": {
             "type": "string",
             "description": "Optional notes about the execution"
+        },
+        "client_config": {
+            "type": "object",
+            "description": "Optional client config for tools (e.g., client_ip, plex_client_entity). Used for play_plex_media and similar."
         }
     },
     "required": ["intent", "steps", "outcome"]
@@ -47,6 +51,7 @@ async def set_scene(
     outcome: str,
     area: str | None = None,
     notes: str | None = None,
+    client_config: Dict | None = None,
     hass: Any | None = None
 ) -> Dict[str, str]:
     """
@@ -116,6 +121,7 @@ async def set_scene(
                 "strategy": notes or f"Learned from {outcome} execution",
                 "confidence": confidence,
                 "updated_at": time.time(),
+                "client_config": client_config or {},  # Store client IPs, entity overrides, etc.
             }
             
             # Update store and rebuild index
@@ -138,12 +144,11 @@ async def set_scene(
 SPEC = ToolSpec(
     name="set_scene",
     description=(
-        "Save scene routine after successful run_sequence test. "
-        "ONLY call if run_sequence returned result='completed' with all steps status='ok'. "
-        "Steps must have: type='service_call' with data.entity_id (from search_devices), or type='delay' with seconds. "
-        "Use entity_ids NOT friendly names. Validates format and REJECTS malformed steps. "
-        "Outcome: 'success' (worked first try), 'corrected' (user tweaked), 'fail' (didn't work). "
-        "If returns error='malformed steps': you used friendly names instead of entity_ids - search_devices to get proper IDs and retry."
+        "Save scene after successful execution. ONLY call if run_sequence result='completed' (all steps ok). "
+        "Steps need entity_ids from search_devices (not friendly names). Validates & rejects malformed. "
+        "client_config (optional): Dict for tool parameters not in steps - e.g., {\"client_ip\": \"192.168.86.208\"} for Plex. "
+        "Stored with scene, retrieved by get_scene for reuse. "
+        "Outcome: 'success'/'corrected'/'fail'. If error returned: fix entity_ids and retry."
     ),
     parameters=PARAMS,
     returns="dict with status",

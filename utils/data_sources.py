@@ -174,7 +174,7 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
 
 def get_device_ip_from_entity(hass: HomeAssistant, entity_id: str) -> str | None:
     """
-    Extract device IP address from entity's device registry entry.
+    Extract device IP address from entity's device registry and config entries.
     
     Args:
         hass: Home Assistant instance
@@ -200,15 +200,55 @@ def get_device_ip_from_entity(hass: HomeAssistant, entity_id: str) -> str | None
         if not dev_entry:
             return None
         
-        # Check connections for IP
+        # PRIORITY: Check config entries (most reliable for Apple TV, etc.)
+        config_entries = getattr(hass, "config_entries", None)
+        if config_entries and dev_entry.config_entries:
+            for entry_id in dev_entry.config_entries:
+                try:
+                    entries = config_entries.async_entries()
+                    for entry in entries:
+                        if getattr(entry, "entry_id", None) == entry_id:
+                            # Check entry.data for address/host/ip
+                            data = dict(getattr(entry, "data", {}) or {})
+                            for key in ["address", "host", "ip", "hostname"]:
+                                addr = data.get(key)
+                                if addr and isinstance(addr, str) and "." in addr and addr.count(".") == 3:
+                                    try:
+                                        parts = addr.split(".")
+                                        if all(0 <= int(p) <= 255 for p in parts):
+                                            log.debug("get_device_ip: Found IP %s for %s via config_entry.data['%s']", 
+                                                     addr, entity_id, key)
+                                            return addr
+                                    except (ValueError, AttributeError):
+                                        pass
+                except Exception as err:
+                    log.debug("get_device_ip: Error checking config_entry %s: %s", entry_id, err)
+        
+        # Fallback: Check connections for IP
         for conn_type, conn_id in dev_entry.connections:
             if conn_type == "mac":
-                continue  # Skip MAC addresses
-            # Connection might be (network, IP) or other types
-            if "." in str(conn_id) and str(conn_id).count(".") == 3:
-                # Looks like IPv4
-                log.debug("get_device_ip: Found IP %s for %s", conn_id, entity_id)
-                return str(conn_id)
+                continue
+            conn_str = str(conn_id)
+            if "." in conn_str and conn_str.count(".") == 3:
+                try:
+                    parts = conn_str.split(".")
+                    if all(0 <= int(p) <= 255 for p in parts):
+                        log.debug("get_device_ip: Found IP %s for %s via connection %s", conn_str, entity_id, conn_type)
+                        return conn_str
+                except (ValueError, AttributeError):
+                    pass
+        
+        # Fallback: Check identifiers
+        for id_type, id_val in dev_entry.identifiers:
+            id_str = str(id_val)
+            if "." in id_str and id_str.count(".") == 3:
+                try:
+                    parts = id_str.split(".")
+                    if all(0 <= int(p) <= 255 for p in parts):
+                        log.debug("get_device_ip: Found IP %s for %s via identifier %s", id_str, entity_id, id_type)
+                        return id_str
+                except (ValueError, AttributeError):
+                    pass
         
         log.debug("get_device_ip: No IP found for %s", entity_id)
         return None
