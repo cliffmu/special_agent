@@ -13,12 +13,14 @@ I have a prototype version of the project saved in REFERENCE folder. This folder
 
 ## Code Organization Principles
 
-### Tools Should Be Simple
+### Tools Should Be Simple & Task-Specific
 - **Tools** (`tool_specs/*.py`) should be thin wrappers (~50-150 lines)
-- Keep parameter validation and simple orchestration only
+- **One tool = one specific task** - don't embed orchestration logic
+- **Let agent decide the sequence** - tools are building blocks, not workflows
 - **Move complex logic to `utils/`** - business logic, API calls, data processing
 - **Reuse existing utils** before creating new ones
-- Example: `play_plex_media` tool calls `utils/plex.py::companion_play_media()`
+- **Example:** `play_plex_media` pushes content to client (simple). Agent handles setup separately (power on, open app, scan) using `control_device` and other tools. This allows agent to discover, adapt, and learn what sequence works.
+- **Anti-pattern:** Tools that "auto-setup" or orchestrate multiple steps internally - this removes agent's ability to learn and adapt
 
 ### Agent Core Should Be Readable
 - **`agent_core.py`** should contain high-level orchestration only
@@ -31,6 +33,13 @@ I have a prototype version of the project saved in REFERENCE folder. This folder
 - **System prompt** (`agent_core.py`) should be general agent behavior only
 - **Why:** When tools are disabled, their guidance disappears automatically
 - **Example:** Scene memory flow guidance is in `get_scene` and `set_scene` descriptions, not system prompt
+
+### Scene Memory Integration
+- **Scene memory learns from agent's discoveries** - agent composes sequences, tests them, saves what works
+- **Tools stay dumb** - they execute single tasks without embedded logic
+- **Agent stays smart** - discovers setup sequences, adapts to different devices, saves successful patterns
+- **Why:** Allows agent to handle varied setups (Apple TV vs Roku vs complex AV) without hardcoding device-specific logic in tools
+- **Example:** Plex playback varies by device (some need scan button, some don't; different delay timings). Agent discovers and saves working pattern per room.
 
 ### Documentation
 - **DO NOT create new `.md` files** unless explicitly requested by user
