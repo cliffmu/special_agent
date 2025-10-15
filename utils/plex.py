@@ -233,33 +233,37 @@ async def companion_play_media(
             return {"status": "error", "error": "aiohttp library not available"}
         
         async with aiohttp.ClientSession() as session:
-            # Get client identifier
+            # Get client identifier from /resources endpoint
+            client_id = None
             try:
                 async with session.get(
                     f"http://{client_ip}:32500/resources",
                     timeout=aiohttp.ClientTimeout(total=3)
                 ) as resp:
-                    if resp.status != 200:
-                        return {
-                            "status": "error",
-                            "error": f"Client resources endpoint returned HTTP {resp.status}. Plex app may not be open or 'Announce as Player' not enabled."
-                        }
+                    # Try header first (fastest)
+                    client_id = resp.headers.get("X-Plex-Client-Identifier")
                     
-                    text = await resp.text()
-                    import re
-                    match = re.search(r'clientIdentifier="([^"]+)"', text)
-                    if not match:
-                        log.debug("companion_play_media: Resources response: %s", text[:200])
-                        return {
-                            "status": "error",
-                            "error": "Device not announcing as Plex player. In Plex app on device: Settings → Network → Enable 'Advertise as player'"
-                        }
-                    
-                    client_id = match.group(1)
-                    log.debug("companion_play_media: Found client_id=%s", client_id[:8] + "...")
+                    if client_id:
+                        log.debug("companion_play_media: Found client_id from header: %s", client_id[:8] + "...")
+                    elif resp.status == 200:
+                        # Parse from XML body
+                        text = await resp.text()
+                        import re
+                        # Check for both machineIdentifier and clientIdentifier
+                        match = re.search(r'(?:machine|client)Identifier="([^"]+)"', text, re.IGNORECASE)
+                        if match:
+                            client_id = match.group(1)
+                            log.debug("companion_play_media: Found client_id from XML: %s", client_id[:8] + "...")
+                        else:
+                            log.debug("companion_play_media: No identifier in resources XML")
+                    else:
+                        log.debug("companion_play_media: Resources returned HTTP %s", resp.status)
+                        
+            except (asyncio.TimeoutError, Exception) as err:
+                log.debug("companion_play_media: Could not get clientIdentifier: %s", err)
             
-            except asyncio.TimeoutError:
-                return {"status": "error", "error": "Timeout getting client ID - check client IP"}
+            if not client_id:
+                log.warning("companion_play_media: No clientIdentifier found, may fail")
             
             # Send play command
             play_url = (
@@ -270,13 +274,18 @@ async def companion_play_media(
                 f"&token={token}"
             )
             
+            # Build headers
+            headers = {"X-Plex-Client-Identifier": "special-agent"}
+            if client_id:
+                headers["X-Plex-Target-Client-Identifier"] = client_id
+                log.debug("companion_play_media: Using clientIdentifier header")
+            else:
+                log.debug("companion_play_media: No clientIdentifier - trying without it")
+            
             try:
                 async with session.get(
                     play_url,
-                    headers={
-                        "X-Plex-Client-Identifier": "special-agent",
-                        "X-Plex-Target-Client-Identifier": client_id
-                    },
+                    headers=headers,
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
                     if resp.status != 200:
