@@ -196,9 +196,11 @@ async def plan_execute(
         return "Error initializing OpenAI client"
 
     # ---- build system prompt ----
-    from .utils.vector_index import async_load_vector_meta
-    meta = await async_load_vector_meta(hass=hass)
+    from .utils.vector_index import async_load_vector_meta, DEFAULT_DEVICE_PERSIST_DIR
+    meta = await async_load_vector_meta(persist_dir=DEFAULT_DEVICE_PERSIST_DIR, hass=hass)
     area_summary = meta.get("area_summary", {}) if isinstance(meta, dict) else {}
+    platform_summary = meta.get("platform_summary", {}) if isinstance(meta, dict) else {}
+    platforms_by_area = meta.get("platforms_by_area", {}) if isinstance(meta, dict) else {}
     tool_json = [_spec_to_json(t) for t in tools]
     goals_block = ""
     if goals:
@@ -239,12 +241,14 @@ async def plan_execute(
         f"CURRENT DATE & TIME: {date_str} at {time_str}\n"
         f"Current year: {current_year} - When dates are mentioned without a year, assume this year\n"
         "Knowledge cutoff: October 2024.\n"
-        "You are Special Agent, a smart‑home AI.\n"
+        "You are Special Agent, a smarthome AI.\n"
         "When you call any tool you MUST include a line that begins with 'Thought:' summarising why you are calling the tool.\n"
         "CRITICAL: Do NOT write tool_calls as JSON text in your message content - use the actual tool_calls parameter that OpenAI provides.\n"
         f"{goals_block}"
         "You have an index summary of the home with count of entity types for each area:\n"
-        f"{json.dumps(area_summary, indent=2)[:4000]}\n"  # keep ≤4 KB to protect context
+        f"{json.dumps(area_summary, indent=2)[:3000]}\n"
+        "Integration platforms (see 'platform' field in results):\n"
+        f"{json.dumps(platform_summary, indent=2)[:1000]}\n"  # keep ≤4 KB to protect context
         "Check this device list before using search_devices - if a type isn't listed, tell user it's not available.\n"
         "WEB SEARCH:\n"
         "- Built-in web_search provides real-time sports, weather, news when you need current info after Oct 2024\n"

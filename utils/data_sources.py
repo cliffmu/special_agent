@@ -46,12 +46,15 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
             continue
 
         area_id = None
+        platform = None
         if entity_reg and device_reg:
             ent_entry = entity_reg.entities.get(state.entity_id)
-            if ent_entry and ent_entry.device_id:
-                dev_entry = device_reg.devices.get(ent_entry.device_id)
-                if dev_entry:
-                    area_id = dev_entry.area_id
+            if ent_entry:
+                platform = getattr(ent_entry, "platform", None)
+                if ent_entry.device_id:
+                    dev_entry = device_reg.devices.get(ent_entry.device_id)
+                    if dev_entry:
+                        area_id = dev_entry.area_id
 
         devices.append(
             {
@@ -60,6 +63,7 @@ def get_ha_states(hass: HomeAssistant) -> List[Dict]:
                 "attributes": dict(state.attributes),
                 "domain": state.domain,
                 "area_id": area_id,
+                "platform": platform,  # Integration providing this entity
             }
         )
 

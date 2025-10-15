@@ -154,15 +154,14 @@ async def play_plex_media(
 SPEC = ToolSpec(
     name="play_plex_media",
     description=(
-        "Play Plex content. THREE DIFFERENT ENTITIES involved:\n"
-        "1. Parent device (TV/streaming box) - controls power/apps - different per setup\n"
-        "2. Plex CLIENT (media_player.plex_*) - ONLY for sending media, not controlling device\n"
-        "3. Plex SERVER button (button.*scan_clients) - separate entity, scans network for clients\n\n"
-        "Provide plex_client_entity. Tool auto-discovers parent device, powers on if needed, "
-        "opens Plex app if needed, scans for clients, then sends media to Plex client. "
-        "Skips steps already done (checks states first). Auto-discovers client IP. "
-        "If client idle/ready: plays immediately. If unavailable: runs full setup. "
-        "Works with Apple TV, Roku, Shield, Samsung, complex AV - discovers parent automatically."
+        "Play Plex content on Plex client. Requires plex_client_entity parameter.\n"
+        "CRITICAL: Use Plex CLIENT entity, NOT parent device:\n"
+        "- Plex client: entity_id contains 'plex_plex_for' or 'plex_for' (e.g., media_player.plex_plex_for_apple_tv_apple_tv_gym)\n"
+        "- Parent device: regular media_player without 'plex' prefix (e.g., media_player.gym_atv)\n"
+        "Tool handles setup automatically: checks state, powers on parent if needed, opens Plex app if needed, "
+        "scans for clients, auto-discovers IP, then plays. Skips steps already done. "
+        "If client idle: plays directly. If unavailable: runs full setup. "
+        "Returns: {status, method, state, steps_performed}."
     ),
     parameters=PARAMS,
     returns="dict with status, method, state, steps_performed",
