@@ -103,8 +103,8 @@ async def set_scene(
                 for err in validation_errors:
                     log.warning("Scene validation: %s", err)
             
-            # Build entry
-            entry_id = f"{intent}_{area or 'global'}_{int(time.time())}"
+            # Build entry - use stable ID so same intent+area updates existing scene
+            entry_id = f"{intent}_{area or 'global'}"  # No timestamp - updates in place
             confidence = 0.8 if outcome == "success" else 0.3 if outcome == "fail" else 0.6
             
             step_types = [s.get("type", "unknown") for s in normalized_steps]
@@ -144,11 +144,20 @@ async def set_scene(
 SPEC = ToolSpec(
     name="set_scene",
     description=(
-        "Save scene after successful execution. Call IMMEDIATELY after verifying success.\n"
-        "When to call: After control_device or play_plex_media returns success AND you verify with get_entity_state.\n"
-        "Steps need entity_ids. client_config (optional): Tool params like {\"client_ip\": \"192.168.86.208\"}.\n"
-        "Example: Turned on TV → opened app → played media → verified playing → call set_scene NOW.\n"
-        "Outcome: 'success' if worked first try. Validates & rejects malformed."
+        "Save scene after successful execution. Updates existing scene with same intent+area.\n\n"
+        "WHAT TO INCLUDE IN steps:\n"
+        "✓ {\"type\":\"service_call\",\"service\":\"media_player.turn_on\",\"data\":{\"entity_id\":\"...\"}}\n"
+        "✓ {\"type\":\"delay\",\"seconds\":8}\n"
+        "✗ NO wait_state - use delay instead\n"
+        "✗ NO tool calls - exclude play_plex_media, get_entity_state, etc.\n\n"
+        "Scene stores what run_sequence executes (service calls + delays only).\n"
+        "client_config: Tool parameters for later use, e.g., {\"client_ip\":\"192.168.86.208\"}.\n\n"
+        "WORKFLOW:\n"
+        "1. run_sequence([turn_on, delay 8s, select_source, delay 3s])\n"
+        "2. play_plex_media(client_config)\n"
+        "3. verify state\n"
+        "4. set_scene(steps=[service calls from step 1], client_config={ip, entity})\n\n"
+        "Outcome: 'success' if worked first try. Validates & rejects tool calls."
     ),
     parameters=PARAMS,
     returns="dict with status",
