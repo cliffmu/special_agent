@@ -154,13 +154,19 @@ async def play_plex_media(
 SPEC = ToolSpec(
     name="play_plex_media",
     description=(
-        "Play Plex content on Plex client. Requires plex_client_entity parameter.\n"
-        "CRITICAL: Use Plex CLIENT entity, NOT parent device:\n"
-        "- Plex client: entity_id contains 'plex_plex_for' or 'plex_for' (e.g., media_player.plex_plex_for_apple_tv_apple_tv_gym)\n"
-        "- Parent device: regular media_player without 'plex' prefix (e.g., media_player.gym_atv)\n"
-        "Tool handles setup automatically: checks state, powers on parent if needed, opens Plex app if needed, "
-        "scans for clients, auto-discovers IP, then plays. Skips steps already done. "
-        "If client idle: plays directly. If unavailable: runs full setup. "
+        "Play Plex content on Plex client entity. Tool handles setup automatically.\n\n"
+        "FINDING THE RIGHT ENTITY:\n"
+        "Use search_devices with platform='plex' in target area to find Plex CLIENT entity:\n"
+        "  search_devices(query='plex', area='gym', platform='plex')\n"
+        "Returns entities with platform='plex' (these are Plex clients, NOT parent devices).\n"
+        "Platform field in results identifies entity type: platform='plex' vs platform='apple_tv'.\n\n"
+        "WHAT TOOL DOES:\n"
+        "Checks Plex client state:\n"
+        "- If idle/playing: Ready, plays directly\n"
+        "- If unavailable: Auto-setup sequence (power on parent, open Plex app, scan clients, play)\n"
+        "Auto-discovers parent device, client IP, Plex source name, scan button.\n"
+        "Skips steps already done (checks states first).\n"
+        "Uses Companion API fallback if HA service fails.\n\n"
         "Returns: {status, method, state, steps_performed}."
     ),
     parameters=PARAMS,
