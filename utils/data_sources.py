@@ -168,6 +168,52 @@ async def get_devices_by_area(hass: HomeAssistant) -> Tuple[Dict, List[Dict]]:
     return summary, detail
 
 
+def get_device_ip_from_entity(hass: HomeAssistant, entity_id: str) -> str | None:
+    """
+    Extract device IP address from entity's device registry entry.
+    
+    Args:
+        hass: Home Assistant instance
+        entity_id: Entity ID to look up
+        
+    Returns:
+        IP address string or None if not found
+    """
+    try:
+        entity_reg = er.async_get(hass) if er else None
+        device_reg = dr.async_get(hass) if dr else None
+        
+        if not entity_reg or not device_reg:
+            return None
+        
+        # Get entity entry
+        ent_entry = entity_reg.entities.get(entity_id)
+        if not ent_entry or not ent_entry.device_id:
+            return None
+        
+        # Get device entry
+        dev_entry = device_reg.devices.get(ent_entry.device_id)
+        if not dev_entry:
+            return None
+        
+        # Check connections for IP
+        for conn_type, conn_id in dev_entry.connections:
+            if conn_type == "mac":
+                continue  # Skip MAC addresses
+            # Connection might be (network, IP) or other types
+            if "." in str(conn_id) and str(conn_id).count(".") == 3:
+                # Looks like IPv4
+                log.debug("get_device_ip: Found IP %s for %s", conn_id, entity_id)
+                return str(conn_id)
+        
+        log.debug("get_device_ip: No IP found for %s", entity_id)
+        return None
+        
+    except Exception as err:
+        log.debug("get_device_ip: Error for %s: %s", entity_id, err)
+        return None
+
+
 def get_integration_entry(hass: HomeAssistant, domain: str) -> ConfigEntry | None:
     """Return the first config entry for ``domain`` if available."""
 

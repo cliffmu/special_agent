@@ -305,3 +305,144 @@ async def companion_play_media(
     except Exception as err:
         log.error("companion_play_media: Failed: %s", err, exc_info=True)
         return {"status": "error", "error": str(err)}
+
+
+async def setup_and_play_plex(
+    rating_key: str,
+    plex_client_entity: str,
+    client_ip: str | None,
+    verify_after_seconds: int,
+    hass: HomeAssistant,
+) -> Dict[str, Any]:
+    """
+    Intelligently set up Plex and play content - skips steps already done.
+    
+    Checks states and only performs necessary actions:
+    - Power on parent device if off
+    - Select Plex source if not already selected
+    - Scan for clients
+    - Play content via Companion or HA service
+    
+    Args:
+        rating_key: Plex content rating key
+        plex_client_entity: Plex client media_player entity
+        client_ip: Optional client IP (auto-discovered if None)
+        verify_after_seconds: Verification delay
+        hass: Home Assistant instance
+        
+    Returns:
+        Dict with status, method, state, and steps_performed
+    """
+    steps_performed = []
+    
+    try:
+        # 1. Find parent device entity (Apple TV, Roku, etc.)
+        # Pattern: media_player.plex_plex_for_apple_tv_apple_tv_gym → media_player.gym_atv
+        parent_entity = None
+        if "plex_for" in plex_client_entity:
+            # Extract area hint
+            parts = plex_client_entity.split("_")
+            area_hint = parts[-1] if len(parts) > 2 else None
+            if area_hint:
+                # Try common patterns
+                for pattern in [f"media_player.{area_hint}_atv", f"media_player.{area_hint}_apple_tv", 
+                               f"media_player.{area_hint}_roku", f"media_player.{area_hint}_tv"]:
+                    if hass.states.get(pattern):
+                        parent_entity = pattern
+                        log.debug("setup_and_play_plex: Found parent device: %s", parent_entity)
+                        break
+        
+        if not parent_entity:
+            log.warning("setup_and_play_plex: Could not auto-discover parent device")
+            return {
+                "status": "error",
+                "error": "Could not find parent device for Plex client. Provide setup manually."
+            }
+        
+        # 2. Check parent device state and power on if needed
+        parent_state = hass.states.get(parent_entity)
+        if parent_state and parent_state.state == "off":
+            log.info("setup_and_play_plex: Powering on %s", parent_entity)
+            await hass.services.async_call(
+                "media_player", "turn_on",
+                {"entity_id": parent_entity},
+                blocking=True
+            )
+            await asyncio.sleep(3)  # Wait for boot
+            steps_performed.append("powered_on")
+        else:
+            log.debug("setup_and_play_plex: Parent device already on")
+        
+        # 3. Check if Plex app is selected source
+        parent_state = hass.states.get(parent_entity)
+        source_list = parent_state.attributes.get("source_list", []) if parent_state else []
+        current_source = parent_state.attributes.get("source") if parent_state else None
+        
+        # Find Plex in source list
+        plex_source = None
+        for src in source_list:
+            if "plex" in src.lower():
+                plex_source = src
+                break
+        
+        # Select Plex source if not already selected
+        if plex_source and current_source != plex_source:
+            log.info("setup_and_play_plex: Selecting source '%s' on %s", plex_source, parent_entity)
+            await hass.services.async_call(
+                "media_player", "select_source",
+                {"entity_id": parent_entity, "source": plex_source},
+                blocking=True
+            )
+            await asyncio.sleep(4)  # Wait for app to open
+            steps_performed.append("opened_plex_app")
+        else:
+            log.debug("setup_and_play_plex: Plex app already selected")
+        
+        # 4. Scan for Plex clients (find scan button)
+        # Search all button entities for scan clients
+        scan_button = None
+        for state in hass.states.all():
+            if state.domain == "button":
+                friendly_name = state.attributes.get("friendly_name", "").lower()
+                if "scan" in friendly_name and "client" in friendly_name:
+                    scan_button = state.entity_id
+                    log.debug("setup_and_play_plex: Found scan button: %s", scan_button)
+                    break
+        
+        if scan_button:
+            log.info("setup_and_play_plex: Scanning for Plex clients")
+            await hass.services.async_call(
+                "button", "press",
+                {"entity_id": scan_button},
+                blocking=True
+            )
+            await asyncio.sleep(2)  # Wait for scan
+            steps_performed.append("scanned_clients")
+        
+        # 5. Play content via Companion API (client likely still unavailable in HA)
+        if not client_ip and parent_entity:
+            from .data_sources import get_device_ip_from_entity
+            client_ip = get_device_ip_from_entity(hass, parent_entity)
+        
+        if client_ip:
+            log.info("setup_and_play_plex: Playing via Companion (IP: %s)", client_ip)
+            result = await companion_play_media(
+                client_ip, rating_key, hass, verify_after_seconds, plex_client_entity
+            )
+            result["steps_performed"] = steps_performed
+            result["parent_device"] = parent_entity
+            return result
+        else:
+            return {
+                "status": "error",
+                "error": "Could not discover client IP for Companion fallback",
+                "steps_performed": steps_performed
+            }
+            
+    except Exception as err:
+        log.error("setup_and_play_plex: Failed: %s", err, exc_info=True)
+        return {
+            "status": "error",
+            "error": str(err),
+            "steps_performed": steps_performed
+        }
