@@ -322,7 +322,7 @@ async def plan_execute(
     tried_calls: set[tuple[str, str]] = set()
     retry_budget = 2
     depth = 0
-    max_depth = 7
+    max_depth = 10
     spec_map = {t.name: t for t in tools}
 
     # ---- main loop ----
@@ -379,6 +379,8 @@ async def plan_execute(
                     continue
                 elif "modality_mismatch" in error_msg:
                     log.error("GPT-5 modality mismatch - check input format")
+                    # Save session before returning on error
+                    store_session(mgr, session_key, messages, pending, focus)
                     return "I'm having trouble processing that request. Please try again."
                 elif "No tool output found" in error_msg or "invalid_request_error" in error_msg:
                     log.error("GPT-5 tool output mismatch: %s", err)
@@ -388,6 +390,8 @@ async def plan_execute(
                     return "I'm having issues right now. Please try your request again."
                 else:
                     log.error("GPT-5 API error: %s", err)
+                    # Save session before returning on error (preserves conversation context)
+                    store_session(mgr, session_key, messages, pending, focus)
                     return "I'm having issues right now. Please try again."
             log.debug("AI_Response_Text: %s", final_text)
             if function_calls:
