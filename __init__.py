@@ -75,6 +75,16 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     
     hass.services.async_register(DOMAIN, "clear_scene_memory", clear_scene_memory_handler)
     
+    async def rebuild_scene_index_handler(call: ServiceCall) -> None:
+        """Rebuild scene index from scene_memory.json."""
+        from .utils.vector_index import async_rebuild_scene_index
+        
+        _LOGGER.info("Rebuilding scene index from scene_memory.json")
+        await async_rebuild_scene_index(hass)
+        _LOGGER.info("Scene index rebuilt successfully")
+    
+    hass.services.async_register(DOMAIN, "rebuild_scene_index", rebuild_scene_index_handler)
+    
     return True
 
 

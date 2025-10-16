@@ -13,3 +13,7 @@ clear_performance:
 clear_scene_memory:
   name: Clear Scene Memory
   description: Delete all learned scene memory entries and rebuild empty index
+
+rebuild_scene_index:
+  name: Rebuild Scene Index
+  description: Rebuild scene vector index from scene_memory.json (fixes out-of-sync after manual edits)
