@@ -27,6 +27,10 @@ PARAMS = {
             "type": "string",
             "description": "Client IP address for Companion API fallback (e.g., '192.168.86.208')"
         },
+        "parent_device_entity": {
+            "type": "string",
+            "description": "Parent device entity (e.g., media_player.main_bedroom_atv) to extract IP from"
+        },
         "verify_after_seconds": {
             "type": "integer",
             "description": "Wait N seconds then verify playback started (default: 4)",
@@ -41,6 +45,7 @@ async def play_plex_media(
     rating_key: str,
     plex_client_entity: str,
     client_ip: str | None = None,
+    parent_device_entity: str | None = None,
     verify_after_seconds: int = 4,
     hass: Any | None = None
 ) -> Dict[str, Any]:
@@ -50,25 +55,19 @@ async def play_plex_media(
     Simple: Try HA service, fallback to Companion HTTP if needed.
     Agent must handle setup (power on, open app, scan) separately.
     """
-    log.debug("play_plex_media: rating_key=%s, entity=%s, client_ip=%s", 
-              rating_key, plex_client_entity, client_ip)
+    log.debug("play_plex_media: rating_key=%s, entity=%s, client_ip=%s, parent=%s", 
+              rating_key, plex_client_entity, client_ip, parent_device_entity)
     
     if not hass:
         return {"status": "error", "error": "hass instance required"}
     
     # Auto-discover client IP if not provided
-    if not client_ip:
+    if not client_ip and parent_device_entity:
         from ..utils.data_sources import get_device_ip_from_entity
-        # Try to find parent device to get IP
-        if "plex" in plex_client_entity.lower():
-            parts = plex_client_entity.split("_")
-            if len(parts) > 3:
-                area_hint = parts[-1]
-                possible_atv = f"media_player.{area_hint}_atv"
-                discovered_ip = get_device_ip_from_entity(hass, possible_atv)
-                if discovered_ip:
-                    client_ip = discovered_ip
-                    log.info("play_plex_media: Auto-discovered IP %s", client_ip)
+        discovered_ip = get_device_ip_from_entity(hass, parent_device_entity)
+        if discovered_ip:
+            client_ip = discovered_ip
+            log.info("play_plex_media: Got IP %s from parent_device_entity %s", client_ip, parent_device_entity)
     
     # Try HA service first
     try:
@@ -154,16 +153,16 @@ async def play_plex_media(
 SPEC = ToolSpec(
     name="play_plex_media",
     description=(
-        "Push Plex content to client. Does NOT handle setup - agent must power on, open Plex app, scan clients first.\n\n"
-        "FINDING CLIENT: search_devices(query='plex', area='gym', platform='plex') → platform='plex' entities.\n\n"
-        "IP HANDLING:\n"
-        "- Tool auto-discovers client_ip from device registry (fast, works for most devices)\n"
-        "- Returns discovered client_ip in response\n"
-        "- If auto-discovery fails: ask user for IP, pass as parameter\n"
-        "- Save IP in scene: set_scene(client_config={'client_ip': result.client_ip})\n"
-        "- Reuse from scene: play_plex_media(client_ip=scene.client_config.get('client_ip'))\n\n"
-        "Tries HA service → Companion HTTP fallback.\n\n"
-        "Returns: {status, method, state, client_ip (if discovered)}."
+        "Push Plex content to client. Does NOT handle setup - agent must power on, open Plex app first.\n\n"
+        "WORKFLOW:\n"
+        "1. search_devices(platform='plex', area=ROOM) → get plex_client_entity\n"
+        "2. search_devices(platform='apple_tv', area=ROOM) → get parent_device_entity (for IP)\n"
+        "3. play_plex_media(rating_key, plex_client_entity, parent_device_entity=parent)\n\n"
+        "IP DISCOVERY (priority order):\n"
+        "1. parent_device_entity param (if agent found parent device) - PREFERRED\n"
+        "2. Auto-guess from plex_client_entity name (fallback)\n"
+        "3. client_ip param (if from saved scene)\n\n"
+        "Returns: {status, method, state, client_ip}. Save client_ip in scene for reuse."
     ),
     parameters=PARAMS,
     returns="dict with status, method, state",
