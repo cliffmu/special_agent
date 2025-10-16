@@ -170,7 +170,8 @@ SPEC = ToolSpec(
         "✓ Service: {\"type\":\"service_call\",\"service\":\"...\",\"data\":{...}}\n"
         "✓ Delay: {\"type\":\"delay\",\"seconds\":N}\n"
         "✓ Guards: Add only_if_state to skip when device ready\n"
-        "✗ NO tool calls (play_plex_media, get_entity_state, etc.)\n\n"
+        "✗ NO tool calls\n\n"
+        "VALUE: Saved scenes help create similar workflows faster (gym TV → bedroom TV).\n"
         "client_config: Optional tool params (e.g., client_ip).\n"
         "Returns: {status:'ok'/'skipped', message, entry_id}"
     ),

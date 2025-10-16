@@ -108,12 +108,14 @@ SPEC = ToolSpec(
     description=(
         "Retrieve learned scene routines. ALWAYS call FIRST for multi-step requests.\n\n"
         "SEARCH STRATEGY:\n"
-        "1. Try exact: get_scene(intent='ACTION_ROOM', area=ROOM)\n"
-        "2. Try similar: get_scene(intent='ACTION', k=3) if null\n"
-        "3. Adapt steps for target room if found\n"
-        "4. Compose new if none found\n\n"
-        "Returns: commands_list (steps for run_sequence), confidence, strategy_item, client_config.\n"
-        "Execute with run_sequence - guards handle device state automatically."
+        "1. Exact match: get_scene(intent='ACTION_ROOM', area=ROOM)\n"
+        "2. Similar scenes as templates: get_scene(intent='ACTION', k=3) if null\n"
+        "   - Returns scenes from OTHER rooms with similar setup\n"
+        "   - Use as template: adapt entity_ids, add/remove steps for target room\n"
+        "   - Example: Gym Apple TV scene → adapt for Main Bedroom (add Harmony, change entities)\n"
+        "3. Compose new if none found\n\n"
+        "ADAPTATION: When using similar scene, search_devices to find equivalent entities in target room.\n"
+        "Returns: commands_list, confidence, strategy_item, client_config (reuse IPs, settings)."
     ),
     parameters=PARAMS,
     returns="dict with commands_list, confidence, strategy_item, client_config",
