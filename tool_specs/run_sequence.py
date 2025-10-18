@@ -146,18 +146,49 @@ async def run_sequence(
                 entity = _substitute_vars(only_if_state["entity_id"], vars)
                 state_obj = hass.states.get(entity)
                 if state_obj:
-                    current_state = state_obj.state
-                    in_states = only_if_state.get("in")
-                    not_in_states = only_if_state.get("not_in")
-                    
-                    if in_states and current_state not in in_states:
-                        step_result["status"] = "skipped"
-                        results.append(step_result)
-                        continue
-                    if not_in_states and current_state in not_in_states:
-                        step_result["status"] = "skipped"
-                        results.append(step_result)
-                        continue
+                    # Check attribute if specified, otherwise check state
+                    attribute_name = only_if_state.get("attribute")
+                    if attribute_name:
+                        # Attribute checking
+                        current_value = state_obj.attributes.get(attribute_name)
+                        
+                        # Check equals
+                        if "equals" in only_if_state and current_value != only_if_state["equals"]:
+                            step_result["status"] = "skipped"
+                            results.append(step_result)
+                            continue
+                        
+                        # Check not_equals
+                        if "not_equals" in only_if_state and current_value == only_if_state["not_equals"]:
+                            step_result["status"] = "skipped"
+                            results.append(step_result)
+                            continue
+                        
+                        # Check in list
+                        if "in" in only_if_state and current_value not in only_if_state["in"]:
+                            step_result["status"] = "skipped"
+                            results.append(step_result)
+                            continue
+                        
+                        # Check not_in list
+                        if "not_in" in only_if_state and current_value in only_if_state["not_in"]:
+                            step_result["status"] = "skipped"
+                            results.append(step_result)
+                            continue
+                    else:
+                        # State checking (existing logic)
+                        current_state = state_obj.state
+                        in_states = only_if_state.get("in")
+                        not_in_states = only_if_state.get("not_in")
+                        
+                        if in_states and current_state not in in_states:
+                            step_result["status"] = "skipped"
+                            results.append(step_result)
+                            continue
+                        if not_in_states and current_state in not_in_states:
+                            step_result["status"] = "skipped"
+                            results.append(step_result)
+                            continue
             
             # Execute step based on type
             step_type = step["type"]
@@ -295,15 +326,14 @@ SPEC = ToolSpec(
         "STEP FORMATS:\n"
         "1) Service: {\"type\":\"service_call\",\"service\":\"light.turn_on\",\"data\":{\"entity_id\":\"...\"}} \n"
         "2) Delay: {\"type\":\"delay\",\"seconds\":8} \n"
-        "3) Guarded service (skip if device ready): "
-        "{\"type\":\"service_call\",...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"not_in\":[\"idle\",\"playing\"]}}\n"
-        "4) Guarded delay (skip wait if not needed): "
-        "{\"type\":\"delay\",\"seconds\":8,\"only_if_state\":{\"entity_id\":\"...\",\"not_in\":[\"idle\"]}}\n\n"
+        "3) State guard: {...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"not_in\":[\"idle\",\"playing\"]}}\n"
+        "4) Attribute guard: {...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"attribute\":\"app_name\",\"not_equals\":\"Plex\"}}\n\n"
         "GUARDS (checked internally, zero LLM overhead):\n"
-        "- only_if_state: Skip step if entity in/not_in specific states\n"
-        "- Checked using direct hass.states.get() (~1-2ms)\n"
+        "- State: \"in\":[...] or \"not_in\":[...] checks entity.state\n"
+        "- Attribute: \"attribute\":\"app_name\", then \"equals\"/\"not_equals\"/\"in\"/\"not_in\"\n"
+        "- Checked via hass.states.get() (~1-2ms)\n"
         "- Returns status='skipped' for guarded steps\n"
-        "- Example: Skip turn_on + 8s delay if TV already playing\n\n"
+        "- Example: Skip select_source + delay if app_name already 'Plex'\n\n"
         "Returns: dict with steps[], each with status='ok'/'skipped'/'error'/'timeout'"
     ),
     parameters=PARAMS,

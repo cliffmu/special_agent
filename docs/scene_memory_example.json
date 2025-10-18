@@ -1,0 +1,266 @@
+{
+    "entries": {
+      "office_comfort_office_1760421702": {
+        "id": "office_comfort_office_1760421702",
+        "intent": "office_comfort",
+        "area_hint": "office",
+        "summary": "15 steps: service_call, service_call, service_call, +12 more",
+        "steps": [
+          {
+            "type": "service_call",
+            "service": "light.turn_off",
+            "data": {
+              "entity_id": "light.gym_overhead_light"
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_off",
+            "data": {
+              "entity_id": "light.gym_office_entry_light"
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_off",
+            "data": {
+              "entity_id": "light.gym_walkway_light"
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_on",
+            "data": {
+              "entity_id": "light.gym_sconce_lights",
+              "brightness": 191
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_off",
+            "data": {
+              "entity_id": "light.gym_outdoor_lightstrip"
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_on",
+            "data": {
+              "entity_id": "light.office_overhead_lights",
+              "brightness": 13
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_on",
+            "data": {
+              "entity_id": "light.office_sconces",
+              "brightness": 128
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_on",
+            "data": {
+              "entity_id": "light.office_outdoor_spotlight_left",
+              "brightness": 255,
+              "hs_color": [
+                266.897,
+                79.608
+              ]
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_on",
+            "data": {
+              "entity_id": "light.office_outdoor_spotlight_right",
+              "brightness": 255,
+              "hs_color": [
+                230.052,
+                75.686
+              ]
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "light.turn_on",
+            "data": {
+              "entity_id": "light.office_outdoor_lightstrip",
+              "brightness": 189,
+              "hs_color": [
+                0.0,
+                100.0
+              ]
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "fan.turn_on",
+            "data": {
+              "entity_id": "fan.pure_hot_cool_2",
+              "percentage": 50
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "fan.set_preset_mode",
+            "data": {
+              "entity_id": "fan.pure_hot_cool_2",
+              "preset_mode": "Normal"
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "fan.oscillate",
+            "data": {
+              "entity_id": "fan.pure_hot_cool_2",
+              "oscillating": false
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "switch.turn_on",
+            "data": {
+              "entity_id": "switch.pure_hot_cool_continuous_monitoring_2"
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "switch.turn_off",
+            "data": {
+              "entity_id": "switch.pure_hot_cool_night_mode_2"
+            }
+          }
+        ],
+        "strategy": "Saved gym and office lights plus Office Dyson fan settings as 'office comfort' scene.",
+        "confidence": 0.8,
+        "updated_at": 1760421702.5432022
+      },
+      "play_media_gym_gym": {
+        "id": "play_media_gym_gym",
+        "intent": "play_media_gym",
+        "area_hint": "gym",
+        "summary": "4 steps: service_call, delay, service_call, +1 more",
+        "steps": [
+          {
+            "type": "service_call",
+            "service": "media_player.turn_on",
+            "data": {
+              "entity_id": "media_player.gym_atv"
+            },
+            "only_if_state": {
+              "entity_id": "media_player.gym_atv",
+              "not_in": [
+                "idle",
+                "playing"
+              ]
+            }
+          },
+          {
+            "type": "delay",
+            "seconds": 1,
+            "only_if_state": {
+              "entity_id": "media_player.gym_atv",
+              "not_in": [
+                "idle",
+                "playing"
+              ]
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "media_player.select_source",
+            "data": {
+              "entity_id": "media_player.gym_atv",
+              "source": "Plex"
+            }
+          },
+          {
+            "type": "delay",
+            "seconds": 1
+          }
+        ],
+        "strategy": "Plays Moana (2016) by default in gym.",
+        "confidence": 0.8,
+        "updated_at": 1760589630.9898684,
+        "client_config": {
+          "plex_client_entity": "media_player.plex_plex_for_apple_tv_apple_tv_gym",
+          "client_ip": "192.168.86.208"
+        }
+      },
+      "play_media_main_bedroom_main_bedroom": {
+        "id": "play_media_main_bedroom_main_bedroom",
+        "intent": "play_media_main_bedroom",
+        "area_hint": "main_bedroom",
+        "summary": "6 steps with guards: handles all remote/TV sync states",
+        "steps": [
+          {
+            "type": "service_call",
+            "service": "remote.turn_on",
+            "data": {
+              "entity_id": "remote.bedroom_remote",
+              "activity": "Watch Apple TV"
+            }
+          },
+          {
+            "type": "delay",
+            "seconds": 9,
+            "only_if_state": {
+              "entity_id": "media_player.main_bedroom_apple_tv",
+              "in": ["off", "unavailable", "standby"]
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "media_player.turn_on",
+            "data": {
+              "entity_id": "media_player.main_bedroom_apple_tv"
+            },
+            "only_if_state": {
+              "entity_id": "media_player.main_bedroom_apple_tv",
+              "in": ["off", "unavailable", "standby"]
+            }
+          },
+          {
+            "type": "delay",
+            "seconds": 2,
+            "only_if_state": {
+              "entity_id": "media_player.main_bedroom_apple_tv",
+              "in": ["off", "unavailable", "standby"]
+            }
+          },
+          {
+            "type": "service_call",
+            "service": "media_player.select_source",
+            "data": {
+              "entity_id": "media_player.main_bedroom_apple_tv",
+              "source": "Plex"
+            },
+            "only_if_state": {
+              "entity_id": "media_player.main_bedroom_apple_tv",
+              "attribute": "app_name",
+              "not_equals": "Plex"
+            }
+          },
+          {
+            "type": "delay",
+            "seconds": 3,
+            "only_if_state": {
+              "entity_id": "media_player.main_bedroom_apple_tv",
+              "attribute": "app_name",
+              "not_equals": "Plex"
+            }
+          }
+        ],
+        "strategy": "Handles all sync states: always ensures Harmony activity (idempotent), skips TV boot if already on, skips Plex if already open. Fast path: ~100ms.",
+        "confidence": 0.8,
+        "updated_at": 1760589038.7836964,
+        "client_config": {
+          "plex_client_entity": "media_player.plex_plex_for_apple_tv_apple_tv_main_bedroom",
+          "client_ip": "192.168.86.206",
+          "parent_device_entity": "media_player.main_bedroom_apple_tv"
+        }
+      }
+    }
+  }
