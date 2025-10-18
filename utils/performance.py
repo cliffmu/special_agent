@@ -20,8 +20,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-# Context variable to track current request and parent operation
+# Context variable to track current request, session, and parent operation
 _current_request: ContextVar[Optional[str]] = ContextVar("current_request", default=None)
+_current_session: ContextVar[Optional[str]] = ContextVar("current_session", default=None)
 _operation_stack: ContextVar[list[str]] = ContextVar("operation_stack", default=[])
 
 # Global storage for all timing records
@@ -44,6 +45,17 @@ class TimingRecord:
     parallel_group: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Session tracking
+    session_id: Optional[str] = None
+    # LLM-specific fields (extracted from metadata for easier analysis)
+    model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    depth: Optional[int] = None
+    input_messages: Optional[int] = None
+    reasoning_count: Optional[int] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
 
 
 def configure(enabled: bool = True, csv_path: str | Path | None = None) -> None:
@@ -72,6 +84,25 @@ def get_current_request_id() -> Optional[str]:
     return _current_request.get()
 
 
+def set_session_id(session_id: str) -> None:
+    """Set the session ID for the current context."""
+    _current_session.set(session_id)
+
+
+def _extract_llm_fields(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Extract LLM-specific fields from metadata for easier CSV analysis."""
+    return {
+        "model": metadata.get("model"),
+        "reasoning_effort": metadata.get("reasoning"),
+        "depth": metadata.get("depth"),
+        "input_messages": metadata.get("input_messages"),
+        "reasoning_count": metadata.get("reasoning_count"),
+        "prompt_tokens": metadata.get("prompt_tokens"),
+        "completion_tokens": metadata.get("completion_tokens"),
+        "total_tokens": metadata.get("total_tokens"),
+    }
+
+
 @asynccontextmanager
 async def track_request(request_name: str = "user_request", metadata: Optional[dict[str, Any]] = None):
     """Track an entire user request lifecycle.
@@ -97,13 +128,17 @@ async def track_request(request_name: str = "user_request", metadata: Optional[d
         end = time.perf_counter()
         duration_ms = (end - start) * 1000
         
+        session_id = _current_session.get()
+        llm_fields = _extract_llm_fields(metadata or {})
         _timing_records.append(TimingRecord(
             request_id=request_id,
+            session_id=session_id,
             operation=request_name,
             start_time=start,
             end_time=end,
             duration_ms=duration_ms,
             metadata=metadata or {},
+            **llm_fields,
         ))
         
         _current_request.reset(token)
@@ -147,14 +182,18 @@ async def track_operation(
         end = time.perf_counter()
         duration_ms = (end - start) * 1000
         
+        session_id = _current_session.get()
+        llm_fields = _extract_llm_fields(metadata or {})
         _timing_records.append(TimingRecord(
             request_id=request_id,
+            session_id=session_id,
             operation=operation_name,
             start_time=start,
             end_time=end,
             duration_ms=duration_ms,
             parent_operation=parent,
             metadata=metadata or {},
+            **llm_fields,
         ))
         
         _operation_stack.reset(token)
@@ -205,8 +244,10 @@ async def track_parallel_operations(
             end = time.perf_counter()
             duration_ms = (end - start) * 1000
             
+            session_id = _current_session.get()
             _timing_records.append(TimingRecord(
                 request_id=request_id,
+                session_id=session_id,
                 operation=op_name,
                 start_time=start,
                 end_time=end,
@@ -247,10 +288,21 @@ def write_csv(path: Optional[Path] = None) -> None:
         fieldnames = [
             "timestamp",
             "request_id",
+            "session_id",
             "operation",
             "duration_ms",
             "parent_operation",
             "parallel_group",
+            # LLM-specific columns
+            "model",
+            "reasoning_effort",
+            "depth",
+            "input_messages",
+            "reasoning_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            # Catch-all for other metadata
             "metadata",
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -262,10 +314,21 @@ def write_csv(path: Optional[Path] = None) -> None:
             writer.writerow({
                 "timestamp": record.timestamp,
                 "request_id": record.request_id,
+                "session_id": record.session_id or "",
                 "operation": record.operation,
                 "duration_ms": f"{record.duration_ms:.2f}",
                 "parent_operation": record.parent_operation or "",
                 "parallel_group": record.parallel_group or "",
+                # LLM columns
+                "model": record.model or "",
+                "reasoning_effort": record.reasoning_effort or "",
+                "depth": str(record.depth) if record.depth is not None else "",
+                "input_messages": str(record.input_messages) if record.input_messages is not None else "",
+                "reasoning_count": str(record.reasoning_count) if record.reasoning_count is not None else "",
+                "prompt_tokens": str(record.prompt_tokens) if record.prompt_tokens is not None else "",
+                "completion_tokens": str(record.completion_tokens) if record.completion_tokens is not None else "",
+                "total_tokens": str(record.total_tokens) if record.total_tokens is not None else "",
+                # Remaining metadata
                 "metadata": str(record.metadata) if record.metadata else "",
             })
     

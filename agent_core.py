@@ -296,6 +296,12 @@ async def plan_execute(
             hass, session_key, system_prompt, prompt, session_timeout_minutes
         )
     
+    # Set session_id for performance tracking
+    if performance.is_enabled() and session_key:
+        # Create a session identifier from session_key (conversation_id|device_id)
+        session_id = f"{session_key[0]}|{session_key[1]}"
+        performance.set_session_id(session_id)
+    
     # Determine if this is a followup (session has existing messages beyond system prompt)
     is_followup = len(messages) > 1
     log.debug("Session loaded: messages=%d, focus=%s, pending=%s, followup=%s", 
@@ -341,15 +347,14 @@ async def plan_execute(
                     input_messages = messages[1:]
                 
                 # Use Responses API for GPT-5 with web search support
-                async with performance.track_operation(
-                    f"llm_call_{depth+1}",
-                    metadata={
-                        "model": model, 
-                        "reasoning": reasoning_effort, 
-                        "depth": depth,
-                        "input_messages": len(input_messages),
-                    }
-                ):
+                llm_metadata = {
+                    "model": model, 
+                    "reasoning": reasoning_effort, 
+                    "depth": depth,
+                    "input_messages": len(input_messages),
+                }
+                
+                async with performance.track_operation(f"llm_call_{depth+1}", metadata=llm_metadata):
                     resp = await client.responses.create(
                         model=model,
                         instructions=instructions,
@@ -359,12 +364,37 @@ async def plan_execute(
                         reasoning={"effort": reasoning_effort},
                     )
                 
-                # Log token usage if available
+                # Count reasoning blocks and extract token usage
+                reasoning_count = 0
+                if hasattr(resp, 'messages') and resp.messages:
+                    reasoning_count = sum(1 for msg in resp.messages if getattr(msg, 'type', None) == 'reasoning')
+                
+                # Add reasoning count and token usage to metadata
+                if reasoning_count > 0:
+                    llm_metadata["reasoning_count"] = reasoning_count
+                
                 if hasattr(resp, 'usage') and resp.usage:
-                    log.debug("LLM tokens: prompt=%s, completion=%s, total=%s", 
-                             getattr(resp.usage, 'prompt_tokens', 'N/A'),
-                             getattr(resp.usage, 'completion_tokens', 'N/A'),
-                             getattr(resp.usage, 'total_tokens', 'N/A'))
+                    llm_metadata["prompt_tokens"] = getattr(resp.usage, 'prompt_tokens', None)
+                    llm_metadata["completion_tokens"] = getattr(resp.usage, 'completion_tokens', None)
+                    llm_metadata["total_tokens"] = getattr(resp.usage, 'total_tokens', None)
+                    
+                    log.debug("LLM tokens: prompt=%s, completion=%s, total=%s, reasoning_blocks=%d", 
+                             llm_metadata.get("prompt_tokens", 'N/A'),
+                             llm_metadata.get("completion_tokens", 'N/A'),
+                             llm_metadata.get("total_tokens", 'N/A'),
+                             reasoning_count)
+                
+                # Update the current operation's metadata with token info
+                if performance.is_enabled():
+                    request_id = performance.get_current_request_id()
+                    if request_id:
+                        for record in performance.get_records():
+                            if record.request_id == request_id and record.operation == f"llm_call_{depth+1}":
+                                record.reasoning_count = reasoning_count
+                                record.prompt_tokens = llm_metadata.get("prompt_tokens")
+                                record.completion_tokens = llm_metadata.get("completion_tokens")
+                                record.total_tokens = llm_metadata.get("total_tokens")
+                                break
                 
                 # Extract function calls and final text from response
                 function_calls = extract_function_calls(resp)
