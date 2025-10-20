@@ -13,6 +13,57 @@ I have a prototype version of the project saved in REFERENCE folder. This folder
 
 ## Code Organization Principles
 
+### Architecture Philosophy: Readability Through Separation
+
+**Core Principle**: Code should read like a story, not a technical manual.
+
+**`agent_core.py` Purpose**:
+- **Orchestrator, not implementer** - coordinates components, doesn't contain implementation details
+- **~150-200 lines max** - if longer, extract logic to utils
+- **Reads like pseudocode** - function calls with descriptive names that explain what's happening
+- **Example of good orchestration**:
+  ```python
+  client = await get_openai_client(hass)
+  system_prompt = await build_system_prompt(tools, hass, session_key, ...)
+  messages, session_state = load_session(...)
+  
+  while not done:
+      response = await call_llm(client, messages, tools, ...)
+      if response.has_final_answer:
+          return response.final_text
+      if response.has_tool_calls:
+          results = await validate_and_execute_tools(...)
+  ```
+
+**Utils Philosophy - Extend, Don't Proliferate**:
+- **Before creating a new util, check if existing utils can be extended**
+- **Cohesive grouping**: Related functions stay together
+  - `llm_client.py`: All LLM interaction (calling, errors, metrics)
+  - `response_utils.py`: All response handling (parsing, tool execution, results)
+  - `tool_registry.py`: All tool management (specs, loading, conversion)
+  - `prompt_builder.py`: All prompt construction (context, formatting, composition)
+- **Clear boundaries**: Each util has ONE clear responsibility
+- **Descriptive names**: File name tells you exactly what's inside
+- **Target size**: 150-400 lines per util (if larger, consider splitting by sub-responsibility)
+
+**When to Create a New Util**:
+✅ **Create** if:
+  - No existing util covers this responsibility
+  - The logic is >100 lines and self-contained
+  - It would improve readability of agent_core or tools
+
+❌ **Don't create** if:
+  - An existing util could be extended logically
+  - It's <50 lines (consider adding to existing util)
+  - It would fragment related functionality
+
+**Refactoring Process**:
+1. Identify complex logic in agent_core (>50 lines doing one thing)
+2. Check if existing utils can absorb it
+3. If yes: extend existing util with clear function name
+4. If no: create new util with focused responsibility
+5. Update agent_core to call the new function
+
 ### Tools Should Be Simple & Task-Specific
 - **Tools** (`tool_specs/*.py`) should be thin wrappers (~50-150 lines)
 - **One tool = one specific task** - don't embed orchestration logic
@@ -24,9 +75,11 @@ I have a prototype version of the project saved in REFERENCE folder. This folder
 
 ### Agent Core Should Be Readable
 - **`agent_core.py`** should contain high-level orchestration only
-- Human-readable flow: load tools → build prompt → execute loop → return
-- **Move complex logic to `utils/`** - session management, response parsing, performance tracking
-- Already refactored: `utils/session_helpers.py`, `utils/response_utils.py`, `utils/performance.py`
+- **Target: ~150 lines** for main loop + setup
+- Human-readable flow: setup → loop (call LLM → execute tools) → return
+- **Every function call should be self-documenting** - reader knows what it does from name alone
+- **Move complex logic to `utils/`** - session management, LLM calling, tool execution, prompt building
+- **Anti-pattern**: Multi-page functions, inline implementations, complex conditionals
 
 ### Tool-Specific Prompts Stay in Tools
 - **Tool descriptions** should contain tool-specific guidance and workflows
