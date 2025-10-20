@@ -73,9 +73,6 @@ async def call_llm(
     Returns:
         LLMResponse with normalized output
     """
-    # Add built-in web_search to tools
-    tools_with_search = tools + [{"type": "web_search"}]
-    
     # Responses API uses 'instructions' instead of system message
     # Extract system from messages if present
     instructions = None
@@ -90,6 +87,25 @@ async def call_llm(
     
     # Call appropriate API
     if use_responses_api:
+        # Responses API expects flattened tool format: {type, name, description, parameters}
+        # Convert from Chat format: {type, function: {name, description, parameters}}
+        flattened_tools = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                flattened_tools.append({
+                    "type": "function",
+                    "name": func.get("name"),
+                    "description": func.get("description"),
+                    "parameters": func.get("parameters", {}),
+                })
+            else:
+                # Already flattened or different type
+                flattened_tools.append(tool)
+        
+        # Add built-in web_search
+        tools_with_search = flattened_tools + [{"type": "web_search"}]
+        
         resp = await client.responses.create(
             model=model,
             instructions=instructions,
