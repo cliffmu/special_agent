@@ -184,6 +184,11 @@ def _schema_to_json(schema: Any) -> Dict[str, Any]:
         return _schema_to_json(schema.schema)
 
     if isinstance(schema, dict):
+        # If dict already has "type" key, it's already JSON Schema - return as-is
+        if "type" in schema:
+            return schema
+        
+        # Otherwise, treat as voluptuous schema dict
         properties: Dict[str, Any] = {}
         required_fields: List[str] = []
         key_wrappers: List[type] = []
