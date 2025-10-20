@@ -1,7 +1,7 @@
 {
     "domain": "special_agent",
     "name": "Special Agent",
-    "version": "0.0.1",
+    "version": "0.3.0",
     "documentation": "https://example.com",
     "dependencies": ["conversation", "assist_pipeline"],
     "requirements": [
