@@ -172,8 +172,10 @@ async def run_sequence(
     for step in steps:
         if time.monotonic() - started > timeout:
             return {
-                "status": "error",
+                "result": "failed",
                 "steps": results,
+                "total_steps": len(steps),
+                "completed_steps": len(results),
                 "error": "Sequence timeout exceeded",
             }
 

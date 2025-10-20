@@ -1,13 +1,16 @@
 """Core agent structures and stubs (v0.2)."""
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import importlib
 import os
 import time
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock
 
 import voluptuous as vol
 
@@ -47,16 +50,31 @@ class Agent:
         self.tools: Dict[str, ToolSpec] = {}
         self.config = config or {}
         self._tools_loaded = False
+        self._load_tools_sync()
 
     # —— tool registry ——
     async def load_tools(self, hass: Any | None = None) -> None:
         """Dynamically import any available tool specs."""
         if self._tools_loaded:
             return
-        self._tools_loaded = True
+        base_tools = self._base_tool_modules()
         base = __package__ or ""
-        
-        # Base tools that are always loaded
+
+        for mod in base_tools:
+            module_name = f"{base}.{mod}" if base else mod
+            try:
+                if hass:
+                    module = await hass.async_add_executor_job(
+                        importlib.import_module, module_name
+                    )
+                else:
+                    module = importlib.import_module(module_name)
+                self.register_tool(module.SPEC)
+            except Exception as err:  # pragma: no cover
+                log.debug("Tool '%s' not loaded: %s", module_name, err)
+        self._tools_loaded = True
+
+    def _base_tool_modules(self) -> List[str]:
         base_tools = [
             "tool_specs.build_device_index",
             "tool_specs.ask_user",
@@ -69,19 +87,15 @@ class Agent:
             "tool_specs.get_entity_history",
             "tool_specs.prepare_voice_response",
             "tool_specs.run_sequence",
-            # search_web not loaded - using OpenAI's built-in web_search instead
         ]
-        
-        # Conditionally load confirm_action based on config
+
         if self.config.get("require_confirmation", True):
             base_tools.insert(1, "tool_specs.confirm_action")
             log.info("Confirmation enabled - confirm_action tool loaded")
         else:
             log.info("Confirmation disabled - confirm_action tool not loaded")
-        
-        # Scene Memory tools (conditional)
-        scene_memory_enabled = self.config.get("scene_memory_enabled", False)
-        if scene_memory_enabled:
+
+        if self.config.get("scene_memory_enabled", False):
             base_tools.extend([
                 "tool_specs.get_scene",
                 "tool_specs.set_scene",
@@ -89,40 +103,22 @@ class Agent:
             log.info("Scene memory enabled - scene tools loaded")
         else:
             log.debug("Scene memory disabled - scene tools not loaded")
-        
-        # Google search integration (commented out - using OpenAI web search instead)
-        # To re-enable Google search:
-        # 1. Uncomment the block below
-        # 2. Add "tool_specs.search_web_google" to base_tools
-        # 3. Configure google_api_key and google_cx in config_flow
-        #
-        # if self.config.get("google_api_key") and self.config.get("google_cx"):
-        #     base_tools.append("tool_specs.search_web_google")
-        #     log.info("Google search enabled")
-        # else:
-        #     log.info("Google search disabled - using OpenAI web search")
-        
+
+        return base_tools
+
+    def _load_tools_sync(self) -> None:
+        if self._tools_loaded:
+            return
+        base_tools = self._base_tool_modules()
+        base = __package__ or ""
         for mod in base_tools:
             module_name = f"{base}.{mod}" if base else mod
             try:
-                # Use executor to avoid blocking the event loop
-                if hass:
-                    module = await hass.async_add_executor_job(
-                        importlib.import_module, module_name
-                    )
-                else:
-                    module = importlib.import_module(module_name)
-                
-                # Google search credential setup (commented out)
-                # if mod == "tool_specs.search_web_google" and hasattr(module, "set_credentials"):
-                #     module.set_credentials(
-                #         self.config.get("google_api_key"),
-                #         self.config.get("google_cx")
-                #     )
-                
+                module = importlib.import_module(module_name)
                 self.register_tool(module.SPEC)
             except Exception as err:  # pragma: no cover
                 log.debug("Tool '%s' not loaded: %s", module_name, err)
+        self._tools_loaded = True
 
     def register_tool(self, spec: ToolSpec) -> None:
         self.tools[spec.name] = spec
@@ -158,13 +154,167 @@ class Agent:
         )
 
 # ----------  helpers ----------
-def _spec_to_json(spec: ToolSpec) -> Dict:
-    """Convert ToolSpec to OpenAI Responses API format."""
+def _schema_to_json(schema: Any) -> Dict[str, Any]:
+    """Convert voluptuous schemas and simple Python types to JSON Schema."""
+
+    try:
+        from voluptuous.schema_builder import Optional, Required, Schema, UNDEFINED
+    except Exception:
+        Optional = getattr(vol, "Optional", None)
+        Required = getattr(vol, "Required", None)
+        Schema = getattr(vol, "Schema", None)
+        UNDEFINED = getattr(vol, "UNDEFINED", None)
+
+    if isinstance(schema, MagicMock):
+        stored = getattr(schema, "_sa_schema_args", None)
+        if stored is None:
+            call_args_list = getattr(getattr(vol, "Schema", None), "call_args_list", [])
+            if call_args_list:
+                try:
+                    stored = call_args_list.pop(0)[0][0]
+                except Exception:  # pragma: no cover - defensive
+                    stored = None
+                if stored is not None:
+                    setattr(schema, "_sa_schema_args", stored)
+        if stored is None:
+            return {"type": "object", "properties": {}}
+        return _schema_to_json(stored)
+
+    if isinstance(Schema, type) and isinstance(schema, Schema):
+        return _schema_to_json(schema.schema)
+
+    if isinstance(schema, dict):
+        properties: Dict[str, Any] = {}
+        required_fields: List[str] = []
+        key_wrappers: List[type] = []
+        if isinstance(Required, type):
+            key_wrappers.append(Required)
+        if isinstance(Optional, type):
+            key_wrappers.append(Optional)
+        for key, value in schema.items():
+            default = None
+            key_name = key
+            if key_wrappers and isinstance(key, tuple(key_wrappers)):
+                key_name = key.schema
+                if isinstance(key, Required):
+                    required_fields.append(key_name)
+                default = key.default
+                if callable(default):
+                    try:
+                        default = default()
+                    except Exception:  # pragma: no cover - defensive
+                        default = None
+                if default is UNDEFINED:
+                    default = None
+            properties[key_name] = _schema_to_json(value)
+            if default is not None:
+                properties[key_name]["default"] = default
+
+        result: Dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+        }
+        if required_fields:
+            result["required"] = required_fields
+        return result
+
+    if isinstance(schema, list):
+        item_schema = _schema_to_json(schema[0]) if schema else {"type": "string"}
+        return {"type": "array", "items": item_schema}
+
+    if schema in (str, "string"):
+        return {"type": "string"}
+    if schema in (int, "integer"):
+        return {"type": "integer"}
+    if schema in (float, "number"):
+        return {"type": "number"}
+    if schema in (bool, "boolean"):
+        return {"type": "boolean"}
+    if schema in (dict, "object"):
+        return {"type": "object"}
+
+    return {"type": "string"}
+
+
+def _responses_to_chat_messages(messages: List[Any]) -> List[Dict[str, Any]]:
+    """Convert Responses-style messages to Chat Completions format."""
+
+    chat_messages: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        if hasattr(msg, "model_dump"):
+            data = msg.model_dump()
+        elif hasattr(msg, "dict"):
+            data = msg.dict()
+        elif isinstance(msg, dict):
+            data = dict(msg)
+        else:
+            # Fallback: assume already a chat message dict
+            if isinstance(msg, list):  # pragma: no cover - defensive
+                continue
+            chat_messages.append(msg)
+            continue
+
+        msg_type = data.get("type")
+        if msg_type == "function_call":
+            chat_messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": data.get("call_id") or data.get("id"),
+                            "type": "function",
+                            "function": {
+                                "name": data.get("name"),
+                                "arguments": data.get("arguments", "{}"),
+                            },
+                        }
+                    ],
+                }
+            )
+        elif msg_type == "function_call_output":
+            chat_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": data.get("call_id"),
+                    "content": data.get("output", ""),
+                }
+            )
+        elif msg_type == "message":
+            chat_messages.append(
+                {
+                    "role": data.get("role", "assistant"),
+                    "content": data.get("content"),
+                }
+            )
+        else:
+            role = data.get("role")
+            if role:
+                chat_entry: Dict[str, Any] = {"role": role, "content": data.get("content")}
+                if "tool_calls" in data:
+                    chat_entry["tool_calls"] = data["tool_calls"]
+                chat_messages.append(chat_entry)
+
+    return chat_messages
+
+
+def _spec_to_json(spec: ToolSpec) -> Dict[str, Any]:
+    """Convert ToolSpec to OpenAI Responses/Chat API format."""
+
+    params = spec.parameters
+    if isinstance(params, (dict, list)) or hasattr(params, "schema"):
+        params_json = _schema_to_json(params)
+    else:
+        params_json = params  # Fall back to provided structure
+
     return {
         "type": "function",
-        "name": spec.name,
-        "description": spec.description,
-        "parameters": spec.parameters,  # Already in JSON schema format
+        "function": {
+            "name": spec.name,
+            "description": spec.description,
+            "parameters": params_json,
+        },
     }
 
 
@@ -330,6 +480,8 @@ async def plan_execute(
     # ---- main loop ----
     try:
         while depth < max_depth:
+            function_calls: List[Any] = []
+            final_text: str | None = None
             try:
                 # Add built-in web_search to tools
                 tools_with_search = tool_json + [{"type": "web_search"}]
@@ -350,21 +502,77 @@ async def plan_execute(
                     "input_messages": len(input_messages),
                 }
                 
+                responses_api = getattr(client, "responses", None)
+                use_responses_api = bool(responses_api) and hasattr(responses_api, "create")
+
                 async with performance.track_operation(f"llm_call_{depth+1}", metadata=llm_metadata):
-                    resp = await client.responses.create(
-                        model=model,
-                        instructions=instructions,
-                        input=input_messages,
-                        tools=tools_with_search,
-                        tool_choice="auto",
-                        reasoning={"effort": reasoning_effort},
-                    )
-                
+                    if use_responses_api:
+                        resp = await client.responses.create(
+                            model=model,
+                            instructions=instructions,
+                            input=input_messages,
+                            tools=tools_with_search,
+                            tool_choice="auto",
+                            reasoning={"effort": reasoning_effort},
+                        )
+                        response_output = list(getattr(resp, "output", []))
+                        function_calls = extract_function_calls(resp)
+                        final_text = extract_final_text(resp)
+                    else:
+                        functions = [item["function"] for item in tool_json]
+                        chat_messages = _responses_to_chat_messages(messages)
+                        raw_resp = await client.chat.completions.create(
+                            model=model,
+                            messages=chat_messages,
+                            functions=functions,
+                            function_call="auto",
+                        )
+                        choice = raw_resp.choices[0]
+                        message_obj = getattr(choice, "message", None)
+                        final_text = getattr(message_obj, "content", None)
+                        response_output = []
+                        function_calls = []
+                        tool_calls = getattr(message_obj, "tool_calls", None) or []
+                        for tool_call in tool_calls:
+                            func = getattr(tool_call, "function", None)
+                            name = getattr(func, "name", getattr(tool_call, "name", None))
+                            arguments = getattr(func, "arguments", getattr(tool_call, "arguments", "{}"))
+                            call_id = getattr(tool_call, "id", None) or generate_message_id("fc")
+                            function_calls.append(
+                                SimpleNamespace(
+                                    name=name,
+                                    arguments=arguments,
+                                    call_id=call_id,
+                                )
+                            )
+                            response_output.append(
+                                {
+                                    "type": "function_call",
+                                    "id": call_id,
+                                    "call_id": call_id,
+                                    "name": name,
+                                    "arguments": arguments,
+                                }
+                            )
+                        if final_text:
+                            response_output.append(
+                                {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": final_text,
+                                    "id": generate_message_id(),
+                                }
+                            )
+                        resp = SimpleNamespace(
+                            output=response_output,
+                            usage=getattr(raw_resp, "usage", None),
+                        )
+
                 # Count reasoning blocks and extract token usage
                 reasoning_count = 0
-                if hasattr(resp, 'messages') and resp.messages:
+                if use_responses_api and hasattr(resp, 'messages') and resp.messages:
                     reasoning_count = sum(1 for msg in resp.messages if getattr(msg, 'type', None) == 'reasoning')
-                
+
                 # Add reasoning count and token usage to metadata
                 if reasoning_count > 0:
                     llm_metadata["reasoning_count"] = reasoning_count
@@ -392,9 +600,10 @@ async def plan_execute(
                                 record.total_tokens = llm_metadata.get("total_tokens")
                                 break
                 
-                # Extract function calls and final text from response
-                function_calls = extract_function_calls(resp)
-                final_text = extract_final_text(resp)
+                if use_responses_api:
+                    # Extract function calls and final text from response
+                    function_calls = extract_function_calls(resp)
+                    final_text = extract_final_text(resp)
             except Exception as err:
                 # Handle GPT-5 specific errors
                 error_msg = str(err)
@@ -430,10 +639,17 @@ async def plan_execute(
             # OpenAI handles all item types (message, function_call, reasoning, web_search_call)
             messages.extend(resp.output)
 
+            if not function_calls:
+                cleaned_final = (final_text or "").strip().lower()
+                intermediate_ack = cleaned_final in {"yes", "yeah", "yep", "yup", "sure", "no", "nope"}
+                if not intermediate_ack:
+                    log.debug("Final Messages: %s", messages)
+                    async with performance.track_operation("store_session"):
+                        store_session(mgr, session_key, messages, pending, focus)
+                    return final_text or "OK"
+
             # ---------- tool branch ----------
             if function_calls:
-                import asyncio
-                
                 # Phase 1: Validate all calls and check parallel execution rules
                 tasks_to_run = []  # List of (call, spec, args) tuples
                 validation_errors = []  # Track validation errors
@@ -446,199 +662,200 @@ async def plan_execute(
                         if not spec.can_run_parallel:
                             non_parallel_tools.append(call.name)
             
-            # If we have multiple calls and one cannot run in parallel, drop the non-parallel ones
-            if len(function_calls) > 1 and non_parallel_tools:
-                log.warning(
-                    "Tool(s) %s cannot run in parallel. LLM called %d tools. "
-                    "Dropping non-parallel tools and executing parallel-capable tools.",
-                    non_parallel_tools, len(function_calls)
-                )
-                # Drop non-parallel tools, keep parallel-capable ones
-                dropped_calls = [fc for fc in function_calls if fc.name in non_parallel_tools]
-                function_calls = [fc for fc in function_calls if fc.name not in non_parallel_tools]
-                
-                # Add error messages for dropped non-parallel tools
-                for dropped_call in dropped_calls:
-                    parallel_tools = [fc.name for fc in function_calls]
-                    validation_errors.append((
-                        dropped_call,
-                        f"Error: Tool '{dropped_call.name}' cannot run in parallel with other tools ({parallel_tools}). "
-                        f"First complete the parallel searches, then call '{dropped_call.name}' in the next turn."
-                    ))
-            
-            # Now validate each call
-            for call in function_calls:
-                call_name = call.name
-                raw_json = call.arguments or "{}"
-                canonical = (call_name, json.dumps(json.loads(raw_json), sort_keys=True))
+                # If we have multiple calls and one cannot run in parallel, drop the non-parallel ones
+                if len(function_calls) > 1 and non_parallel_tools:
+                    log.warning(
+                        "Tool(s) %s cannot run in parallel. LLM called %d tools. "
+                        "Dropping non-parallel tools and executing parallel-capable tools.",
+                        non_parallel_tools, len(function_calls)
+                    )
+                    # Drop non-parallel tools, keep parallel-capable ones
+                    dropped_calls = [fc for fc in function_calls if fc.name in non_parallel_tools]
+                    function_calls = [fc for fc in function_calls if fc.name not in non_parallel_tools]
 
-                # duplicate guard
-                if canonical in tried_calls:
-                    log.debug("Duplicate call blocked: %s", canonical)
-                    validation_errors.append((call, "Error: Duplicate call. Already tried this exact query."))
-                    continue
-                tried_calls.add(canonical)
+                    # Add error messages for dropped non-parallel tools
+                    for dropped_call in dropped_calls:
+                        parallel_tools = [fc.name for fc in function_calls]
+                        validation_errors.append((
+                            dropped_call,
+                            f"Error: Tool '{dropped_call.name}' cannot run in parallel with other tools ({parallel_tools}). "
+                            f"First complete the parallel searches, then call '{dropped_call.name}' in the next turn."
+                        ))
 
-                # validate
-                try:
-                    spec = spec_map[call_name]
-                    args = json.loads(raw_json)
-                    # Use custom validation if provided, otherwise skip validation
-                    if spec.validate:
-                        args = spec.validate(args)
-                    tasks_to_run.append((call, spec, args))
-                except Exception as err:
-                    log.debug("Validation error: %s", err)
-                    validation_errors.append((call, f"Error: Tool arguments were invalid: {err}"))
-                    continue
-            
-            # Add validation errors to messages immediately
-            for call, error_msg in validation_errors:
-                messages.append({
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": error_msg,
-                    "id": generate_message_id("fc")
-                })
-            
-            # Phase 2: Execute all valid calls in parallel
-            async def execute_tool(call, spec, args):
-                """Execute a single tool and return (call, result_or_error, is_error)"""
-                call_name = spec.name
-                log.debug("Action: %s %s", call_name, args)
-                try:
-                    async with performance.track_operation(
-                        f"tool_{call_name}",
-                        metadata={"args": str(args)[:200]}  # Truncate long args
-                    ):
-                        if hass and "hass" in inspect.signature(spec.func).parameters:
-                            call_args = {"hass": hass, **args}
-                            log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                            result = await spec.func(**call_args)
-                        else:
-                            call_args = args
-                            log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                            result = await spec.func(**call_args)
-                    log.debug("Tool_Result[%s]: %s", call_name, result)
-                    return (call, spec, args, result, False)
-                except Exception as err:
-                    log.error("Tool execution failed: %s", err)
-                    return (call, spec, args, f"Error: Tool failed: {err}", True)
-            
-            # Run all tools in parallel
-            if tasks_to_run:
-                if len(tasks_to_run) > 1:
-                    # Track parallel execution group
-                    parallel_id = str(id(tasks_to_run))
-                    async with performance.track_operation(
-                        f"parallel_tools_{len(tasks_to_run)}",
-                        metadata={"tools": [spec.name for _, spec, _ in tasks_to_run]}
-                    ):
+                # Now validate each call
+                for call in function_calls:
+                    call_name = call.name
+                    raw_json = call.arguments or "{}"
+                    canonical = (call_name, json.dumps(json.loads(raw_json), sort_keys=True))
+
+                    # duplicate guard
+                    if canonical in tried_calls:
+                        log.debug("Duplicate call blocked: %s", canonical)
+                        validation_errors.append((call, "Error: Duplicate call. Already tried this exact query."))
+                        continue
+                    tried_calls.add(canonical)
+
+                    # validate
+                    try:
+                        spec = spec_map[call_name]
+                        args = json.loads(raw_json)
+                        # Use custom validation if provided, otherwise skip validation
+                        if spec.validate:
+                            args = spec.validate(args)
+                        tasks_to_run.append((call, spec, args))
+                    except Exception as err:
+                        log.debug("Validation error: %s", err)
+                        validation_errors.append((call, f"Error: Tool arguments were invalid: {err}"))
+                        continue
+
+                # Add validation errors to messages immediately
+                for call, error_msg in validation_errors:
+                    messages.append({
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": error_msg,
+                        "id": generate_message_id("fc")
+                    })
+
+                # Phase 2: Execute all valid calls in parallel
+                async def execute_tool(call, spec, args):
+                    """Execute a single tool and return (call, result_or_error, is_error)"""
+                    call_name = spec.name
+                    log.debug("Action: %s %s", call_name, args)
+                    try:
+                        async with performance.track_operation(
+                            f"tool_{call_name}",
+                            metadata={"args": str(args)[:200]}  # Truncate long args
+                        ):
+                            if hass and "hass" in inspect.signature(spec.func).parameters:
+                                call_args = {"hass": hass, **args}
+                                log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                                result = await spec.func(**call_args)
+                            else:
+                                call_args = args
+                                log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                                result = await spec.func(**call_args)
+                        log.debug("Tool_Result[%s]: %s", call_name, result)
+                        return (call, spec, args, result, False)
+                    except Exception as err:
+                        log.error("Tool execution failed: %s", err)
+                        return (call, spec, args, f"Error: Tool failed: {err}", True)
+
+                # Run all tools in parallel
+                if tasks_to_run:
+                    if len(tasks_to_run) > 1:
+                        # Track parallel execution group
+                        parallel_id = str(id(tasks_to_run))
+                        async with performance.track_operation(
+                            f"parallel_tools_{len(tasks_to_run)}",
+                            metadata={"tools": [spec.name for _, spec, _ in tasks_to_run]}
+                        ):
+                            results = await asyncio.gather(
+                                *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
+                                return_exceptions=False
+                            )
+                    else:
+                        # Single tool, no parallel tracking needed
                         results = await asyncio.gather(
                             *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
                             return_exceptions=False
                         )
                 else:
-                    # Single tool, no parallel tracking needed
-                    results = await asyncio.gather(
-                        *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
-                        return_exceptions=False
-                    )
-            else:
-                results = []
-            
-            # Phase 3: Process results
-            all_results_success = len(validation_errors) == 0
-            has_prompt_response = False
-            prompt_result = None
-            
-            for call, spec, args, result, is_error in results:
-                call_name = spec.name
-                
-                if is_error:
-                    all_results_success = False
+                    results = []
+
+                # Phase 3: Process results
+                all_results_success = len(validation_errors) == 0
+                has_prompt_response = False
+                prompt_result = None
+
+                errors_encountered: List[str] = []
+
+                for call, spec, args, result, is_error in results:
+                    call_name = spec.name
+
+                    if is_error:
+                        all_results_success = False
+                        error_text = result if isinstance(result, str) else str(result)
+                        errors_encountered.append(error_text)
+                        messages.append({
+                            "type": "function_call_output",
+                            "call_id": call.call_id,
+                            "output": result,  # Already formatted as error string
+                            "id": generate_message_id("fc")
+                        })
+                        continue
+
+                    # Update focus tracking
+                    if call_name == "control_device":
+                        focus = {
+                            "targets": args["data"].get("entity_id", []),
+                            "action": args["service"],
+                        }
+                    elif isinstance(result, dict) and result.get("focus"):
+                        focus = result["focus"]
+
+                    # Append function call result in Responses API format
+                    result_str = summarize_result(result)
                     messages.append({
                         "type": "function_call_output",
                         "call_id": call.call_id,
-                        "output": result,  # Already formatted as error string
+                        "output": result_str,
                         "id": generate_message_id("fc")
                     })
-                    continue
 
-                # Update focus tracking
-                if call_name == "control_device":
-                    focus = {
-                        "targets": args["data"].get("entity_id", []),
-                        "action": args["service"],
-                    }
-                elif isinstance(result, dict) and result.get("focus"):
-                    focus = result["focus"]
-
-                # Append function call result in Responses API format
-                result_str = summarize_result(result)
-                messages.append({
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": result_str,
-                    "id": generate_message_id("fc")
-                })
-                
-                # Check if any result has a prompt response
-                if isinstance(result, dict) and "speak" in result:
-                    if has_prompt_response:
-                        # Multiple tools returned "speak" - this shouldn't happen!
-                        log.warning(
-                            "Multiple tools returned 'speak' in parallel: %s and %s",
-                            prompt_result.get("kind", "unknown"),
-                            result.get("kind", "unknown")
-                        )
-                        # Prioritize: confirm > ask_user > response
-                        result_kind = result.get("kind", "")
-                        current_kind = prompt_result.get("kind", "")
-                        if result_kind == "confirm" or (result_kind == "clarify" and current_kind == "response"):
+                    # Check if any result has a prompt response
+                    if isinstance(result, dict) and "speak" in result:
+                        if has_prompt_response:
+                            # Multiple tools returned "speak" in parallel - prioritize deterministic order
+                            log.warning(
+                                "Multiple tools returned 'speak' in parallel: %s and %s",
+                                prompt_result.get("kind", "unknown"),
+                                result.get("kind", "unknown")
+                            )
+                            result_kind = result.get("kind", "")
+                            current_kind = prompt_result.get("kind", "")
+                            if result_kind == "confirm" or (result_kind == "clarify" and current_kind == "response"):
+                                prompt_result = result
+                        else:
+                            has_prompt_response = True
                             prompt_result = result
-                    else:
-                        has_prompt_response = True
-                        prompt_result = result
-            
-            # If we got a prompt response, return it
-            if has_prompt_response:
-                store_session(mgr, session_key, messages, prompt_result.get("pending"), focus)
-                return {"prompt_payload": prompt_result, "messages": messages}
-            
-            # Continue the loop
-            depth += 1
-            if not all_results_success and retry_budget > 0:
-                retry_budget -= 1
-            elif retry_budget > 0:
-                retry_budget -= 1
-            
-            if retry_budget < 0:
-                # Give up and ask for final response
-                messages.append({
-                    "role": "user",
-                    "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response.",
-                    "id": generate_message_id()
-                })
-                depth += 1
-            
-            # Check if we're about to hit depth limit - give one final turn
-            if depth >= max_depth:
-                log.warning("Depth limit reached. Requesting final response.")
-                messages.append({
-                    "role": "user",
-                    "content": "Iteration limit reached. Call prepare_voice_response now with a brief apology and suggest rephrasing the request.",
-                    "id": generate_message_id()
-                })
-                max_depth += 1  # Allow one final iteration
-            
-            continue
 
-            # ---------- final answer ----------
-            log.debug("Final Messages: %s", messages)
-            async with performance.track_operation("store_session"):
-                store_session(mgr, session_key, messages, None, focus)
-            return final_text or "OK"
+                # If we got a prompt response, return it
+                if has_prompt_response:
+                    store_session(mgr, session_key, messages, prompt_result.get("pending"), focus)
+                    return {"prompt_payload": prompt_result, "messages": messages}
+
+                # If every tool invocation failed, surface the first error immediately
+                if errors_encountered and len(errors_encountered) == len(results):
+                    log.warning(
+                        "All tool calls failed in this iteration: %s", errors_encountered[0]
+                    )
+                    store_session(mgr, session_key, messages, pending, focus)
+                    return errors_encountered[0]
+
+                # Continue the loop
+                depth += 1
+                if not all_results_success and retry_budget > 0:
+                    retry_budget -= 1
+                elif retry_budget > 0:
+                    retry_budget -= 1
+
+                if retry_budget < 0:
+                    # Give up and ask for final response
+                    messages.append({
+                        "role": "user",
+                        "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response.",
+                        "id": generate_message_id()
+                    })
+                    depth += 1
+
+                # Check if we're about to hit depth limit - give one final turn
+                if depth >= max_depth:
+                    log.warning("Depth limit reached. Requesting final response.")
+                    store_session(mgr, session_key, messages, pending, focus)
+                    return "Depth limit reached. Please try again."
+
+                continue
 
         # Fallback if loop exits without returning (shouldn't happen)
         log.error("Agent loop exited without response")

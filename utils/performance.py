@@ -282,7 +282,7 @@ def write_csv(path: Optional[Path] = None) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Check if file exists to determine if we need headers
-    file_exists = output_path.exists()
+    file_exists = output_path.exists() and output_path.stat().st_size > 0
     
     with open(output_path, "a", newline="", encoding="utf-8") as f:
         fieldnames = [
@@ -310,7 +310,7 @@ def write_csv(path: Optional[Path] = None) -> None:
         if not file_exists:
             writer.writeheader()
         
-        for record in _timing_records:
+        for record in sorted(_timing_records, key=lambda r: r.start_time):
             writer.writerow({
                 "timestamp": record.timestamp,
                 "request_id": record.request_id,
