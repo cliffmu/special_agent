@@ -28,6 +28,46 @@ def generate_message_id(msg_type: str = "msg") -> str:
     return f"{msg_type}_{uuid.uuid4().hex[:16]}"
 
 
+async def get_device_context(hass: Any | None, session_key: tuple[str, str] | None) -> Dict[str, str | None]:
+    """
+    Get device name and room from session key (only if available).
+    
+    Returns:
+        Dict with 'device_name' and 'room' keys (None if not found)
+    """
+    if not session_key or not hass:
+        return {"device_name": None, "room": None}
+    
+    conversation_id, device_id = session_key
+    
+    # Skip if no device_id provided
+    if not device_id or device_id == "":
+        return {"device_name": None, "room": None}
+    
+    try:
+        from homeassistant.helpers import device_registry as dr, area_registry as ar
+        
+        dev_reg = dr.async_get(hass)
+        area_reg = ar.async_get(hass)
+        
+        # Search devices by name match
+        for dev in dev_reg.devices.values():
+            dev_name = (dev.name_by_user or dev.name or "").lower()
+            if device_id.lower() in dev_name:
+                device_name = dev.name_by_user or dev.name
+                if dev.area_id:
+                    area = area_reg.async_get_area(dev.area_id)
+                    return {"device_name": device_name, "room": area.name if area else None}
+                return {"device_name": device_name, "room": None}
+        
+        # Not found - return None (skip device context in prompt)
+        return {"device_name": None, "room": None}
+    
+    except Exception as e:
+        log.warning("Could not get device context: %s", e)
+        return {"device_name": None, "room": None}
+
+
 def load_session(
     hass: Any | None,
     session_key: tuple[str, str] | None,
@@ -49,6 +89,10 @@ def load_session(
                 msgs = []
                 for msg in session.messages:
                     if isinstance(msg, dict):
+                        # SKIP old system prompt - we'll prepend fresh one
+                        if msg.get("role") == "system":
+                            continue
+                        
                         # Remove output-only fields but KEEP id
                         clean_msg = {k: v for k, v in msg.items() if k not in ('status', 'encrypted_content')}
                         # Ensure message has an id (add one if missing from old sessions)
@@ -59,6 +103,11 @@ def load_session(
                         msgs.append(clean_msg)
                     else:
                         msgs.append(msg)
+                
+                # PREPEND fresh system prompt (with updated datetime, device context, etc.)
+                fresh_system = {"role": "system", "content": system_prompt, "id": generate_message_id()}
+                msgs.insert(0, fresh_system)
+                
                 # Focus tracking for future features (not currently used in prompts)
                 focus = session.focus
                 pending = session.pending

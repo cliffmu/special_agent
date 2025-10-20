@@ -343,6 +343,8 @@ async def plan_execute(
 
     # ---- build system prompt ----
     from .utils.vector_index import async_load_vector_meta, DEFAULT_DEVICE_PERSIST_DIR
+    from .utils.session_helpers import get_device_context
+    
     meta = await async_load_vector_meta(persist_dir=DEFAULT_DEVICE_PERSIST_DIR, hass=hass)
     area_summary = meta.get("area_summary", {}) if isinstance(meta, dict) else {}
     platform_summary = meta.get("platform_summary", {}) if isinstance(meta, dict) else {}
@@ -353,7 +355,7 @@ async def plan_execute(
         goals_fmt = "\n".join(f"{idx+1}. {g}" for idx, g in enumerate(goals))
         goals_block = f"\nGOALS:\n{goals_fmt}\n"
 
-    # Add current date/time context with timezone
+    # Add current date/time context with timezone (refreshed every LLM call)
     current_datetime = datetime.now()
     date_str = current_datetime.strftime("%A, %B %d, %Y")
     time_str = current_datetime.strftime("%I:%M %p %Z")
@@ -363,6 +365,11 @@ async def plan_execute(
         tz_name = time.tzname[time.daylight]
         time_str = current_datetime.strftime("%I:%M %p") + f" {tz_name}"
     current_year = current_datetime.year
+    
+    # Get device context (room and name) - only if available
+    device_ctx = await get_device_context(hass, session_key)
+    device_name = device_ctx.get("device_name")
+    device_room = device_ctx.get("room")
     
     # Build confirmation-specific instructions
     confirmation_instructions = ""
@@ -383,10 +390,21 @@ async def plan_execute(
         )
         parallel_execution_note = "- NEVER call ask_user or prepare_voice_response in parallel with other tools - they are final-step tools\n"
     
+    # Build device context block (only if device found)
+    device_context_block = ""
+    if device_name and device_room:
+        device_context_block = (
+            f"\nDEVICE CONTEXT:\n"
+            f"- User is speaking through: {device_name}\n"
+            f"- Device location: {device_room}\n"
+            f"- If user doesn't specify a room (e.g., 'turn on the lights'), assume {device_room}\n"
+        )
+    
     system_prompt = (
         f"CURRENT DATE & TIME: {date_str} at {time_str}\n"
         f"Current year: {current_year} - When dates are mentioned without a year, assume this year\n"
         "Knowledge cutoff: October 2024.\n"
+        f"{device_context_block}"
         "You are Special Agent, a smarthome AI.\n"
         "When you call any tool you MUST include a line that begins with 'Thought:' summarising why you are calling the tool.\n"
         "CRITICAL: Do NOT write tool_calls as JSON text in your message content - use the actual tool_calls parameter that OpenAI provides.\n"
