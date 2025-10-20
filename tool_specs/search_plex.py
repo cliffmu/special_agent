@@ -53,4 +53,5 @@ SPEC = ToolSpec(
     returns="{hits: array, error: string|null}",
     func=search_plex,
     can_run_parallel=True,
+    can_run_in_sequence=True,
 )

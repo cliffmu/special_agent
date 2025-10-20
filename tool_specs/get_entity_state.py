@@ -89,4 +89,5 @@ SPEC = ToolSpec(
     returns="dict of {entity_id: {state, available, ...attributes}}",
     func=get_entity_state,
     can_run_parallel=True,  # Read-only operation - safe for parallel execution
+    can_run_in_sequence=True,
 )

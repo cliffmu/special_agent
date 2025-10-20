@@ -168,5 +168,6 @@ SPEC = ToolSpec(
     returns="dict with status, method, state",
     func=play_plex_media,
     can_run_parallel=False,
+    can_run_in_sequence=True,
 )
 

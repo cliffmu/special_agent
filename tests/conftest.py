@@ -30,6 +30,7 @@ sys.modules.setdefault("homeassistant.helpers.intent", helpers.intent)
 const_mod = types.ModuleType("homeassistant.const")
 const_mod.EVENT_HOMEASSISTANT_STOP = "stop"
 sys.modules.setdefault("homeassistant.const", const_mod)
+sys.modules.setdefault("voluptuous", MagicMock())
 
 
 @pytest.fixture

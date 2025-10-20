@@ -117,4 +117,5 @@ SPEC = ToolSpec(
     returns="list of device info dicts with entity_id, domain, area_id, friendly_name, platform, attribute_keys",
     func=search_devices,
     can_run_parallel=True,
+    can_run_in_sequence=True,
 )

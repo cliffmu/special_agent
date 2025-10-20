@@ -6,7 +6,7 @@ Key fits with current codebase:
 
 * Tools live in **`tool_specs/`** and are auto-registered by your agent loader.
 * Device/entity search already uses **`utils/vector_index.py`**; extend it to also back a **scenes** index without breaking existing device behavior.
-* `run_sequence` (or equivalent) executes ordered steps (service calls, waits, delays); keep it as the single executor.
+* `run_sequence` (or equivalent) executes ordered steps (service calls, tool invocations, waits, delays); keep it as the single executor.
 * Remove legacy **preferences** tools once memory is in place.
 
 ---
@@ -483,6 +483,33 @@ SCENE MEMORY:
 * [ ] Post-condition checks work with configurable timeout
 * [ ] Timeouts are logged and result in fail outcome
 * [ ] Step results include verification status
+
+---
+
+### Tool calls within run_sequence
+
+**Goal:** Allow learned scenes to invoke vetted tools (search, playback, state reads) without extra LLM calls.
+
+**Step format:**
+```json
+{
+  "type": "tool_call",
+  "tool": "search_spotify",
+  "args": {"query": "Morning Jazz"},
+  "result_var": "spotify_uri",
+  "result_path": "uri",
+  "expect": {"path": "uri", "exists": true}
+}
+```
+
+**Rules:**
+
+- Only tools with `can_run_in_sequence=True` are accepted when saving scenes.
+- `result_var` stores either the full result or the nested value from `result_path` (dot syntax, list indexes allowed).
+- `expect` supports `equals`, `not_equals`, `contains`, and `exists` checks to auto-validate tool output before continuing.
+- Guard fields (`only_if`, `only_if_state`) work the same as service steps.
+
+**Outcome:** Failed expectations abort the sequence so the agent can revise and resave the scene.
 
 ---
 
