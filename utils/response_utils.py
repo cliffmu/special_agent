@@ -103,69 +103,6 @@ def summarize_result(result: Any) -> str:
         return f"(summary error: {err})"
 
 
-def responses_to_chat_messages(messages: List[Any]) -> List[Dict[str, Any]]:
-    """Convert Responses-style messages to Chat Completions format."""
-
-    chat_messages: List[Dict[str, Any]] = []
-
-    for msg in messages:
-        if hasattr(msg, "model_dump"):
-            data = msg.model_dump()
-        elif hasattr(msg, "dict"):
-            data = msg.dict()
-        elif isinstance(msg, dict):
-            data = dict(msg)
-        else:
-            # Fallback: assume already a chat message dict
-            if isinstance(msg, list):  # pragma: no cover - defensive
-                continue
-            chat_messages.append(msg)
-            continue
-
-        msg_type = data.get("type")
-        if msg_type == "function_call":
-            chat_messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": data.get("call_id") or data.get("id"),
-                            "type": "function",
-                            "function": {
-                                "name": data.get("name"),
-                                "arguments": data.get("arguments", "{}"),
-                            },
-                        }
-                    ],
-                }
-            )
-        elif msg_type == "function_call_output":
-            chat_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": data.get("call_id"),
-                    "content": data.get("output", ""),
-                }
-            )
-        elif msg_type == "message":
-            chat_messages.append(
-                {
-                    "role": data.get("role", "assistant"),
-                    "content": data.get("content"),
-                }
-            )
-        else:
-            role = data.get("role")
-            if role:
-                chat_entry: Dict[str, Any] = {"role": role, "content": data.get("content")}
-                if "tool_calls" in data:
-                    chat_entry["tool_calls"] = data["tool_calls"]
-                chat_messages.append(chat_entry)
-
-    return chat_messages
-
-
 @dataclass
 class ToolExecutionResult:
     """Result of tool execution phase."""

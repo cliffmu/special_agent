@@ -15,12 +15,10 @@ except Exception:  # pragma: no cover - openai optional
     AsyncOpenAI = None  # type: ignore
 
 try:
-    from .response_utils import extract_function_calls, extract_final_text, responses_to_chat_messages
-    from .session_helpers import generate_message_id
+    from .response_utils import extract_function_calls, extract_final_text
     from . import logging as log
 except ImportError:
-    from utils.response_utils import extract_function_calls, extract_final_text, responses_to_chat_messages
-    from utils.session_helpers import generate_message_id
+    from utils.response_utils import extract_function_calls, extract_final_text
     from utils import logging as log
 
 _CLIENT: Any | None = None
@@ -60,12 +58,12 @@ async def call_llm(
     reasoning_effort: str,
     depth: int
 ) -> LLMResponse:
-    """Call LLM with appropriate API and return normalized response.
+    """Call LLM using OpenAI Responses API and return normalized response.
     
     Args:
         client: AsyncOpenAI client instance
         messages: Conversation history
-        tools: Tool specifications in OpenAI format
+        tools: Tool specifications in OpenAI format (nested with 'function' key)
         model: Model name (e.g., "gpt-5", "gpt-4")
         reasoning_effort: Reasoning level ("minimal", "low", "medium", "high")
         depth: Current loop depth (for logging)
@@ -81,105 +79,43 @@ async def call_llm(
         instructions = messages[0].get("content")
         input_messages = messages[1:]
     
-    # Check if client supports Responses API
-    responses_api = getattr(client, "responses", None)
-    use_responses_api = bool(responses_api) and hasattr(responses_api, "create")
+    # Responses API expects flattened tool format: {type, name, description, parameters}
+    # Convert from Chat format: {type, function: {name, description, parameters}}
+    flattened_tools = []
+    for tool in tools:
+        if tool.get("type") == "function" and "function" in tool:
+            func = tool["function"]
+            flattened_tools.append({
+                "type": "function",
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "parameters": func.get("parameters", {}),
+            })
+        else:
+            # Already flattened or different type
+            flattened_tools.append(tool)
     
-    # Call appropriate API
-    if use_responses_api:
-        # Responses API expects flattened tool format: {type, name, description, parameters}
-        # Convert from Chat format: {type, function: {name, description, parameters}}
-        flattened_tools = []
-        for tool in tools:
-            if tool.get("type") == "function" and "function" in tool:
-                func = tool["function"]
-                flattened_tools.append({
-                    "type": "function",
-                    "name": func.get("name"),
-                    "description": func.get("description"),
-                    "parameters": func.get("parameters", {}),
-                })
-            else:
-                # Already flattened or different type
-                flattened_tools.append(tool)
-        
-        # Add built-in web_search
-        tools_with_search = flattened_tools + [{"type": "web_search"}]
-        
-        resp = await client.responses.create(
-            model=model,
-            instructions=instructions,
-            input=input_messages,
-            tools=tools_with_search,
-            tool_choice="auto",
-            reasoning={"effort": reasoning_effort},
-        )
-        response_output = list(getattr(resp, "output", []))
-        function_calls = extract_function_calls(resp)
-        final_text = extract_final_text(resp)
-    else:
-        # Fallback to Chat Completions API
-        functions = [item["function"] for item in tools]
-        chat_messages = responses_to_chat_messages(messages)
-        raw_resp = await client.chat.completions.create(
-            model=model,
-            messages=chat_messages,
-            functions=functions,
-            function_call="auto",
-        )
-        
-        # Extract data from Chat API response
-        choice = raw_resp.choices[0]
-        message_obj = getattr(choice, "message", None)
-        final_text = getattr(message_obj, "content", None)
-        response_output = []
-        function_calls = []
-        
-        # Process tool calls
-        tool_calls = getattr(message_obj, "tool_calls", None) or []
-        for tool_call in tool_calls:
-            func = getattr(tool_call, "function", None)
-            name = getattr(func, "name", getattr(tool_call, "name", None))
-            arguments = getattr(func, "arguments", getattr(tool_call, "arguments", "{}"))
-            call_id = getattr(tool_call, "id", None) or generate_message_id("fc")
-            function_calls.append(
-                SimpleNamespace(
-                    name=name,
-                    arguments=arguments,
-                    call_id=call_id,
-                )
-            )
-            response_output.append(
-                {
-                    "type": "function_call",
-                    "id": call_id,
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": arguments,
-                }
-            )
-        
-        # Add final text if present
-        if final_text:
-            response_output.append(
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": final_text,
-                    "id": generate_message_id(),
-                }
-            )
-        
-        # Normalize response to Responses API format
-        resp = SimpleNamespace(
-            output=response_output,
-            usage=getattr(raw_resp, "usage", None),
-            messages=getattr(raw_resp, "messages", None),  # For reasoning count
-        )
+    # Add built-in web_search
+    tools_with_search = flattened_tools + [{"type": "web_search"}]
+    
+    # Call Responses API
+    resp = await client.responses.create(
+        model=model,
+        instructions=instructions,
+        input=input_messages,
+        tools=tools_with_search,
+        tool_choice="auto",
+        reasoning={"effort": reasoning_effort},
+    )
+    
+    # Extract response data
+    response_output = list(getattr(resp, "output", []))
+    function_calls = extract_function_calls(resp)
+    final_text = extract_final_text(resp)
     
     # Extract metrics
     reasoning_count = 0
-    if use_responses_api and hasattr(resp, 'messages') and resp.messages:
+    if hasattr(resp, 'messages') and resp.messages:
         reasoning_count = sum(1 for msg in resp.messages if getattr(msg, 'type', None) == 'reasoning')
     
     usage_dict = {}
