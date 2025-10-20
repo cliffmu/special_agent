@@ -250,7 +250,8 @@ async def load_all_tools(hass: Any = None, config: Dict = None) -> Dict[str, Too
         Dict mapping tool names to ToolSpec objects
     """
     tools = {}
-    base_package = __package__.split('.')[0] if __package__ else ""
+    # Get parent package (e.g., "custom_components.special_agent" from "custom_components.special_agent.utils")
+    base_package = '.'.join(__package__.split('.')[:-1]) if __package__ else ""
     
     for mod_name in get_tool_module_names(config):
         # Build full module path
