@@ -14,8 +14,18 @@ PARAMS = {
     "type": "object",
     "properties": {
         "entity_ids": {
-            "type": "string",
-            "description": "Entity ID or comma-separated list of entity IDs"
+            "oneOf": [
+                {
+                    "type": "string",
+                    "description": "Entity ID or comma-separated list of entity IDs"
+                },
+                {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of entity IDs"
+                },
+            ],
+            "description": "Entity ID(s) to query"
         },
         "attributes": {
             "type": "array",
@@ -28,7 +38,7 @@ PARAMS = {
 
 
 async def get_entity_state(
-    entity_ids: str,
+    entity_ids: str | List[str],
     attributes: List[str] | None = None,
     hass: Any | None = None,
 ) -> Dict[str, Any]:
@@ -37,11 +47,28 @@ async def get_entity_state(
     When ``attributes`` is ``None`` all available attributes from the
     entity's state are returned.
     """
-    # Parse comma-separated entity IDs
-    if "," in entity_ids:
-        entity_ids_list = [eid.strip() for eid in entity_ids.split(",")]
+    # Parse entity IDs provided as string, comma-separated string, or list-like
+    entity_ids_list: List[str] = []
+    if isinstance(entity_ids, str):
+        parts = [part.strip() for part in entity_ids.split(",")]
+        entity_ids_list.extend([part for part in parts if part])
+    elif isinstance(entity_ids, (list, tuple, set)):
+        for item in entity_ids:
+            if not item:
+                continue
+            if isinstance(item, str):
+                trimmed = item.strip()
+            else:
+                trimmed = str(item).strip()
+            if trimmed:
+                entity_ids_list.append(trimmed)
     else:
-        entity_ids_list = [entity_ids]
+        trimmed = str(entity_ids).strip()
+        if trimmed:
+            entity_ids_list.append(trimmed)
+
+    if not entity_ids_list:
+        raise ValueError("No valid entity_ids provided")
     result: Dict[str, Any] = {}
     hass_states = getattr(hass, "states", None)
     get_state = getattr(hass_states, "get", None) if hass_states else None
@@ -63,13 +90,11 @@ async def get_entity_state(
                     attrs[k] = val
         
         entity_result = {"state": state.state, **attrs}
-        
-        # Add helpful flags for common states
+
+        # Flag unavailable states explicitly without adding noise for normal cases
         if state.state in ("unavailable", "unknown"):
             entity_result["available"] = False
-        else:
-            entity_result["available"] = True
-            
+
         result[eid] = entity_result
     log.debug("get_entity_state -> %s", result)
     return result
@@ -89,4 +114,5 @@ SPEC = ToolSpec(
     returns="dict of {entity_id: {state, available, ...attributes}}",
     func=get_entity_state,
     can_run_parallel=True,  # Read-only operation - safe for parallel execution
+    can_run_in_sequence=True,
 )

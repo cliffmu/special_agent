@@ -9,20 +9,60 @@ import json
 def extract_function_calls(resp: Any) -> list:
     """Extract function_call items from Responses API output."""
     function_calls = []
-    for item in resp.output:
-        if getattr(item, 'type', None) == 'function_call':
-            function_calls.append(item)
-    return function_calls
+    output = getattr(resp, "output", None)
+    if output:
+        for item in output:
+            if getattr(item, "type", None) == "function_call":
+                function_calls.append(item)
+        if function_calls:
+            return function_calls
+
+    choices = getattr(resp, "choices", None)
+    if choices:
+        from types import SimpleNamespace
+
+        for choice in choices:
+            message = getattr(choice, "message", None)
+            if not message:
+                continue
+            tool_calls = getattr(message, "tool_calls", None) or []
+            for tool_call in tool_calls:
+                func = getattr(tool_call, "function", None)
+                name = getattr(func, "name", getattr(tool_call, "name", None))
+                arguments = getattr(func, "arguments", getattr(tool_call, "arguments", "{}"))
+                call_id = getattr(tool_call, "id", None)
+                function_calls.append(
+                    SimpleNamespace(
+                        name=name,
+                        arguments=arguments,
+                        call_id=call_id,
+                    )
+                )
+        return function_calls
+
+    return []
 
 
 def extract_final_text(resp: Any) -> str | None:
     """Extract final text response from Responses API output."""
-    for item in resp.output:
-        if getattr(item, 'type', None) == 'message':
-            content_items = getattr(item, 'content', [])
-            for content_item in content_items:
-                if getattr(content_item, 'type', None) == 'output_text':
-                    return getattr(content_item, 'text', None)
+    output = getattr(resp, "output", None)
+    if output:
+        for item in output:
+            if getattr(item, "type", None) == "message":
+                content_items = getattr(item, "content", [])
+                if isinstance(content_items, list):
+                    for content_item in content_items:
+                        if getattr(content_item, 'type', None) == 'output_text':
+                            return getattr(content_item, 'text', None)
+                else:
+                    return getattr(item, "content", None)
+
+    choices = getattr(resp, "choices", None)
+    if choices:
+        for choice in choices:
+            message = getattr(choice, "message", None)
+            if message and getattr(message, "content", None):
+                return message.content
     return None
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Iterator
 
 from . import logging as log
+from .tool_registry import get_sequence_safe_tool_specs
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -300,7 +301,9 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
     """
     normalized_steps = []
     validation_errors = []
-    
+
+    sequence_tools = get_sequence_safe_tool_specs()
+
     for idx, s in enumerate(steps):
         if isinstance(s, str):
             validation_errors.append(f"Step {idx}: String steps not supported")
@@ -376,15 +379,67 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
                 if not isinstance(guard, dict) or "entity_id" not in guard:
                     validation_errors.append(f"Step {idx}: only_if_state guard missing entity_id")
                     del normalized["only_if_state"]
+        elif s.get("type") == "tool_call" or ("tool" in s and s.get("type") is None):
+            tool_name = s.get("tool")
+            if not isinstance(tool_name, str) or not tool_name:
+                validation_errors.append(f"Step {idx}: tool_call missing 'tool' name")
+                continue
+
+            if tool_name not in sequence_tools:
+                validation_errors.append(
+                    f"Step {idx}: tool '{tool_name}' is not allowed in run_sequence scenes"
+                )
+                continue
+
+            normalized["type"] = "tool_call"
+            normalized["tool"] = tool_name
+
+            args = s.get("args", {})
+            if args is None:
+                args = {}
+            if not isinstance(args, dict):
+                validation_errors.append(f"Step {idx}: tool_call 'args' must be an object")
+                continue
+            normalized["args"] = args
+
+            result_var = s.get("result_var")
+            if result_var is not None:
+                if isinstance(result_var, str) and result_var.strip():
+                    normalized["result_var"] = result_var.strip()
+                else:
+                    validation_errors.append(f"Step {idx}: result_var must be a non-empty string")
+
+            if "result_path" in s:
+                result_path = s.get("result_path")
+                if isinstance(result_path, str) and result_path.strip():
+                    if "result_var" not in normalized:
+                        validation_errors.append(
+                            f"Step {idx}: result_path provided but result_var missing"
+                        )
+                    normalized["result_path"] = result_path.strip()
+                else:
+                    validation_errors.append(f"Step {idx}: result_path must be a non-empty string if provided")
+
+            if "expect" in s:
+                expect = s["expect"]
+                if isinstance(expect, dict):
+                    normalized["expect"] = expect
+                else:
+                    validation_errors.append(f"Step {idx}: expect must be an object if provided")
+                    continue
+
+            if "only_if" in s:
+                normalized["only_if"] = s["only_if"]
+            if "only_if_state" in s:
+                normalized["only_if_state"] = s["only_if_state"]
         # Reject invalid types with helpful messages
         elif s.get("type") == "wait_state":
             validation_errors.append(f"Step {idx}: wait_state not allowed - use delay instead")
             continue
-        elif s.get("type") in ["play_plex_media", "search_devices", "get_entity_state"]:
-            validation_errors.append(f"Step {idx}: {s.get('type')} is a TOOL call, not a service call - exclude from scene")
-            continue
         else:
-            validation_errors.append(f"Step {idx}: Unknown step type '{s.get('type', 'missing')}' - use service_call or delay")
+            validation_errors.append(
+                f"Step {idx}: Unknown step type '{s.get('type', 'missing')}' - use service_call, delay, or tool_call"
+            )
             continue
         
         normalized_steps.append(normalized)

@@ -241,10 +241,28 @@ def build_device_index(
     return matrix, docs
 
 
+def _resolve_index_dir(persist_dir: str) -> str:
+    """Resolve device index directory, handling legacy env paths."""
+
+    direct_path = persist_dir
+    nested_path = os.path.join(persist_dir, "devices")
+    parent_path = os.path.dirname(persist_dir)
+    if os.path.exists(os.path.join(direct_path, "matrix.npy")):
+        return direct_path
+    if os.path.exists(os.path.join(nested_path, "matrix.npy")):
+        return nested_path
+    if os.path.basename(direct_path) == "devices" and os.path.exists(
+        os.path.join(parent_path, "matrix.npy")
+    ):
+        return parent_path
+    return direct_path
+
+
 def load_device_index(
     persist_dir: str = DEFAULT_DEVICE_PERSIST_DIR,
 ) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
     """Load a previously built device/entity index if available."""
+    persist_dir = _resolve_index_dir(persist_dir)
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
     log.debug("load_device_index from %s", persist_dir)
@@ -267,6 +285,7 @@ async def async_load_device_index(
     hass: Any | None = None,
 ) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
     """Asynchronously load a previously built device/entity index if available."""
+    persist_dir = _resolve_index_dir(persist_dir)
     index_file = os.path.join(persist_dir, "matrix.npy")
     mapping_file = os.path.join(persist_dir, "mapping.json")
     log.debug("async_load_device_index from %s", persist_dir)
