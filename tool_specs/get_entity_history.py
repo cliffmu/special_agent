@@ -45,7 +45,17 @@ PARAMS = {
     "type": "object",
     "properties": {
         "entity_id": {
-            "type": "string",
+            "oneOf": [
+                {
+                    "type": "string",
+                    "description": "Entity ID to get history for"
+                },
+                {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of entity IDs (first item is used)"
+                },
+            ],
             "description": "Entity ID to get history for"
         },
         "lookback_hours": {
@@ -79,7 +89,7 @@ PARAMS = {
 
 
 async def get_entity_history(
-    entity_id: str,
+    entity_id: str | List[str],
     lookback_hours: int = 24,
     start_iso: str | None = None,
     end_iso: str | None = None,
@@ -94,7 +104,9 @@ async def get_entity_history(
     """
     if get_significant_states is None:
         raise RuntimeError("history component not available")
-    # entity_id is now always a string, no parsing needed
+    # entity_id may be provided as list from legacy scenes/tests - use first element
+    if isinstance(entity_id, list):
+        entity_id = entity_id[0] if entity_id else ""
     if start_iso or end_iso:
         start = parse_datetime(start_iso) if start_iso else None
         end = parse_datetime(end_iso) if end_iso else None
@@ -127,4 +139,5 @@ SPEC = ToolSpec(
     returns="list of dict(state, when)",
     func=get_entity_history,
     can_run_parallel=True,  # Read-only operation - safe for parallel execution
+    can_run_in_sequence=True,
 )

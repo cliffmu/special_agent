@@ -115,7 +115,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Performance tracking DISABLED")
     
     # Register update listener for when options change
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    add_listener = getattr(entry, "add_update_listener", None)
+    on_unload = getattr(entry, "async_on_unload", None)
+    if callable(add_listener) and callable(on_unload):
+        on_unload(add_listener(async_reload_entry))
     
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
