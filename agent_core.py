@@ -4,11 +4,10 @@ from __future__ import annotations
 import inspect
 import json
 import importlib
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional
 import os
 import time
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import voluptuous as vol
 
@@ -26,23 +25,19 @@ try:
     from .utils.session_helpers import load_session, store_session, clear_session, generate_message_id
     from .utils.response_utils import extract_function_calls, extract_final_text, summarize_result
     from .utils import performance
+    from .utils import tool_registry as _tool_registry
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
     from utils.session_helpers import load_session, store_session, clear_session, generate_message_id
     from utils.response_utils import extract_function_calls, extract_final_text, summarize_result
     from utils import performance
+    from utils import tool_registry as _tool_registry
     DOMAIN = "special_agent"
 
-# ----------  data classes ----------
-@dataclass
-class ToolSpec:
-    name: str
-    description: str
-    parameters: dict  # JSON schema (OpenAI format)
-    returns: str | None
-    func: Callable[..., Awaitable[Any]]
-    validate: Callable[[dict], dict] | None = None  # Optional validation function
-    can_run_parallel: bool = True  # Can this tool run concurrently with others?
+ToolSpec = _tool_registry.ToolSpec
+register_tool_spec = _tool_registry.register_tool_spec
+get_registered_tool_specs = _tool_registry.get_registered_tool_specs
+get_sequence_safe_tool_specs = _tool_registry.get_sequence_safe_tool_specs
 
 # ----------  agent ----------
 class Agent:
@@ -131,6 +126,7 @@ class Agent:
 
     def register_tool(self, spec: ToolSpec) -> None:
         self.tools[spec.name] = spec
+        register_tool_spec(spec)
         log.info("Tool registered: %s", spec.name)
 
     # —— entry‑point ——

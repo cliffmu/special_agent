@@ -127,4 +127,5 @@ SPEC = ToolSpec(
     returns="list of dict(state, when)",
     func=get_entity_history,
     can_run_parallel=True,  # Read-only operation - safe for parallel execution
+    can_run_in_sequence=True,
 )
