@@ -52,22 +52,20 @@ async def run_sequence(
 SPEC = ToolSpec(
     name="run_sequence",
     description=(
-        "Execute multi-step sequence (typically from get_scene). Call in CALL-2 after gathering scene+variables.\n\n"
-        "TYPICAL FLOW:\n"
-        "Call-1: get_scene + search_plex + search_devices (parallel)\n"
-        "Call-2: run_sequence(scene.commands_list, vars={rating_key, plex_client}) + prepare_voice_response\n\n"
+        "Execute multi-step sequence with service calls, tool calls, delays, and guards. "
+        "Guards skip steps instantly (~1ms check).\n\n"
         "STEP FORMATS:\n"
         "1) Service: {\"type\":\"service_call\",\"service\":\"light.turn_on\",\"data\":{\"entity_id\":\"...\"}} \n"
         "2) Delay: {\"type\":\"delay\",\"seconds\":8} \n"
-        "3) Tool: {\"type\":\"tool_call\",\"tool\":\"play_plex_media\",\"args\":{...},\"result_var\":\"status\"} \n"
-        "4) State guard: {...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"not_in\":[\"idle\",\"playing\"]}}\n"
-        "5) Attribute guard: {...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"attribute\":\"app_name\",\"not_equals\":\"Plex\"}}\n\n"
-        "GUARDS (instant, zero LLM overhead):\n"
+        "3) Tool: {\"type\":\"tool_call\",\"tool\":\"<sequence-safe-tool>\",\"args\":{...},\"result_var\":\"x\",\"result_path\":\"x.y\"} \n"
+        "4) Guard: {...,\"only_if_state\":{\"entity_id\":\"media_player.tv\",\"attribute\":\"app_name\",\"not_equals\":\"Plex\"}}\n\n"
+        "GUARDS (checked internally, zero LLM overhead):\n"
         "- State: \\\"in\\\":[...] or \\\"not_in\\\":[...] checks entity.state\n"
         "- Attribute: \\\"attribute\\\":\\\"app_name\\\", then \\\"equals\\\"/\\\"not_equals\\\"/\\\"in\\\"/\\\"not_in\\\"\n"
-        "- Checked via hass.states.get() (~1-2ms)\n"
-        "- Returns status='skipped' for guarded steps (saves time)\n\n"
-        "TOOL CALLS: Only sequence-safe tools allowed. result_var stores output for ${substitution}.\n\n"
+        "- Returns status='skipped' for guarded steps\n\n"
+        "TOOL CALLS:\n"
+        "- Only tools explicitly flagged as sequence-safe may run here (validated on save)\n"
+        "- Use 'expect' ({path, equals/not_equals/contains/exists}) to auto-verify outputs\n\n"
         "Returns: dict with steps[], each with status='ok'/'skipped'/'error'/'timeout'"
     ),
     parameters=PARAMS,
