@@ -153,16 +153,15 @@ async def play_plex_media(
 SPEC = ToolSpec(
     name="play_plex_media",
     description=(
-        "Push Plex content to client. Does NOT handle setup - agent must power on, open Plex app first.\n\n"
-        "WORKFLOW:\n"
-        "1. search_devices(platform='plex', area=ROOM) → get plex_client_entity\n"
-        "2. search_devices(platform='apple_tv', area=ROOM) → get parent_device_entity (for IP)\n"
-        "3. play_plex_media(rating_key, plex_client_entity, parent_device_entity=parent)\n\n"
-        "IP DISCOVERY (priority order):\n"
-        "1. parent_device_entity param (if agent found parent device) - PREFERRED\n"
-        "2. Auto-guess from plex_client_entity name (fallback)\n"
-        "3. client_ip param (if from saved scene)\n\n"
-        "Returns: {status, method, state, client_ip}. Save client_ip in scene for reuse."
+        "Push Plex content to a client entity. Setup (power/app readiness) is the caller's responsibility.\n\n"
+        "Inputs:\n"
+        "- rating_key (required)\n"
+        "- plex_client_entity (required)\n"
+        "- Optional: parent_device_entity (used to auto-discover client_ip), client_ip (Companion fallback), verify_after_seconds\n\n"
+        "Behavior:\n"
+        "- Try HA media_player.play_media; if not verified, fallback to Plex Companion when client_ip is available\n"
+        "- Returns: {status: 'success'|'partial'|'error', method: 'ha_service'|'companion', state, client_ip?}\n"
+        "- Deterministic execution; safe to include in sequences"
     ),
     parameters=PARAMS,
     returns="dict with status, method, state",

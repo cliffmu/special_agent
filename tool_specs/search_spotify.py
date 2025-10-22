@@ -43,13 +43,11 @@ SPEC = ToolSpec(
         "Search Spotify and return the first result URI. "
         "The 'query' must be a plain text search term (do not pass a URI). "
         "The returned value is a string like 'spotify:<type>:<id>' or null if "
-        "nothing is found. Use this tool to look up a track, artist, album or "
-        "playlist before calling 'media_player.play_media'; pass the URI as "
-        "the 'media_content_id'."
+        "nothing is found. Use the returned URI as the media identifier for playback."
     ),
     parameters=PARAMS,
     returns="spotify uri or null",
     func=search_spotify,
     can_run_parallel=True,  # Read-only operation - safe for parallel execution
-    can_run_in_sequence=True,
+    can_run_in_sequence=False,  # Search in Call-1, execute in Call-2 (keeps scenes deterministic)
 )

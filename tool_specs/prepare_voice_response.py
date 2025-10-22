@@ -144,7 +144,7 @@ SPEC = ToolSpec(
         "- 'conversational': Natural, friendly (default)\n"
         "- 'detailed': More context when user asked 'why' or 'how'\n"
         "- 'informational': Sharing facts/data from web search\n\n"
-        "Don't use for ask_user or confirm_action (they format themselves)."
+        "Don't use for clarification/confirmation prompts (those flows format themselves)."
     ),
     parameters=PARAMS,
     returns="dict with 'speak' field containing voice-optimized text",

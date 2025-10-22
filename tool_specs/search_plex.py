@@ -41,7 +41,7 @@ SPEC = ToolSpec(
     name="search_plex_library",
     description=(
         "Search the connected Plex library and return rating keys for playback. "
-        "Use the 'ratingKey' with play_plex_media tool (NOT media_player.play_media - use the dedicated tool). "
+        "Returns the Plex ratingKey for playback (pass to playback tool). "
         "IMPORTANT: Results show what's ACTUALLY IN THE LIBRARY - if user asks for 'latest' episode, "
         "check year/season/episode in results. The highest season/episode returned IS the latest available. "
         "Don't search for future seasons/years - Plex only has what's downloaded. "
@@ -53,5 +53,5 @@ SPEC = ToolSpec(
     returns="{hits: array, error: string|null}",
     func=search_plex,
     can_run_parallel=True,
-    can_run_in_sequence=True,
+    can_run_in_sequence=False,  # Search in Call-1, execute in Call-2 (keeps scenes deterministic)
 )
