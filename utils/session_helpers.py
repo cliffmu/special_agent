@@ -110,12 +110,22 @@ def load_session(
                 
                 # Focus tracking for future features (not currently used in prompts)
                 focus = session.focus
-                pending = session.pending
+                
+                # Clear pending when new user prompt arrives - user has moved on
+                # Old pending responses (from ask_user, prepare_voice_response) are now stale
+                pending = None
                 
                 # Add new user message with ID
                 user_msg = {"role": "user", "content": prompt, "id": generate_message_id()}
                 msgs.append(user_msg)
+                
+                # Log the user's prompt for debugging
+                log.info(f"User_Prompt: {prompt}")
+                
                 return msgs, mgr, focus, pending
+    # New session - log the user's prompt for debugging
+    log.info(f"User_Prompt (new session): {prompt}")
+    
     return [
         {"role": "system", "content": system_prompt, "id": generate_message_id()},
         {"role": "user", "content": prompt, "id": generate_message_id()},

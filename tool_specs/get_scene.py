@@ -106,15 +106,20 @@ async def get_scene(
 SPEC = ToolSpec(
     name="get_scene",
     description=(
-        "Retrieve learned scene routines. ALWAYS call FIRST for multi-step requests.\n\n"
-        "SEARCH STRATEGY:\n"
-        "1. Exact match: get_scene(intent='ACTION_ROOM', area=ROOM)\n"
-        "2. Similar scenes as templates: get_scene(intent='ACTION', k=3) if null\n"
-        "   - Returns scenes from OTHER rooms with similar setup\n"
-        "   - Use as template: adapt entity_ids, add/remove steps for target room\n"
-        "   - Example: Gym Apple TV scene → adapt for Main Bedroom (add Harmony, change entities)\n"
-        "3. Compose new if none found\n\n"
-        "ADAPTATION: When using similar scene, search_devices to find equivalent entities in target room.\n"
+        "Retrieve learned scene routines for multi-step actions. **Call in PARALLEL with search tools in Call-1.**\n\n"
+        "WHEN TO USE SCENES:\n"
+        "✓ Multi-step workflows (turn on TV → open app → play media)\n"
+        "✓ Ambiguous entities (which TV? which Plex client needs discovery)\n"
+        "✓ Vibe-based requests ('cozy', 'movie night', 'focus mode')\n"
+        "✗ Simple parallel actions ('turn on gym lights' - use control_device)\n"
+        "✗ Single entity control ('pause TV' - use control_device)\n\n"
+        "CALL-1 PATTERN (parallel):\n"
+        "get_scene(intent='play_media_gym') + search_plex(...) + search_devices(...)\n"
+        "- Get exact scene (intent='ACTION_ROOM', area=ROOM)\n"
+        "- Get similar scenes if exact not found (intent='ACTION', k=3) from OTHER rooms\n"
+        "- Do device/media searches simultaneously\n\n"
+        "CALL-2: run_sequence with scene + bound variables.\n\n"
+        "ADAPTATION: Similar scene = template. Adapt entity_ids, adjust steps for target room.\n"
         "Returns: commands_list, confidence, strategy_item, client_config (reuse IPs, settings)."
     ),
     parameters=PARAMS,
