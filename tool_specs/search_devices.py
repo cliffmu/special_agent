@@ -106,12 +106,10 @@ async def search_devices(
 SPEC = ToolSpec(
     name="search_devices",
     description=(
-        f"Find matching Home Assistant entities by text query. "
-        f"Check the device list in your context to see if the requested device type exists before searching. "
-        f"For weather queries, use domain='weather' to find weather entities - the 'temperature' attribute IS the current temp. "
-        f"Use the area/domain filters and set k slightly larger than the count shown in the device list. "
-        f"Results include platform (integration name like 'plex', 'apple_tv') to help identify entity types. "
-        f"Parameter 'k' is capped at {MAX_SEARCH_K}."
+        f"Find matching Home Assistant entities by semantic search. "
+        f"Check the device summary in your context before searching - if a type isn't listed, it doesn't exist. "
+        f"WEATHER: Use domain='weather' and read 'temperature' attribute for current temp. "
+        f"Results include platform (integration like 'plex', 'apple_tv') and attribute_keys for capability discovery."
     ),
     parameters=PARAMS,
     returns="list of device info dicts with entity_id, domain, area_id, friendly_name, platform, attribute_keys",

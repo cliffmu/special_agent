@@ -132,8 +132,8 @@ SPEC = ToolSpec(
     name="get_entity_history",
     description=(
         "Return recent state changes for an entity from recorder history. "
-        "'entity_id' may be a string or single-item list; a list is reduced "
-        "to its first value."
+        "Use to analyze patterns, verify past actions, or check device behavior over time. "
+        "History resets on Home Assistant restart."
     ),
     parameters=PARAMS,
     returns="list of dict(state, when)",

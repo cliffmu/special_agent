@@ -67,7 +67,10 @@ async def build_device_index_tool(
 
 SPEC = ToolSpec(
     name="build_device_index",
-    description="Rebuild the device/entity vector index from HA states. This indexes all controllable devices for search. You do not have visibility if the index is built or not. Don't offer to follow up if it finishes.",
+    description=(
+        "Rebuild the device/entity search index from current Home Assistant states. "
+        "Runs in background - no need to wait or follow up."
+    ),
     parameters=PARAMS,
     returns="status message",
     func=build_device_index_tool,

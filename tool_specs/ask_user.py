@@ -55,8 +55,7 @@ SPEC = ToolSpec(
     name="ask_user",
     description=(
         "Ask the user for additional information to disambiguate the request. "
-        "IMPORTANT: Use friendly device names only - NO technical entity IDs like 'media_player.office_sonos'. "
-        "Example: Say 'Office Sonos' not 'Office Sonos (media_player.office_sonos)'."
+        "Use when you need clarification on rooms, devices, preferences, or ambiguous commands."
     ),
     parameters=PARAMS,
     returns="dict(speak, kind='clarify')",
