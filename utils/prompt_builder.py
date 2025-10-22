@@ -71,18 +71,16 @@ async def format_area_summary(hass: Any) -> tuple[Dict, Dict]:
 
 
 def format_tool_instructions(tools: List[ToolSpec]) -> str:
-    """Format tools as JSON for prompt.
+    """Format tools as simple list for prompt.
+    
+    Note: Full tool specs (descriptions, parameters) are provided via OpenAI API.
+    This just reminds the agent what tools exist.
     
     Returns:
-        JSON string of tool specifications
+        Comma-separated list of tool names
     """
-    tool_json = [spec_to_json(t) for t in tools]
-    
-    # Debug: Log first tool to verify correct format
-    if tool_json:
-        log.debug(f"First tool JSON: {json.dumps(tool_json[0], indent=2)}")
-    
-    return json.dumps(tool_json, indent=2)
+    tool_names = [t.name for t in tools]
+    return ", ".join(tool_names)
 
 
 def format_confirmation_rules(require_confirmation: bool) -> tuple[str, str]:
@@ -186,8 +184,8 @@ async def build_system_prompt(
         "- Skim the index summary above before attempting lookups to avoid searching for types that don't exist\n"
         "WEB SEARCH:\n"
         "- Built-in web_search provides real-time sports, weather, news when you need current info after Oct 2024\n"
-        "TOOLS:\n"
-        f"{tool_instructions}\n"
+        f"AVAILABLE TOOLS: {tool_instructions}\n"
+        "(Full tool specs provided via API - use tools to accomplish user requests)\n\n"
         f"{confirmation_instructions}"
         "PARALLEL EXECUTION:\n"
         "- When multiple lookups are independent, call them in parallel in ONE response\n"
