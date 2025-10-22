@@ -71,16 +71,18 @@ async def format_area_summary(hass: Any) -> tuple[Dict, Dict]:
 
 
 def format_tool_instructions(tools: List[ToolSpec]) -> str:
-    """Format tools as simple list for prompt.
+    """Format tools with names and descriptions (exclude parameter schemas).
     
-    Note: Full tool specs (descriptions, parameters) are provided via OpenAI API.
-    This just reminds the agent what tools exist.
+    Parameter schemas are provided via OpenAI API - no need to duplicate.
+    Descriptions contain important workflow guidance about WHEN/WHY to use tools.
     
     Returns:
-        Comma-separated list of tool names
+        Tool list with names and descriptions
     """
-    tool_names = [t.name for t in tools]
-    return ", ".join(tool_names)
+    tool_list = []
+    for t in tools:
+        tool_list.append(f"• {t.name}: {t.description}")
+    return "\n".join(tool_list)
 
 
 def format_confirmation_rules(require_confirmation: bool) -> tuple[str, str]:
@@ -183,9 +185,10 @@ async def build_system_prompt(
         "DEVICE INDEX:\n"
         "- Skim the index summary above before attempting lookups to avoid searching for types that don't exist\n"
         "WEB SEARCH:\n"
-        "- Built-in web_search provides real-time sports, weather, news when you need current info after Oct 2024\n"
-        f"AVAILABLE TOOLS: {tool_instructions}\n"
-        "(Full tool specs provided via API - use tools to accomplish user requests)\n\n"
+        "- Built-in web_search provides real-time sports, weather, news when you need current info after Oct 2024\n\n"
+        "AVAILABLE TOOLS:\n"
+        f"{tool_instructions}\n"
+        "(Parameter schemas provided via API)\n\n"
         f"{confirmation_instructions}"
         "PARALLEL EXECUTION:\n"
         "- When multiple lookups are independent, call them in parallel in ONE response\n"
