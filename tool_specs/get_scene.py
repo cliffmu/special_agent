@@ -106,14 +106,16 @@ async def get_scene(
 SPEC = ToolSpec(
     name="get_scene",
     description=(
-        "Retrieve learned, deterministic routines (scenes). Use for multi-step or media/vibe requests.\n\n"
-        "SEARCH STRATEGY:\n"
-        "1) Exact: intent='ACTION_ROOM' with optional area filter (returns top-1)\n"
-        "2) Templates: intent='ACTION' with higher k (returns similar routines from other rooms); "
-        "adapt to target room by resolving equivalent entities as needed\n"
-        "3) Compose new if none found\n\n"
-        "Returns: commands_list (steps), confidence, optional strategy text, and client_config "
-        "(room defaults like audio/parent device). Read-only, safe to run in parallel."
+        "Retrieve learned, deterministic routines (scenes) for multi-step workflows.\n\n"
+        "WHEN TO USE (Call-1, parallel with device/media searches):\n"
+        "✓ Media playback (TV/Plex/Spotify) - requires power on → app open → play\n"
+        "✓ Device setup workflows (multi-step sequences)\n"
+        "✓ Vibe-based requests ('cozy', 'movie mode')\n"
+        "✗ Simple single actions (turn on lights - use control_device directly)\n\n"
+        "SEARCH STRATEGY (call BOTH in parallel for better coverage):\n"
+        "1) Exact match: intent='play_plex_gym' with area='gym' (k=1) - finds exact room scene\n"
+        "2) Similar templates: intent='play_plex' (k=3) - finds scenes from other rooms to adapt\n\n"
+        "Returns: commands_list (sequence steps), confidence, strategy, client_config (room defaults like IP addresses)."
     ),
     parameters=PARAMS,
     returns="dict with commands_list, confidence, strategy_item, client_config",

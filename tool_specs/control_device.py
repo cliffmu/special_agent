@@ -117,14 +117,13 @@ async def control_device(
 SPEC = ToolSpec(
     name="control_device",
     description=(
-        "Call Home Assistant service. Returns before/after state for validation. "
-        "VERIFY TIMING - wait before checking state (devices take time to boot/respond): "
+        "Call Home Assistant service to control devices. Returns before/after state for validation. "
+        "TIMING GUIDE (use with verify_after_seconds for state verification): "
         "Power on (turn_on): 8-10s for Apple TV/Roku, 6s for other devices. "
         "App switching (select_source): 3-4s. "
         "Lights/switches: 1-2s. "
         "Media commands: 4-5s. "
-        "Use verify_after_seconds parameter with appropriate timing for device type."
-        "If you have high confidence that the control command should work but returns false, you can follow up with another get entity state tool call"
+        "If state verification fails but command should work, follow up with get_entity_state after additional delay."
     ),
     parameters=PARAMS,
     returns="dict(service_called, entity_id, before_state, after_state, verified_state?, available, note?, focus)",

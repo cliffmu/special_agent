@@ -98,3 +98,173 @@ I have a prototype version of the project saved in REFERENCE folder. This folder
 - **DO NOT create new `.md` files** unless explicitly requested by user
 - Update existing docs: `README.md`, `AGENTS.md`, `docs/scene_plan_latest.md`
 - Keep docs synchronized with implementation changes
+
+---
+
+## Prompt & Tool Description Optimization
+
+### Philosophy: Speed & Clarity Over Tokens
+
+**Priority Order:**
+1. **Reduce hallucinations** - clear, non-conflicting instructions
+2. **Improve speed** - smaller context = faster processing
+3. **Reduce cost** - secondary benefit of smaller context
+
+### Tool Description Structure
+
+**Tool descriptions are sent to LLM in this format:**
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "tool_name",
+    "description": "HIGH-LEVEL GUIDANCE",
+    "parameters": {
+      "properties": {
+        "param": {"description": "PARAM DETAILS"}
+      }
+    }
+  }
+}
+```
+
+**Description Should Answer:**
+- ❓ **WHEN** to use this tool (conditions, scenarios, triggers)
+- ❓ **WHY** use it vs alternatives (positioning in workflow)
+- ❓ **HOW** it fits in workflows (before/after patterns)
+- ❓ **DOMAIN KNOWLEDGE** (timing values, common patterns, gotchas, constraints)
+
+**Parameter Descriptions Should Answer:**
+- ❓ **WHAT** this parameter controls
+- ❓ **FORMAT** expected (enum values, patterns, validation rules)
+- ❓ **CONSTRAINTS** (min/max, required combinations)
+
+**❌ AVOID in Tool Descriptions:**
+- Repeating parameter purposes ("Use parameter X with value Y")
+- Repeating return shape ("Returns {field1, field2}")
+- Instructions on HOW to use a parameter (let param description handle it)
+- Naming other specific tools (stay tool-agnostic for flexibility)
+
+**✅ DO INCLUDE in Tool Descriptions:**
+- Domain-specific knowledge (timing requirements, state patterns)
+- Workflow context (call in parallel with..., use before/after...)
+- Edge cases and gotchas the agent should know
+- Use case examples (when this is appropriate)
+
+### Tool Decoupling & Flexibility
+
+**Avoid Cross-Tool References:**
+- ❌ BAD: "Use with play_plex_media tool"
+- ✅ GOOD: "Pass ratingKey to playback tool"
+- ❌ BAD: "Call search_devices AND search_spotify in parallel"
+- ✅ GOOD: "Call multiple lookups in parallel when independent"
+
+**Why:** Tools may be disabled, renamed, or refactored. Generic guidance survives changes.
+
+**Keep Descriptions General:**
+- Support varied use cases and workflows
+- Don't assume specific sequences or tool combinations
+- Agent should compose tools flexibly, not follow prescriptive scripts
+
+### System Prompt Principles
+
+**Tool-Agnostic Guidance:**
+- Generic parallelism rules, not specific tool pairings
+- General workflow patterns (2-loop: gather → execute)
+- Framework for decision-making, not specific sequences
+
+**No Tool-Specific Tips:**
+- Move service-specific search tips to tool descriptions
+- Example: "Spotify search tips" → belongs in `search_spotify` description
+- Keeps system prompt stable when tools are added/removed
+
+**Minimize Reflection Overhead:**
+- Avoid heavy "reflect twice, brainstorm, score" requirements
+- Simple retry logic: "If fails, attempt one improved call"
+- Reduces latency and over-thinking
+
+### Duplication Detection Checklist
+
+Before adding to a tool description, check:
+
+1. **Is this explaining a parameter?** → Move to parameter description
+2. **Is this naming another tool?** → Make generic or remove
+3. **Is this repeating return shape?** → Already in `returns` field
+4. **Is this in the system prompt?** → Remove one or make distinct
+5. **Does this add unique value?** → Keep if YES (domain knowledge, timing, patterns)
+
+### Examples of Good Tool Descriptions
+
+**✅ GOOD - Workflow Context + Domain Knowledge:**
+```python
+description=(
+    "Call Home Assistant service to control devices. Returns before/after state. "
+    "TIMING GUIDE: Power on: 8-10s, App switching: 3-4s, Lights: 1-2s. "
+    "If verification fails but command should work, follow up after delay."
+)
+```
+
+**✅ GOOD - When/Why + Constraints:**
+```python
+description=(
+    "Ask user for clarification to disambiguate requests. "
+    "Use when you need details on rooms, devices, preferences, or ambiguous commands."
+)
+```
+
+**❌ BAD - Repeating Parameters:**
+```python
+description=(
+    "Search devices. Use area parameter to filter by room. "  # ← area param already says this
+    "Use domain parameter for device type. "  # ← domain param already says this
+    "Set k parameter for result count."  # ← k param already says this
+)
+```
+
+**✅ BETTER - Use Cases + Context:**
+```python
+description=(
+    "Find entities by semantic search. "
+    "Check device summary before searching - if type isn't listed, it doesn't exist. "
+    "WEATHER: Use domain='weather' and read 'temperature' attribute for current temp."
+)
+```
+
+### Parameter Description Best Practices
+
+**✅ GOOD - Format + Constraints:**
+```python
+"question": {
+    "description": "Natural language question to ask user (use friendly names only, NO entity IDs)"
+}
+```
+
+**✅ GOOD - Purpose + Validation:**
+```python
+"verify_after_seconds": {
+    "description": "Wait N seconds then verify state changed (recommended: 3-5s for media, 1-2s for lights)"
+}
+```
+
+**❌ BAD - Restating Field Name:**
+```python
+"query": {
+    "description": "The query to search for"  # ← Obvious from name
+}
+```
+
+**✅ BETTER - Context + Format:**
+```python
+"query": {
+    "description": "Text query to search for matching devices"
+}
+```
+
+### Maintenance
+
+When modifying tools:
+1. Check for duplication between description and params
+2. Ensure no cross-tool references (use generic terms)
+3. Verify description adds domain knowledge, not param echo
+4. Test that tool works when other tools are disabled
+5. Keep descriptions concise - every word adds latency

@@ -74,11 +74,9 @@ async def confirm_action(
 SPEC = ToolSpec(
     name="confirm_action",
     description=(
-        "Ask the user for confirmation before using the 'control_device' tool to change device states. "
-        "REQUIRED: You MUST include a 'question' parameter with the exact natural-language sentence to speak. "
-        "The question should concisely mention both the action and target devices using friendly names. "
-        "IMPORTANT: Use friendly device names only - NO technical entity IDs like 'media_player.office_sonos'. "
-        "Example: 'Do you want me to turn off the kitchen lights?' NOT 'turn off light.kitchen?'"
+        "Ask the user for confirmation before changing device states. "
+        "Provide a clear, concise question that mentions both the action and target devices."
+        "Group similar devices into a single question if possible."
     ),
     parameters=PARAMS,
     returns="dict(speak, kind='confirm', pending)",
