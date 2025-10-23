@@ -44,12 +44,11 @@ async def get_scene(
     hass: Any | None = None
 ) -> Dict[str, Any]:
     """
-    Retrieve the best learned routine for a given intent.
+    Retrieve learned routines matching the intent.
     
     Returns:
-        commands_list: Ordered steps for run_sequence (or null if not found)
-        confidence: 0-1 score
-        strategy_item: Optional strategy text for prompt injection
+        scenes: List of matching scenes with full metadata
+        count: Number of scenes found
     """
     log.debug("get_scene: intent=%s, area=%s, k=%d", intent, area, k)
     
@@ -66,39 +65,41 @@ async def get_scene(
         if not results:
             log.debug("No scenes found for intent=%s, area=%s", intent, area)
             return {
-                "commands_list": None,
-                "confidence": 0.0,
-                "strategy_item": None,
+                "scenes": [],
+                "count": 0,
                 "message": f"No learned scenes found for '{intent}'"
             }
         
-        # Return top result
-        top_result = results[0]
-        log.info("Found scene: intent=%s, confidence=%.2f, score=%.3f", 
-                 intent, top_result.get("confidence", 0), top_result.get("search_score", 0))
-        
-        # Format strategy item if available
-        strategy_item = None
-        if top_result.get("strategy"):
-            strategy_item = {
-                "title": top_result.get("intent", intent),
-                "description": top_result.get("summary", ""),
-                "content": top_result.get("strategy", "")
+        # Format all results with full metadata
+        scenes = []
+        for result in results:
+            scene = {
+                "id": result.get("id"),
+                "intent": result.get("intent"),
+                "area": result.get("area_hint"),
+                "commands_list": result.get("steps"),
+                "confidence": result.get("confidence", 0.0),
+                "search_score": result.get("search_score", 0.0),
+                "summary": result.get("summary", ""),
+                "strategy": result.get("strategy", ""),
+                "client_config": result.get("client_config", {})
             }
+            scenes.append(scene)
+        
+        log.info("Found %d scene(s): top intent=%s, confidence=%.2f, score=%.3f", 
+                 len(results), results[0].get("intent"), 
+                 results[0].get("confidence", 0), results[0].get("search_score", 0))
         
         return {
-            "commands_list": top_result.get("steps"),
-            "confidence": top_result.get("confidence", 0.0),
-            "strategy_item": strategy_item,
-            "client_config": top_result.get("client_config", {})  # Tool parameters (e.g., client_ip)
+            "scenes": scenes,
+            "count": len(scenes)
         }
         
     except Exception as err:
         log.error("Error retrieving scene: %s", err, exc_info=True)
         return {
-            "commands_list": None,
-            "confidence": 0.0,
-            "strategy_item": None,
+            "scenes": [],
+            "count": 0,
             "error": str(err)
         }
 
@@ -116,10 +117,20 @@ SPEC = ToolSpec(
         "- Exact: intent='ACTION_ROOM', area='ROOM', k=1 (room-specific routine)\n"
         "- Template: intent='ACTION', k=3 (similar routines from other rooms to adapt)\n"
         "- Use both patterns simultaneously to maximize hit rate\n\n"
-        "Returns: commands_list, confidence, strategy, client_config (saved IPs, timing, settings)."
+        "EXECUTE WORKFLOW:\n"
+        "1. Get scenes → receive list of matching scenes with commands_list\n"
+        "2. Pick best match (check intent, area, confidence, search_score)\n"
+        "3. Bind variables: replace ${rating_key}, ${entity_id}, etc. with actual values\n"
+        "4. Execute steps using sequential execution tool (pass commands_list + vars)\n"
+        "✓ Compare multiple results to find best fit\n"
+        "✓ Use scenes from other rooms as templates\n"
+        "✓ Reuse structure even if content differs (e.g., same device setup, different media)\n"
+        "✓ Scenes contain proven timing delays and entity targets\n\n"
+        "Returns: scenes[] (list of matches, each with id, intent, area, commands_list, confidence, "
+        "search_score, summary, strategy, client_config), count (number found)."
     ),
     parameters=PARAMS,
-    returns="dict with commands_list, confidence, strategy_item, client_config",
+    returns="dict with scenes (list of scene objects), count",
     func=get_scene,
     can_run_parallel=True,
 )
