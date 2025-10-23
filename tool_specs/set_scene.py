@@ -41,14 +41,14 @@ PARAMS = {
             "description": "Optional client config for tools (e.g., client_ip, plex_client_entity). Used for play_plex_media and similar."
         }
     },
-    "required": ["intent", "steps", "outcome"]
+    "required": ["intent", "outcome"]
 }
 
 
 async def set_scene(
     intent: str,
-    steps: List[Dict],
     outcome: str,
+    steps: List[Dict] | None = None,
     area: str | None = None,
     notes: str | None = None,
     client_config: Dict | None = None,
@@ -62,18 +62,47 @@ async def set_scene(
     
     IMPORTANT: This should only be called AFTER run_sequence has been tested.
     Steps with malformed formats or missing entity_ids will be rejected.
-    """
-    log.debug("set_scene: intent=%s, area=%s, outcome=%s, steps=%d", 
-              intent, area, outcome, len(steps))
     
-    # Validate we have actual steps
+    If steps are not provided, they will be retrieved from the existing scene (for updates).
+    """
+    log.debug("set_scene: intent=%s, area=%s, outcome=%s, steps=%s", 
+              intent, area, outcome, f"{len(steps)} provided" if steps else "fetching from memory")
+    
+    # If no steps provided, try to fetch from existing scene
     if not steps or len(steps) == 0:
-        log.warning("set_scene called with no steps, rejecting")
-        return {
-            "status": "error",
-            "error": "Cannot save scene with no steps",
-            "message": "Provide the actual steps that were executed"
-        }
+        if outcome == "success":
+            # Try to fetch existing scene
+            try:
+                from ..utils.scene_memory_store import SceneMemoryStore
+                store = SceneMemoryStore()
+                entry_id = f"{intent}_{area}" if area else intent
+                existing = store.get(entry_id)
+                
+                if existing and existing.get("steps"):
+                    steps = existing.get("steps")
+                    log.info("set_scene: Retrieved %d steps from existing scene %s", len(steps), entry_id)
+                else:
+                    log.warning("set_scene: No steps provided and no existing scene found for %s", entry_id)
+                    return {
+                        "status": "error",
+                        "error": "No steps provided and no existing scene found",
+                        "message": "For new scenes, you must provide steps. For updates, ensure scene exists."
+                    }
+            except Exception as e:
+                log.error("set_scene: Failed to fetch existing scene: %s", e)
+                return {
+                    "status": "error",
+                    "error": f"Cannot retrieve existing scene: {str(e)}",
+                    "message": "Provide steps parameter to save scene"
+                }
+        else:
+            # For failures, steps are required to understand what went wrong
+            log.warning("set_scene called with outcome=%s but no steps", outcome)
+            return {
+                "status": "error",
+                "error": "Steps required for failure outcomes",
+                "message": "Provide the steps that failed so we can learn from them"
+            }
     
     try:
         # Track performance of this operation
@@ -162,26 +191,30 @@ SPEC = ToolSpec(
     description=(
         "Save scene after successful multi-step execution. ALWAYS save for workflows with sequential steps.\n\n"
         "ALWAYS SAVE WHEN:\n"
-        "✓ Multi-step device workflows (power on → app switch → action)\n"
-        "✓ Sequential execution with delays and conditional checks\n"
-        "✓ User preference workflows ('cozy', 'movie night') - after getting preferences\n"
-        "✓ Adapted routines from other rooms (after successful execution)\n"
-        "✓ Fixed/corrected failed workflows\n"
-        "✗ Simple single-step actions (lights, switches)\n\n"
-        "✗ Unchanged replay (auto-skips duplicate)\n\n"
+        "ALWAYS: Multi-step device workflows (power on → app switch → action)\n"
+        "ALWAYS: Sequential execution with delays and conditional checks\n"
+        "ALWAYS: User preference workflows ('cozy', 'movie night') - after getting preferences\n"
+        "ALWAYS: Adapted routines from other rooms (after successful execution)\n"
+        "ALWAYS: Fixed/corrected failed workflows\n"
+        "NEVER: Simple single-step actions (lights, switches)\n\n"
+        "NEVER: Unchanged replay (auto-skips duplicate)\n\n"
+        "STEPS PARAMETER:\n"
+        "NEW scenes: MUST provide steps array with full workflow\n"
+        "UPDATES (reporting success of existing scene): steps are OPTIONAL - will be retrieved from memory\n"
+        "If updating and steps omitted, existing steps will be used\n\n"
         "BEFORE SAVING - CHECK FOR DUPLICATES:\n"
         "Look at existing scenes for same room/intent. Update existing rather than create duplicate.\n"
         "If exists: Update steps, preserve entry_id\n"
         "If new: Create with stable entry_id (intent_room format)\n\n"
         "CONTENT MUST BE GENERIC:\n"
-        "❌ NEVER: Specific content in scene name ('play_matrix', 'play_taylor_swift')\n"
-        "❌ NEVER: Hard-coded song/movie/show names in steps\n"
-        "✅ ALWAYS: Generic workflow names ('play_media_gym', 'music_office')\n"
-        "✅ ALWAYS: Content passed as execution variable, not baked into scene\n\n"
+        "NEVER: Specific content in scene name ('play_matrix', 'play_taylor_swift')\n"
+        "NEVER: Hard-coded song/movie/show names in steps\n"
+        "ALWAYS: Generic workflow names ('play_media_gym', 'music_office')\n"
+        "ALWAYS: Content passed as execution variable, not baked into scene\n\n"
         "STEP TYPES:\n"
-        "• service_call: Execute HA service with optional guards\n"
-        "• delay: Wait between actions for device readiness\n"
-        "• tool_call: Execute deterministic tool with result capture\n"
+        "service_call: Execute HA service with optional guards\n"
+        "delay: Wait between actions for device readiness\n"
+        "tool_call: Execute deterministic tool with result capture\n"
         "Guards (only_if_state): Skip step based on entity state/attribute checks\n\n"
         "Returns: {status, message, entry_id}"
     ),
