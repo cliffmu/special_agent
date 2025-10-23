@@ -20,7 +20,7 @@ PARAMS = {
         },
         "data": {
             "type": "object",
-            "description": "Service data including entity_id",
+            "description": "Service data - MUST include entity_id (or device_id/area_id) to target the action. Example: {'entity_id': 'media_player.gym_atv'}",
             "default": {}
         },
         "verify_after_seconds": {
