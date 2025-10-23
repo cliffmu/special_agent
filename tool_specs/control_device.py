@@ -18,9 +18,13 @@ PARAMS = {
             "type": "string",
             "description": "Home Assistant service to call (e.g., 'light.turn_on', 'switch.turn_off')"
         },
+        "entity_id": {
+            "type": "string",
+            "description": "Entity to control (e.g., 'media_player.gym_atv', 'light.office_lamp')"
+        },
         "data": {
             "type": "object",
-            "description": "Service data - MUST include entity_id (or device_id/area_id) to target the action. Example: {'entity_id': 'media_player.gym_atv'}",
+            "description": "Additional service data (brightness, color, volume, etc). Entity ID is passed separately.",
             "default": {}
         },
         "verify_after_seconds": {
@@ -29,12 +33,16 @@ PARAMS = {
             "default": None
         }
     },
-    "required": ["service"]
+    "required": ["service", "entity_id"]
 }
 
 
 async def control_device(
-    service: str, data: dict | None = None, verify_after_seconds: int | None = None, hass: Any | None = None
+    service: str,
+    entity_id: str,
+    data: dict | None = None,
+    verify_after_seconds: int | None = None,
+    hass: Any | None = None
 ) -> dict:
     """Invoke a Home Assistant service and return detailed status."""
     if hass is None:
@@ -43,9 +51,12 @@ async def control_device(
         raise ValueError("service must be of the form 'domain.name'")
     
     domain, name = service.split(".", 1)
-    entity_id = (data or {}).get("entity_id")
     
-    log.debug("control_device: %s %s verify_after=%s", service, data, verify_after_seconds)
+    # Merge entity_id into service data
+    service_data = data.copy() if data else {}
+    service_data['entity_id'] = entity_id
+    
+    log.debug("control_device: %s entity=%s data=%s verify_after=%s", service, entity_id, data, verify_after_seconds)
     
     # Check entity state BEFORE action if entity_id provided
     before_state = None
@@ -55,7 +66,7 @@ async def control_device(
             before_state = state_obj.state
     
     # Call the service
-    await hass.services.async_call(domain, name, data or {}, blocking=True)
+    await hass.services.async_call(domain, name, service_data, blocking=True)
     
     # Check entity state immediately AFTER action
     after_state = None
