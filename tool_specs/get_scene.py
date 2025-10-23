@@ -74,7 +74,7 @@ async def get_scene(
         scenes = []
         for result in results:
             scene = {
-                "id": result.get("id"),
+                "id": result.get("entry_id"),  # Stored as entry_id in vector index metadata
                 "intent": result.get("intent"),
                 "area": result.get("area_hint"),
                 "commands_list": result.get("steps"),
@@ -117,15 +117,14 @@ SPEC = ToolSpec(
         "- Exact: intent='ACTION_ROOM', area='ROOM', k=1 (room-specific routine)\n"
         "- Template: intent='ACTION', k=3 (similar routines from other rooms to adapt)\n"
         "- Use both patterns simultaneously to maximize hit rate\n\n"
-        "EXECUTE WORKFLOW:\n"
-        "1. Get scenes → receive list of matching scenes with commands_list\n"
-        "2. Pick best match (check intent, area, confidence, search_score)\n"
-        "3. Bind variables: replace ${rating_key}, ${entity_id}, etc. with actual values\n"
-        "4. Execute steps using sequential execution tool (pass commands_list + vars)\n"
-        "✓ Compare multiple results to find best fit\n"
-        "✓ Use scenes from other rooms as templates\n"
-        "✓ Reuse structure even if content differs (e.g., same device setup, different media)\n"
-        "✓ Scenes contain proven timing delays and entity targets\n\n"
+        "CRITICAL - AFTER GETTING SCENE DATA:\n"
+        "When you receive scene results with commands_list, you MUST execute via run_sequence:\n"
+        "  run_sequence(\n"
+        "    sequence={'steps': scene['commands_list']},\n"
+        "    vars={'rating_key': '...', 'plex_client_entity': '...', etc}\n"
+        "  )\n"
+        "DO NOT manually orchestrate the steps yourself - the scene contains proven timing/guards.\n"
+        "Bind variables (${rating_key}, ${entity_id}, etc.) by passing them in 'vars' param.\n\n"
         "Returns: scenes[] (list of matches, each with id, intent, area, commands_list, confidence, "
         "search_score, summary, strategy, client_config), count (number found)."
     ),
