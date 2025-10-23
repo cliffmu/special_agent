@@ -160,31 +160,33 @@ async def set_scene(
 SPEC = ToolSpec(
     name="set_scene",
     description=(
-        "Save scene after successful multi-step execution. Auto-detects when update needed.\n\n"
-        "SAVE SCENES FOR:\n"
-        "✓ Multi-step workflows (device on → app → media/action)\n"
-        "✓ Ambiguous entity discovery (which client, which device)\n"
-        "✓ Vibe-based setups ('cozy', 'movie night') - ask user preferences first, then save\n"
-        "✓ Adapted scenes from other rooms (MUST save after success)\n"
-        "✓ Fixed failed scenes (outcome='corrected')\n"
-        "✓ Optimized delays (tested shorter waits)\n"
-        "✗ Simple control (parallel device changes - no scene needed)\n"
+        "Save scene after successful multi-step execution. ALWAYS save for workflows with sequential steps.\n\n"
+        "ALWAYS SAVE WHEN:\n"
+        "✓ Multi-step device workflows (power on → app switch → action)\n"
+        "✓ Sequential execution with delays and conditional checks\n"
+        "✓ User preference workflows ('cozy', 'movie night') - after getting preferences\n"
+        "✓ Adapted routines from other rooms (after successful execution)\n"
+        "✓ Fixed/corrected failed workflows\n"
+        "✗ Simple single-step actions (lights, switches)\n\n"
         "✗ Unchanged replay (auto-skips duplicate)\n\n"
-        "VIBE WORKFLOW:\n"
-        "1. User requests ambiguous vibe ('cozy', 'focus', 'movie')\n"
-        "2. Ask user for preferences (lights, music, climate)\n"
-        "3. Execute preferences\n"
-        "4. Ask if they want to save as scene\n\n"
-        "STEPS FORMAT:\n"
-        "✓ Service: {\"type\":\"service_call\",\"service\":\"...\",\"data\":{...}}\n"
-        "✓ Delay: {\"type\":\"delay\",\"seconds\":N}\n"
-        "✓ Tool: {\"type\":\"tool_call\",\"tool\":\"<sequence-safe-tool>\",\"args\":{...}} (validated)\n"
-        "✓ Guards: only_if_state for conditional steps (state/attribute checks)\n\n"
-        "Returns: {status:'ok'/'skipped', message, entry_id}"
+        "BEFORE SAVING - CHECK FOR DUPLICATES:\n"
+        "Look at existing scenes for same room/intent. Update existing rather than create duplicate.\n"
+        "If exists: Update steps, preserve entry_id\n"
+        "If new: Create with stable entry_id (intent_room format)\n\n"
+        "CONTENT MUST BE GENERIC:\n"
+        "❌ NEVER: Specific content in scene name ('play_matrix', 'play_taylor_swift')\n"
+        "❌ NEVER: Hard-coded song/movie/show names in steps\n"
+        "✅ ALWAYS: Generic workflow names ('play_media_gym', 'music_office')\n"
+        "✅ ALWAYS: Content passed as execution variable, not baked into scene\n\n"
+        "STEP TYPES:\n"
+        "• service_call: Execute HA service with optional guards\n"
+        "• delay: Wait between actions for device readiness\n"
+        "• tool_call: Execute deterministic tool with result capture\n"
+        "Guards (only_if_state): Skip step based on entity state/attribute checks\n\n"
+        "Returns: {status, message, entry_id}"
     ),
     parameters=PARAMS,
     returns="dict with status and message",
     func=set_scene,
     can_run_parallel=True,
 )
-
