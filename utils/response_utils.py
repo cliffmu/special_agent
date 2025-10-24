@@ -204,10 +204,11 @@ async def validate_and_execute_tools(
         """Execute a single tool and return (call, spec, args, result, is_error)"""
         call_name = spec.name
         log.debug("Action: %s %s", call_name, args)
+        status = "ok"
         try:
             async with performance.track_operation(
                 f"tool_{call_name}",
-                metadata={"args": str(args)[:200]}  # Truncate long args
+                metadata={"args": args}  # Will be truncated by track_operation
             ):
                 if hass and "hass" in inspect.signature(spec.func).parameters:
                     call_args = {"hass": hass, **args}
@@ -221,6 +222,15 @@ async def validate_and_execute_tools(
             return (call, spec, args, result, False)
         except Exception as err:
             log.error("Tool execution failed: %s", err)
+            status = "error"
+            # Update last record with error status
+            if performance.is_enabled():
+                request_id = performance.get_current_request_id()
+                if request_id:
+                    for record in reversed(performance.get_records()):
+                        if record.request_id == request_id and record.operation == f"tool_{call_name}":
+                            record.status = "error"
+                            break
             return (call, spec, args, f"Error: Tool failed: {err}", True)
 
     # Run all tools in parallel

@@ -52,8 +52,13 @@ async def run_sequence(
 SPEC = ToolSpec(
     name="run_sequence",
     description=(
-        "Execute multi-step sequence with service calls, tool calls, delays, and guards. "
-        "Guards skip steps instantly (~1ms check).\n\n"
+        "Execute multi-step workflows with service calls, tool calls, delays, and guards. "
+        "PRIMARY METHOD for executing saved scene steps from scene memory.\n\n"
+        "WHEN TO USE:\n"
+        "✓ Executing commands_list from retrieved scenes (pass as 'sequence' param)\n"
+        "✓ Multi-step device workflows requiring delays between actions\n"
+        "✓ Conditional logic via guards (skip steps based on current state)\n"
+        "✓ Variable substitution (${var_name} replaced with values from 'vars' param)\n\n"
         "STEP FORMATS:\n"
         "1) Service: {\"type\":\"service_call\",\"service\":\"light.turn_on\",\"data\":{\"entity_id\":\"...\"}} \n"
         "2) Delay: {\"type\":\"delay\",\"seconds\":8} \n"
@@ -62,7 +67,7 @@ SPEC = ToolSpec(
         "GUARDS (checked internally, zero LLM overhead):\n"
         "- State: \\\"in\\\":[...] or \\\"not_in\\\":[...] checks entity.state\n"
         "- Attribute: \\\"attribute\\\":\\\"app_name\\\", then \\\"equals\\\"/\\\"not_equals\\\"/\\\"in\\\"/\\\"not_in\\\"\n"
-        "- Returns status='skipped' for guarded steps\n\n"
+        "- Returns status='skipped' for guarded steps (guards skip delays instantly)\n\n"
         "TOOL CALLS:\n"
         "- Only tools explicitly flagged as sequence-safe may run here (validated on save)\n"
         "- Use 'expect' ({path, equals/not_equals/contains/exists}) to auto-verify outputs\n\n"

@@ -35,27 +35,36 @@ _csv_path: Optional[Path] = None
 
 @dataclass
 class TimingRecord:
-    """Single timing record for analysis."""
+    """Single timing record for analysis.
+    
+    Schema V2: Analysis-ready CSV format with stable columns.
+    Wall-clock times for timestamps, monotonic duration for accuracy.
+    """
     request_id: str
     operation: str
-    start_time: float
-    end_time: float
-    duration_ms: float
+    start_time: float  # Wall-clock epoch seconds (for timestamp correlation)
+    end_time: float    # Wall-clock epoch seconds
+    duration_s: float  # Monotonic clock duration in seconds
+    
+    # Core tracking
+    session_id: Optional[str] = None
     parent_operation: Optional[str] = None
     parallel_group: Optional[str] = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-    # Session tracking
-    session_id: Optional[str] = None
-    # LLM-specific fields (extracted from metadata for easier analysis)
+    
+    # Operation context
+    status: Optional[str] = None  # ok, error, timeout
+    args: Optional[str] = None    # JSON string of parameters (truncated)
+    llm_depth: Optional[int] = None  # 0, 1, 2... for llm_call operations
+    
+    # LLM-specific fields
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    depth: Optional[int] = None
-    input_messages: Optional[int] = None
-    reasoning_count: Optional[int] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    
+    # Metadata catchall for additional context
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def configure(enabled: bool = True, csv_path: str | Path | None = None) -> None:
@@ -90,29 +99,39 @@ def set_session_id(session_id: str) -> None:
 
 
 def _extract_llm_fields(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Extract LLM-specific fields from metadata for easier CSV analysis."""
+    """Extract LLM-specific fields from metadata for TimingRecord."""
     return {
         "model": metadata.get("model"),
         "reasoning_effort": metadata.get("reasoning"),
-        "depth": metadata.get("depth"),
-        "input_messages": metadata.get("input_messages"),
-        "reasoning_count": metadata.get("reasoning_count"),
+        "llm_depth": metadata.get("depth"),
         "prompt_tokens": metadata.get("prompt_tokens"),
         "completion_tokens": metadata.get("completion_tokens"),
         "total_tokens": metadata.get("total_tokens"),
     }
 
 
+def _truncate_json(data: Any, max_length: int = 500) -> str:
+    """Convert data to JSON string and truncate if needed."""
+    import json
+    try:
+        json_str = json.dumps(data, default=str, ensure_ascii=False)
+        if len(json_str) > max_length:
+            return json_str[:max_length-3] + "..."
+        return json_str
+    except Exception:
+        return str(data)[:max_length]
+
+
 @asynccontextmanager
-async def track_request(request_name: str = "user_request", metadata: Optional[dict[str, Any]] = None):
+async def track_request(request_name: str = "session", metadata: Optional[dict[str, Any]] = None):
     """Track an entire user request lifecycle.
     
-    This should wrap the outermost operation (e.g., the plan_execute call).
+    This should wrap the outermost operation (e.g., the conversation handler).
     Creates a unique request_id that all nested operations will use.
     
     Usage:
-        async with track_request("user_query", metadata={"prompt": "turn on lights"}):
-            result = await agent.plan(user_input)
+        async with track_request("session", metadata={"device": "office"}):
+            result = await agent.process(user_input)
     """
     if not _enabled:
         yield
@@ -121,22 +140,40 @@ async def track_request(request_name: str = "user_request", metadata: Optional[d
     request_id = str(uuid.uuid4())[:8]
     token = _current_request.set(request_id)
     
-    start = time.perf_counter()
+    start_mono = time.perf_counter()
+    start_wall = time.time()
+    status = "ok"
+    
     try:
         yield request_id
+    except Exception:
+        status = "error"
+        raise
     finally:
-        end = time.perf_counter()
-        duration_ms = (end - start) * 1000
+        end_mono = time.perf_counter()
+        end_wall = time.time()
+        duration_s = end_mono - start_mono
         
         session_id = _current_session.get()
         llm_fields = _extract_llm_fields(metadata or {})
+        
+        # Extract args if present
+        args = None
+        if metadata:
+            if "response" in metadata:
+                args = _truncate_json({"response": metadata["response"]}, 500)
+            elif "prompt" in metadata:
+                args = _truncate_json({"prompt": metadata["prompt"]}, 200)
+        
         _timing_records.append(TimingRecord(
             request_id=request_id,
             session_id=session_id,
             operation=request_name,
-            start_time=start,
-            end_time=end,
-            duration_ms=duration_ms,
+            start_time=start_wall,
+            end_time=end_wall,
+            duration_s=duration_s,
+            status=status,
+            args=args,
             metadata=metadata or {},
             **llm_fields,
         ))
@@ -148,14 +185,20 @@ async def track_request(request_name: str = "user_request", metadata: Optional[d
 async def track_operation(
     operation_name: str,
     metadata: Optional[dict[str, Any]] = None,
+    status: Optional[str] = None,
 ):
     """Track a single operation within a request.
     
     Automatically captures the current request_id and parent operation from context.
+    Tracks both wall-clock time (for timestamp correlation) and monotonic duration.
     
     Usage:
-        async with track_operation("llm_call", metadata={"model": "gpt-5"}):
+        async with track_operation("llm_call", metadata={"model": "gpt-5", "depth": 0}):
             response = await client.responses.create(...)
+        
+        # Or with args:
+        async with track_operation("tool_search_devices", metadata={"args": {...}}):
+            result = await search_devices(...)
     """
     if not _enabled:
         yield
@@ -175,28 +218,90 @@ async def track_operation(
     new_stack = stack + [operation_name]
     token = _operation_stack.set(new_stack)
     
-    start = time.perf_counter()
+    start_mono = time.perf_counter()
+    start_wall = time.time()
+    final_status = status or "ok"
+    
     try:
         yield
+    except Exception:
+        final_status = "error"
+        raise
     finally:
-        end = time.perf_counter()
-        duration_ms = (end - start) * 1000
+        end_mono = time.perf_counter()
+        end_wall = time.time()
+        duration_s = end_mono - start_mono
         
         session_id = _current_session.get()
         llm_fields = _extract_llm_fields(metadata or {})
+        
+        # Extract args if present in metadata
+        args = None
+        if metadata and "args" in metadata:
+            args = _truncate_json(metadata["args"], 500)
+        
         _timing_records.append(TimingRecord(
             request_id=request_id,
             session_id=session_id,
             operation=operation_name,
-            start_time=start,
-            end_time=end,
-            duration_ms=duration_ms,
+            start_time=start_wall,
+            end_time=end_wall,
+            duration_s=duration_s,
             parent_operation=parent,
+            status=final_status,
+            args=args,
             metadata=metadata or {},
             **llm_fields,
         ))
         
         _operation_stack.reset(token)
+
+
+def track_sync_operation(
+    operation_name: str,
+    metadata: Optional[dict[str, Any]] = None,
+    status: str = "ok",
+) -> None:
+    """Track a synchronous operation (e.g., load_session).
+    
+    For operations that don't need async context manager overhead.
+    
+    Usage:
+        track_sync_operation("load_session", metadata={
+            "args": {"prompt": "turn on lights", "tools_count": 15}
+        })
+    """
+    if not _enabled:
+        return
+    
+    request_id = _current_request.get()
+    if not request_id:
+        return
+    
+    session_id = _current_session.get()
+    stack = _operation_stack.get([])
+    parent = stack[-1] if stack else None
+    
+    # Extract args
+    args = None
+    if metadata and "args" in metadata:
+        args = _truncate_json(metadata["args"], 500)
+    
+    # For sync operations, we just record a point-in-time marker (no duration)
+    wall_time = time.time()
+    
+    _timing_records.append(TimingRecord(
+        request_id=request_id,
+        session_id=session_id,
+        operation=operation_name,
+        start_time=wall_time,
+        end_time=wall_time,
+        duration_s=0.0,
+        parent_operation=parent,
+        status=status,
+        args=args,
+        metadata=metadata or {},
+    ))
 
 
 async def track_parallel_operations(
@@ -236,24 +341,32 @@ async def track_parallel_operations(
         stack = _operation_stack.get([])
         parent = stack[-1] if stack else None
         
-        start = time.perf_counter()
+        start_mono = time.perf_counter()
+        start_wall = time.time()
+        status = "ok"
+        
         try:
             result = await coro
             return result
+        except Exception:
+            status = "error"
+            raise
         finally:
-            end = time.perf_counter()
-            duration_ms = (end - start) * 1000
+            end_mono = time.perf_counter()
+            end_wall = time.time()
+            duration_s = end_mono - start_mono
             
             session_id = _current_session.get()
             _timing_records.append(TimingRecord(
                 request_id=request_id,
                 session_id=session_id,
                 operation=op_name,
-                start_time=start,
-                end_time=end,
-                duration_ms=duration_ms,
+                start_time=start_wall,
+                end_time=end_wall,
+                duration_s=duration_s,
                 parent_operation=parent,
                 parallel_group=parallel_id,
+                status=status,
                 metadata={"group_name": group_name},
             ))
     
@@ -267,6 +380,9 @@ async def track_parallel_operations(
 
 def write_csv(path: Optional[Path] = None) -> None:
     """Write all timing records to CSV file.
+    
+    Schema V2 format with stable column order for analysis.
+    Handles CSV escaping automatically via DictWriter.
     
     Args:
         path: Optional path override. If None, uses configured path.
@@ -284,51 +400,56 @@ def write_csv(path: Optional[Path] = None) -> None:
     # Check if file exists to determine if we need headers
     file_exists = output_path.exists() and output_path.stat().st_size > 0
     
+    # Column order is critical for analysis tools
+    fieldnames = [
+        "date",
+        "start_time",
+        "end_time",
+        "duration_s",
+        "request_id",
+        "session_id",
+        "operation",
+        "llm_depth",
+        "args",
+        "model",
+        "reasoning",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "status",
+        "parent_op",
+        "parallel_group",
+        "metadata",
+    ]
+    
     with open(output_path, "a", newline="", encoding="utf-8") as f:
-        fieldnames = [
-            "timestamp",
-            "request_id",
-            "session_id",
-            "operation",
-            "duration_ms",
-            "parent_operation",
-            "parallel_group",
-            # LLM-specific columns
-            "model",
-            "reasoning_effort",
-            "depth",
-            "input_messages",
-            "reasoning_count",
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-            # Catch-all for other metadata
-            "metadata",
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
         
         if not file_exists:
             writer.writeheader()
         
         for record in sorted(_timing_records, key=lambda r: r.start_time):
+            # Format date from timestamp
+            dt = datetime.fromtimestamp(record.start_time)
+            
             writer.writerow({
-                "timestamp": record.timestamp,
+                "date": dt.strftime("%Y-%m-%d"),
+                "start_time": f"{record.start_time:.4f}",
+                "end_time": f"{record.end_time:.4f}",
+                "duration_s": f"{record.duration_s:.4f}",
                 "request_id": record.request_id,
                 "session_id": record.session_id or "",
                 "operation": record.operation,
-                "duration_ms": f"{record.duration_ms:.2f}",
-                "parent_operation": record.parent_operation or "",
-                "parallel_group": record.parallel_group or "",
-                # LLM columns
+                "llm_depth": str(record.llm_depth) if record.llm_depth is not None else "",
+                "args": record.args or "",
                 "model": record.model or "",
-                "reasoning_effort": record.reasoning_effort or "",
-                "depth": str(record.depth) if record.depth is not None else "",
-                "input_messages": str(record.input_messages) if record.input_messages is not None else "",
-                "reasoning_count": str(record.reasoning_count) if record.reasoning_count is not None else "",
+                "reasoning": record.reasoning_effort or "",
                 "prompt_tokens": str(record.prompt_tokens) if record.prompt_tokens is not None else "",
                 "completion_tokens": str(record.completion_tokens) if record.completion_tokens is not None else "",
                 "total_tokens": str(record.total_tokens) if record.total_tokens is not None else "",
-                # Remaining metadata
+                "status": record.status or "",
+                "parent_op": record.parent_operation or "",
+                "parallel_group": record.parallel_group or "",
                 "metadata": str(record.metadata) if record.metadata else "",
             })
     

@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from . import logging as log
+from .data_sources import call_service_tracked
 from .tool_registry import ToolSpec, get_sequence_safe_tool_specs
 
 
@@ -28,10 +29,9 @@ def _substitute_vars(obj: Any, vars: Dict) -> Any:
 
 
 async def _call_service(hass: Any, service: str, data: Dict) -> None:
-    """Call a Home Assistant service."""
-
+    """Call a Home Assistant service (tracked in data_sources wrapper)."""
     domain, name = service.split(".", 1)
-    await hass.services.async_call(domain, name, data, blocking=True)
+    await call_service_tracked(hass, domain, name, data, blocking=True)
 
 
 async def _wait_state(

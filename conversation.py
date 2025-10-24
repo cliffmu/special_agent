@@ -73,7 +73,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         
         # Track entire request lifecycle with user prompt in metadata
         async with performance.track_request(
-            "user_request",
+            "session",
             metadata={"prompt": user_text[:100]}  # First 100 chars
         ):
             result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
@@ -82,6 +82,15 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
 
         if isinstance(result, dict) and "prompt_payload" in result:
             await mgr.save()
+            
+            # Track final response
+            final_response = result["prompt_payload"]["speak"]
+            performance.track_sync_operation(
+                "end_session",
+                metadata={"args": {"response": final_response}},
+                status="ok"
+            )
+            
             service_domain = "assist_pipeline"
             service_name = "run"
             if self.hass.services.has_service(service_domain, service_name):
@@ -91,7 +100,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                     {
                         "conversation_id": conversation_input.conversation_id,
                         "device_id": device_id,
-                        "tts_input": result["prompt_payload"]["speak"],
+                        "tts_input": final_response,
                         "start_stage": "tts",
                         "end_stage": "stt",
                     },
@@ -103,7 +112,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                     service_domain, service_name
                 )
             response = intent.IntentResponse(language=conversation_input.language)
-            response.async_set_speech(result["prompt_payload"]["speak"])
+            response.async_set_speech(final_response)
             return ConversationResult(
                 conversation_id=conversation_input.conversation_id,
                 response=response,
@@ -111,8 +120,17 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         
         # Error or non-standard result path - still save session to preserve context
         await mgr.save()
+        
+        # Track final response (error case)
+        final_response = str(result)
+        performance.track_sync_operation(
+            "end_session",
+            metadata={"args": {"response": final_response}},
+            status="error" if "error" in final_response.lower() else "ok"
+        )
+        
         response = intent.IntentResponse(language=conversation_input.language)
-        response.async_set_speech(str(result))
+        response.async_set_speech(final_response)
         return ConversationResult(
             conversation_id=conversation_input.conversation_id,
             response=response,

@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 from ..agent_core import ToolSpec
 from ..utils import logging as log
-from ..utils.data_sources import get_plex_connection_info, get_integration_entry
+from ..utils.data_sources import get_plex_connection_info, get_integration_entry, call_service_tracked
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -71,7 +71,9 @@ async def play_plex_media(
     
     # Try HA service first
     try:
-        await hass.services.async_call(
+        # Call service (tracked in data_sources wrapper)
+        await call_service_tracked(
+            hass,
             "media_player",
             "play_media",
             {

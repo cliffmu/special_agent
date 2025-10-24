@@ -21,9 +21,59 @@ except ModuleNotFoundError:  # pragma: no cover - fallback stubs
     ar = dr = er = None  # type: ignore
 
 from . import logging as log
+from . import performance
 
 _LOGGER = logging.getLogger(__package__)
 
+
+# ============================================================================
+# Tracked HA Interaction Wrappers (for performance monitoring)
+# ============================================================================
+
+async def call_service_tracked(
+    hass: Any,
+    domain: str,
+    service: str,
+    service_data: dict,
+    blocking: bool = True
+) -> None:
+    """Call Home Assistant service with automatic performance tracking.
+    
+    Isolates HA internal latency (network, device response) from our code.
+    Use this instead of hass.services.async_call directly.
+    """
+    async with performance.track_operation(
+        "ha_service_call",
+        metadata={
+            "args": {"service": f"{domain}.{service}", "data": service_data},
+            "domain": domain,
+            "service_name": service
+        }
+    ):
+        await hass.services.async_call(domain, service, service_data, blocking=blocking)
+
+
+async def executor_job_tracked(
+    hass: Any,
+    func,
+    *args,
+    operation_name: str = "ha_executor_job",
+    **kwargs
+) -> Any:
+    """Run blocking function in executor with performance tracking.
+    
+    Used for database queries (history) and other blocking operations.
+    """
+    async with performance.track_operation(
+        operation_name,
+        metadata={"args": {"function": func.__name__ if hasattr(func, '__name__') else str(func)}}
+    ):
+        return await hass.async_add_executor_job(func, *args, **kwargs)
+
+
+# ============================================================================
+# HA State & Entity Retrieval
+# ============================================================================
 
 def get_ha_states(hass: HomeAssistant) -> List[Dict]:
     """Return conversation-exposed states from Home Assistant.
