@@ -125,11 +125,10 @@ async def plan_execute(
         log.error("Setup failed: %s", err)
         return "Error initializing agent"
 
-    # Load session
-    async with performance.track_operation("load_session"):
-        messages, mgr, focus, pending = load_session(
-            hass, session_key, system_prompt, prompt, session_timeout_minutes
-        )
+    # Load session (tracks internally)
+    messages, mgr, focus, pending = load_session(
+        hass, session_key, system_prompt, prompt, session_timeout_minutes
+    )
     
     # Set session ID for performance tracking
     if performance.is_enabled() and session_key:
@@ -163,21 +162,30 @@ async def plan_execute(
             # Call LLM
             try:
                 async with performance.track_operation(
-                    f"llm_call_{depth+1}",
-                    metadata={"model": model, "reasoning": reasoning_effort, "depth": depth}
+                    "llm_call",
+                    metadata={
+                        "model": model,
+                        "reasoning": reasoning_effort,
+                        "depth": depth,
+                        "prompt_tokens": None,  # Will be filled after call
+                        "completion_tokens": None,
+                        "total_tokens": None,
+                    }
                 ):
                     response = await call_llm(client, messages, tool_json, model, reasoning_effort, depth)
                     
-                    # Update performance metrics with LLM details
+                    # Update performance metrics with LLM response details
                     if performance.is_enabled():
                         request_id = performance.get_current_request_id()
                         if request_id:
                             for record in performance.get_records():
-                                if record.request_id == request_id and record.operation == f"llm_call_{depth+1}":
-                                    record.reasoning_count = response.reasoning_count
+                                if record.request_id == request_id and record.operation == "llm_call" and record.llm_depth == depth:
                                     record.prompt_tokens = response.usage.get("prompt_tokens")
                                     record.completion_tokens = response.usage.get("completion_tokens")
                                     record.total_tokens = response.usage.get("total_tokens")
+                                    # Add extra context to metadata
+                                    record.metadata["input_messages"] = len(messages)
+                                    record.metadata["reasoning_count"] = response.reasoning_count
                                     break
             
             except Exception as err:

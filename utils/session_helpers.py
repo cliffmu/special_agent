@@ -8,10 +8,12 @@ import uuid
 
 try:
     from . import logging as log
+    from . import performance
     from .. import DOMAIN
     from ..session_store import Session
 except ImportError:
     from utils import logging as log
+    from utils import performance
     from session_store import Session
     DOMAIN = "special_agent"
 
@@ -122,9 +124,31 @@ def load_session(
                 # Log the user's prompt for debugging
                 log.info(f"User_Prompt: {prompt}")
                 
+                # Track for performance analysis
+                performance.track_sync_operation(
+                    "load_session",
+                    metadata={"args": {
+                        "prompt": prompt,
+                        "session_msg_count": len(msgs),
+                        "is_continuation": True
+                    }},
+                    status="ok"
+                )
+                
                 return msgs, mgr, focus, pending
     # New session - log the user's prompt for debugging
     log.info(f"User_Prompt (new session): {prompt}")
+    
+    # Track for performance analysis
+    performance.track_sync_operation(
+        "load_session",
+        metadata={"args": {
+            "prompt": prompt,
+            "session_msg_count": 2,
+            "is_continuation": False
+        }},
+        status="ok"
+    )
     
     return [
         {"role": "system", "content": system_prompt, "id": generate_message_id()},

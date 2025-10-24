@@ -7,6 +7,7 @@ from typing import Any
 
 from ..agent_core import ToolSpec
 from ..utils import logging as log
+from ..utils.data_sources import call_service_tracked
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -65,8 +66,8 @@ async def control_device(
         if state_obj:
             before_state = state_obj.state
     
-    # Call the service
-    await hass.services.async_call(domain, name, service_data, blocking=True)
+    # Call the service (tracked in data_sources wrapper)
+    await call_service_tracked(hass, domain, name, service_data, blocking=True)
     
     # Check entity state immediately AFTER action
     after_state = None

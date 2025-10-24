@@ -30,6 +30,7 @@ except Exception:  # pragma: no cover - not available in unit test env
 
 from ..agent_core import ToolSpec
 from ..utils import logging as log
+from ..utils.data_sources import executor_job_tracked
 
 try:  # allow import failure during tests
     from homeassistant.components.history import get_significant_states
@@ -113,8 +114,12 @@ async def get_entity_history(
     else:
         start = utc_now() - timedelta(hours=lookback_hours)
         end = None
-    hist = await hass.async_add_executor_job(
-        get_significant_states, hass, start, end, [entity_id], True
+    # Query history (tracked in data_sources wrapper)
+    hist = await executor_job_tracked(
+        hass,
+        get_significant_states,
+        hass, start, end, [entity_id], True,
+        operation_name="ha_history_query"
     )
     events = hist.get(entity_id, [])
     if target_state:
