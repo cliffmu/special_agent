@@ -278,8 +278,8 @@ async def validate_and_execute_tools(
         # Update focus tracking
         if call_name == "control_device":
             focus = {
-                "targets": args["data"].get("entity_id", []),
-                "action": args["service"],
+                "targets": [args.get("entity_id")],  # entity_id is now top-level parameter
+                "action": args.get("service"),
             }
         elif isinstance(result, dict) and result.get("focus"):
             focus = result["focus"]
