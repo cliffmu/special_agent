@@ -304,6 +304,115 @@ def track_sync_operation(
     ))
 
 
+@asynccontextmanager
+async def track_llm_call(
+    model: str,
+    reasoning_effort: str,
+    depth: int,
+    message_count: int,
+):
+    """Track LLM call with token counts from response.
+    
+    Context manager that captures timing and yields timing info.
+    After the call completes, provide the response to capture token counts.
+    
+    Usage:
+        async with track_llm_call(model, reasoning, depth, len(messages)) as tracker:
+            response = await call_llm(...)
+            tracker.set_response(response)
+    
+    Args:
+        model: Model name (e.g., "gpt-5")
+        reasoning_effort: Reasoning level ("minimal", "low", "medium", "high")
+        depth: Current loop depth
+        message_count: Number of messages in conversation
+        
+    Yields:
+        Tracker object with set_response() method to capture token counts
+    """
+    
+    class LLMTracker:
+        """Helper to capture response details after LLM call."""
+        def __init__(self):
+            self.response = None
+            
+        def set_response(self, response):
+            """Set response to extract token counts."""
+            self.response = response
+    
+    if not _enabled:
+        tracker = LLMTracker()
+        yield tracker
+        return
+    
+    request_id = _current_request.get()
+    if not request_id:
+        tracker = LLMTracker()
+        yield tracker
+        return
+    
+    # Capture context before call
+    session_id = _current_session.get()
+    stack = _operation_stack.get([])
+    parent = stack[-1] if stack else None
+    
+    # Start timing
+    start_mono = time.perf_counter()
+    start_wall = time.time()
+    status = "ok"
+    tracker = LLMTracker()
+    
+    try:
+        yield tracker
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        # End timing
+        end_mono = time.perf_counter()
+        end_wall = time.time()
+        
+        # Build metadata
+        token_metadata = {
+            "model": model,
+            "reasoning": reasoning_effort,
+            "depth": depth,
+            "input_messages": message_count,
+        }
+        
+        # Extract token counts from response if available
+        prompt_tokens = None
+        completion_tokens = None
+        total_tokens = None
+        
+        if status == "ok" and tracker.response:
+            usage = getattr(tracker.response, 'usage', {})
+            if isinstance(usage, dict):
+                prompt_tokens = usage.get("prompt_tokens")
+                completion_tokens = usage.get("completion_tokens")
+                total_tokens = usage.get("total_tokens")
+                token_metadata["reasoning_count"] = getattr(tracker.response, 'reasoning_count', 0)
+        
+        # Record timing with token counts
+        _timing_records.append(TimingRecord(
+            request_id=request_id,
+            session_id=session_id,
+            operation="llm_call",
+            start_time=start_wall,
+            end_time=end_wall,
+            duration_s=end_mono - start_mono,
+            parent_operation=parent,
+            status=status,
+            llm_depth=depth,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            metadata=token_metadata,
+        ))
+
+
 async def track_parallel_operations(
     operations: list[tuple[str, Any]],
     group_name: str = "parallel_group",
@@ -429,13 +538,14 @@ def write_csv(path: Optional[Path] = None) -> None:
             writer.writeheader()
         
         for record in sorted(_timing_records, key=lambda r: r.start_time):
-            # Format date from timestamp
-            dt = datetime.fromtimestamp(record.start_time)
+            # Format datetime strings from timestamps
+            start_dt = datetime.fromtimestamp(record.start_time)
+            end_dt = datetime.fromtimestamp(record.end_time)
             
             writer.writerow({
-                "date": dt.strftime("%Y-%m-%d"),
-                "start_time": f"{record.start_time:.4f}",
-                "end_time": f"{record.end_time:.4f}",
+                "date": start_dt.strftime("%Y-%m-%d"),
+                "start_time": start_dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],  # Include milliseconds
+                "end_time": end_dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
                 "duration_s": f"{record.duration_s:.4f}",
                 "request_id": record.request_id,
                 "session_id": record.session_id or "",

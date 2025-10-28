@@ -77,6 +77,16 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             metadata={"prompt": user_text[:100]}  # First 100 chars
         ):
             result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
+        
+        # Write performance metrics after track_request completes (ensures session record is captured)
+        if performance.is_enabled():
+            record_count = len(performance.get_records())
+            if record_count > 0:
+                try:
+                    await self.hass.async_add_executor_job(performance.write_csv)
+                    _LOGGER.debug("Performance metrics written: %d records", record_count)
+                except Exception as err:
+                    _LOGGER.error("Failed to write performance metrics: %s", err, exc_info=True)
 
         mgr = self.hass.data[DOMAIN]["sessions"]
 
