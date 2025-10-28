@@ -157,118 +157,79 @@ async def plan_execute(
     tool_json = [spec_to_json(t) for t in tools]
 
     # Main ReAct loop
-    try:
-        while depth < max_depth:
-            # Call LLM
-            try:
-                async with performance.track_operation(
-                    "llm_call",
-                    metadata={
-                        "model": model,
-                        "reasoning": reasoning_effort,
-                        "depth": depth,
-                        "prompt_tokens": None,  # Will be filled after call
-                        "completion_tokens": None,
-                        "total_tokens": None,
-                    }
-                ):
-                    response = await call_llm(client, messages, tool_json, model, reasoning_effort, depth)
-                    
-                    # Update performance metrics with LLM response details
-                    if performance.is_enabled():
-                        request_id = performance.get_current_request_id()
-                        if request_id:
-                            for record in performance.get_records():
-                                if record.request_id == request_id and record.operation == "llm_call" and record.llm_depth == depth:
-                                    record.prompt_tokens = response.usage.get("prompt_tokens")
-                                    record.completion_tokens = response.usage.get("completion_tokens")
-                                    record.total_tokens = response.usage.get("total_tokens")
-                                    # Add extra context to metadata
-                                    record.metadata["input_messages"] = len(messages)
-                                    record.metadata["reasoning_count"] = response.reasoning_count
-                                    break
-            
-            except Exception as err:
-                # Handle LLM errors
-                error_msg, messages = handle_llm_error(err, messages)
-                if error_msg:  # Unrecoverable error
-                    store_session(mgr, session_key, messages, pending, focus)
-                    return error_msg
-                continue  # Retry with updated messages
-            
-            # Log response
-            log.debug("AI_Response_Text: %s", response.final_text)
-            if response.function_calls:
-                log.debug("AI_Response_Function_Calls: %s",
-                         [(fc.name, fc.arguments) for fc in response.function_calls])
-            
-            # Add response to history
-            messages.extend(response.output)
-            
-            # Check for final answer (no tool calls)
-            if response.final_text and not response.function_calls:
-                # Skip intermediate acknowledgments
-                cleaned = (response.final_text or "").strip().lower()
-                intermediate_ack = cleaned in {"yes", "yeah", "yep", "yup", "sure", "no", "nope"}
-                if not intermediate_ack:
-                    async with performance.track_operation("store_session"):
-                        store_session(mgr, session_key, messages, pending, focus)
-                    return response.final_text or "OK"
-            
-            # Execute tools if present
-            if response.function_calls:
-                tool_results = await validate_and_execute_tools(
-                    response.function_calls, spec_map, tried_calls, hass
-                )
-                
-                # Add tool results to message history
-                messages.extend(tool_results.messages)
-                focus = tool_results.focus or focus
-                
-                # Check for prompt response (confirm/ask)
-                if tool_results.prompt_response:
-                    store_session(mgr, session_key, messages, tool_results.prompt_response, focus)
-                    return {"prompt_payload": tool_results.prompt_response, "messages": messages}
-                
-                # Check if all tools failed
-                if tool_results.all_failed:
-                    store_session(mgr, session_key, messages, pending, focus)
-                    return tool_results.error_message
-            
-            # Continue loop
-            depth += 1
-            if retry_budget > 0:
-                retry_budget -= 1
-            
-            # Request final answer if out of retries
-            if retry_budget < 0:
-                messages.append({
-                    "role": "user",
-                    "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response.",
-                    "id": generate_message_id()
-                })
-                depth += 1
-            
-            # Check depth limit
-            if depth >= max_depth:
-                log.warning("Depth limit reached")
+    while depth < max_depth:
+        # Call LLM with performance tracking
+        try:
+            async with performance.track_llm_call(model, reasoning_effort, depth, len(messages)) as tracker:
+                response = await call_llm(client, messages, tool_json, model, reasoning_effort, depth)
+                tracker.set_response(response)
+        except Exception as err:
+            # Handle LLM errors
+            error_msg, messages = handle_llm_error(err, messages)
+            if error_msg:  # Unrecoverable error
                 store_session(mgr, session_key, messages, pending, focus)
-                return "Depth limit reached. Please try again."
+                return error_msg
+            continue  # Retry with updated messages
         
-        # Fallback if loop exits without returning
-        log.error("Agent loop exited without response")
-        return "I apologize, but I wasn't able to complete your request."
+        # Log response
+        log.debug("AI_Response_Text: %s", response.final_text)
+        if response.function_calls:
+            log.debug("AI_Response_Function_Calls: %s",
+                     [(fc.name, fc.arguments) for fc in response.function_calls])
+        
+        # Add response to history
+        messages.extend(response.output)
+        
+        # Check for final answer (no tool calls)
+        if response.final_text and not response.function_calls:
+            # Skip intermediate acknowledgments
+            cleaned = (response.final_text or "").strip().lower()
+            intermediate_ack = cleaned in {"yes", "yeah", "yep", "yup", "sure", "no", "nope"}
+            if not intermediate_ack:
+                async with performance.track_operation("store_session"):
+                    store_session(mgr, session_key, messages, pending, focus)
+                return response.final_text or "OK"
+        
+        # Execute tools if present
+        if response.function_calls:
+            tool_results = await validate_and_execute_tools(
+                response.function_calls, spec_map, tried_calls, hass
+            )
+            
+            # Add tool results to message history
+            messages.extend(tool_results.messages)
+            focus = tool_results.focus or focus
+            
+            # Check for prompt response (confirm/ask)
+            if tool_results.prompt_response:
+                store_session(mgr, session_key, messages, tool_results.prompt_response, focus)
+                return {"prompt_payload": tool_results.prompt_response, "messages": messages}
+            
+            # Check if all tools failed
+            if tool_results.all_failed:
+                store_session(mgr, session_key, messages, pending, focus)
+                return tool_results.error_message
+        
+        # Continue loop
+        depth += 1
+        if retry_budget > 0:
+            retry_budget -= 1
+        
+        # Request final answer if out of retries
+        if retry_budget < 0:
+            messages.append({
+                "role": "user",
+                "content": "You've tried multiple times. Please provide a final answer using prepare_voice_response.",
+                "id": generate_message_id()
+            })
+            depth += 1
+        
+        # Check depth limit
+        if depth >= max_depth:
+            log.warning("Depth limit reached")
+            store_session(mgr, session_key, messages, pending, focus)
+            return "Depth limit reached. Please try again."
     
-    finally:
-        # Always write performance metrics
-        if performance.is_enabled():
-            record_count = len(performance.get_records())
-            if record_count > 0:
-                try:
-                    if hass:
-                        await hass.async_add_executor_job(performance.write_csv)
-                    else:
-                        performance.write_csv()
-                    log.debug("Performance metrics written: %d records", record_count)
-                except Exception as err:
-                    log.error("Failed to write performance metrics: %s", err, exc_info=True)
+    # Fallback if loop exits without returning
+    log.error("Agent loop exited without response")
+    return "I apologize, but I wasn't able to complete your request."

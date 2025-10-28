@@ -200,38 +200,72 @@ async def validate_and_execute_tools(
         })
 
     # Phase 2: Execute all valid calls in parallel
-    async def execute_tool(call, spec, args):
+    # Generate parallel group ID if multiple tools
+    import uuid
+    parallel_group_id = str(uuid.uuid4())[:8] if len(tasks_to_run) > 1 else None
+    
+    async def execute_tool(call, spec, args, parallel_group=None):
         """Execute a single tool and return (call, spec, args, result, is_error)"""
         call_name = spec.name
         log.debug("Action: %s %s", call_name, args)
+        
+        # Manually track tool execution to include parallel_group
+        import time
+        from . import performance as perf
+        from .performance import TimingRecord, _timing_records, _current_request, _current_session, _operation_stack
+        
+        start_mono = time.perf_counter()
+        start_wall = time.time()
         status = "ok"
+        
         try:
-            async with performance.track_operation(
-                f"tool_{call_name}",
-                metadata={"args": args}  # Will be truncated by track_operation
-            ):
-                if hass and "hass" in inspect.signature(spec.func).parameters:
-                    call_args = {"hass": hass, **args}
-                    log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                    result = await spec.func(**call_args)
-                else:
-                    call_args = args
-                    log.debug("Tool_Input[%s]: %s", call_name, call_args)
-                    result = await spec.func(**call_args)
+            if hass and "hass" in inspect.signature(spec.func).parameters:
+                call_args = {"hass": hass, **args}
+                log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                result = await spec.func(**call_args)
+            else:
+                call_args = args
+                log.debug("Tool_Input[%s]: %s", call_name, call_args)
+                result = await spec.func(**call_args)
             log.debug("Tool_Result[%s]: %s", call_name, result)
             return (call, spec, args, result, False)
         except Exception as err:
             log.error("Tool execution failed: %s", err)
             status = "error"
-            # Update last record with error status
-            if performance.is_enabled():
-                request_id = performance.get_current_request_id()
-                if request_id:
-                    for record in reversed(performance.get_records()):
-                        if record.request_id == request_id and record.operation == f"tool_{call_name}":
-                            record.status = "error"
-                            break
             return (call, spec, args, f"Error: Tool failed: {err}", True)
+        finally:
+            # Track tool execution with parallel_group if applicable
+            if perf.is_enabled():
+                end_mono = time.perf_counter()
+                end_wall = time.time()
+                
+                request_id = _current_request.get()
+                session_id = _current_session.get()
+                stack = _operation_stack.get([])
+                parent = stack[-1] if stack else None
+                
+                # Truncate args for metadata
+                import json
+                try:
+                    args_json = json.dumps(args, default=str, ensure_ascii=False)
+                    if len(args_json) > 500:
+                        args_json = args_json[:500] + "..."
+                except Exception:
+                    args_json = str(args)[:500]
+                
+                _timing_records.append(TimingRecord(
+                    request_id=request_id,
+                    session_id=session_id,
+                    operation=f"tool_{call_name}",
+                    start_time=start_wall,
+                    end_time=end_wall,
+                    duration_s=end_mono - start_mono,
+                    parent_operation=parent,
+                    parallel_group=parallel_group,
+                    status=status,
+                    args=args_json,
+                    metadata={"args": args},
+                ))
 
     # Run all tools in parallel
     if tasks_to_run:
@@ -239,10 +273,10 @@ async def validate_and_execute_tools(
             # Track parallel execution group
             async with performance.track_operation(
                 f"parallel_tools_{len(tasks_to_run)}",
-                metadata={"tools": [spec.name for _, spec, _ in tasks_to_run]}
+                metadata={"tools": [spec.name for _, spec, _ in tasks_to_run], "parallel_group": parallel_group_id}
             ):
                 results = await asyncio.gather(
-                    *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
+                    *[execute_tool(call, spec, args, parallel_group_id) for call, spec, args in tasks_to_run],
                     return_exceptions=False
                 )
         else:
