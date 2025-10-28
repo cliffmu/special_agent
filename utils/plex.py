@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 try:  # Home Assistant may be absent during testing
     from homeassistant.core import HomeAssistant
@@ -19,6 +20,43 @@ _LOGGER = logging.getLogger(__package__)
 
 _SEASON_EPISODE_RE = re.compile(r"\bS(?P<season>\d{1,2})E(?P<episode>\d{1,2})\b", re.IGNORECASE)
 
+# Connection pooling: Cache PlexServer instances to avoid repeated connection overhead
+_plex_server_cache: Dict[str, Tuple[Any, float]] = {}  # (server, timestamp)
+_CACHE_TTL = 300  # 5 minutes
+
+# Result caching: DISABLED - analysis shows searches are hours apart, not seconds
+# User pattern: searches for different content or same content after hours
+# Only would help: parallel searches (already concurrent) and same-session retries (rare)
+# _search_result_cache: Dict[str, Tuple[List[Dict[str, Any]], float]] = {}
+# _RESULT_CACHE_TTL = 60
+
+
+def _get_cached_server(base_url: str, token: str) -> Any:
+    """Get or create cached PlexServer connection.
+    
+    Reuses existing connections to avoid repeated DNS/TCP/auth overhead.
+    Cache expires after _CACHE_TTL seconds.
+    """
+    cache_key = f"{base_url}:{token[:8]}"  # Use partial token for key
+    now = time.time()
+    
+    # Check cache and TTL
+    if cache_key in _plex_server_cache:
+        server, timestamp = _plex_server_cache[cache_key]
+        if now - timestamp < _CACHE_TTL:
+            log.debug("plex: Using cached server connection (age: %.1fs)", now - timestamp)
+            return server
+        else:
+            log.debug("plex: Server cache expired, creating new connection")
+            del _plex_server_cache[cache_key]
+    
+    # Create new connection
+    from plexapi.server import PlexServer
+    server = PlexServer(base_url, token)
+    _plex_server_cache[cache_key] = (server, now)
+    log.debug("plex: Created new server connection and cached it")
+    return server
+
 
 async def plex_search(
     hass: HomeAssistant | None,
@@ -29,6 +67,10 @@ async def plex_search(
     """Search Plex for media matching ``query``.
     
     Returns dict with 'hits' (list) and optional 'error' (str) fields.
+    
+    Optimizations:
+    - Caches PlexServer connections for 5 minutes to avoid repeated handshakes
+    - Reduces over-fetching by requesting exact limit needed
     """
 
     if not query:
@@ -58,13 +100,13 @@ async def plex_search(
         """Returns (hits, error_message)."""
         try:
             from plexapi.exceptions import NotFound  # type: ignore
-            from plexapi.server import PlexServer  # type: ignore
         except ModuleNotFoundError as exc:  # pragma: no cover - dependency missing
             log.error("plex_search: plexapi not installed: %s", exc)
             return [], "PlexAPI library not installed"
 
         try:
-            server = PlexServer(base_url, token)
+            # Use cached server connection instead of creating new one
+            server = _get_cached_server(base_url, token)
         except Exception as err:  # pragma: no cover - network issues
             log.error("plex_search: failed to connect to Plex server: %s", err)
             return [], f"Failed to connect to Plex server: {err}"
@@ -78,7 +120,9 @@ async def plex_search(
             cleaned_query = _SEASON_EPISODE_RE.sub("", query).strip()
 
         try:
-            search_kwargs = {"limit": max(limit * 2, 10)}
+            # Optimized: Request only what we need (not 2x) to reduce network overhead
+            # Add small buffer for deduplication, but not excessive
+            search_kwargs = {"limit": limit + 2}
             if kind:
                 search_kwargs["mediatype"] = kind
             results.extend(server.search(query, **search_kwargs))

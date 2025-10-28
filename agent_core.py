@@ -113,7 +113,7 @@ async def plan_execute(
     
     # Validate API key
     if not os.environ.get("OPENAI_API_KEY"):
-        return "Sorry, I'm not ready to help yet."
+        return "Sorry, I'm not ready to help yet. Please add Open AI API key to the integration configuration."
 
     # Setup: Get client and build system prompt
     try:
