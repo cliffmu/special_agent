@@ -135,6 +135,17 @@ existing device name, API encryption key and OTA password in this configuration,
 and retain the device's encrypted ESPHome integration in Home Assistant; the
 upstream firmware starts its voice client after HA connects.
 
+Factory firmware can have no configured API encryption key. In that case, use a
+new random 32-byte Base64 key for this firmware, then enter it in the existing
+ESPHome integration when HA requests an encryption key after installation.
+This device key is separate from the OpenAI API key used by the bridge.
+
+When identifying the USB device, compare its **custom** MAC with the sticker and
+HA device page. ESPHome uses that address; `esptool read-mac` instead reports the
+chip's factory MAC, which can differ. The read-only command
+`espefuse --chip esp32s3 --port YOUR_USB_PORT get-custom-mac` reports the address
+used by the Voice PE on your network.
+
 ```sh
 python3 experimental/live/firmware/prepare.py
 cp experimental/live/firmware/secrets.example.yaml experimental/live/firmware/secrets.yaml
