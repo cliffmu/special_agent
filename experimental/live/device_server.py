@@ -24,6 +24,9 @@ from .session import LiveSession
 
 LOG = logging.getLogger(__name__)
 LIVE_URL = "wss://api.openai.com/v1/live/sessions"
+# Allow ordinary 512-byte firmware frames to reach the 64,000-byte (2 s) bound.
+# A separate packet limit still bounds queue bookkeeping for tiny fragments.
+MIC_QUEUE_PACKETS = 256
 SAFE_LIVE_ERROR_CODES = frozenset({
     "authentication_error", "credit_balance_exhausted", "insufficient_quota",
     "invalid_api_key", "invalid_request_error", "model_not_found",
@@ -55,7 +58,7 @@ class VoiceDevice:
         self.session = None
         self.runner = None
         self.stop = asyncio.Event()
-        self.mic = asyncio.Queue(maxsize=64)
+        self.mic = asyncio.Queue(maxsize=MIC_QUEUE_PACKETS)
         self.mic_bytes = 0
         self.accept_audio = False
         self.play_audio = False
@@ -115,14 +118,14 @@ class VoiceDevice:
             if self.runner is None or self.runner.done():
                 self.stop = asyncio.Event()
                 self.stop_reason = None
-                self.mic = asyncio.Queue(maxsize=64)
+                self.mic = asyncio.Queue(maxsize=MIC_QUEUE_PACKETS)
                 self.mic_bytes = 0
                 self.accept_audio = True
                 self.runner = asyncio.create_task(self.run_sessions())
             elif self.stop.is_set():
                 # Firmware emits interrupt then wake when starting over during playback.
                 self.restart = True
-                self.mic = asyncio.Queue(maxsize=64)
+                self.mic = asyncio.Queue(maxsize=MIC_QUEUE_PACKETS)
                 self.mic_bytes = 0
                 self.accept_audio = True
             elif self.accept_audio and self.session and self.session.state == "active":

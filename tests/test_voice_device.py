@@ -183,6 +183,58 @@ async def test_wake_buffers_first_words_until_live_ready_and_transcodes_micropho
         assert device.session.finalized and device.session.usage["seconds"] == 17
 
 
+async def test_startup_buffers_one_hundred_firmware_frames_before_live_is_ready(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        # The firmware sends 512 bytes every 16 ms. This is 1.6 s, below the
+        # intended 2 s byte bound but above the old 64-packet/1.024 s limit.
+        for _ in range(100):
+            await socket.send_bytes(b"\0" * 512)
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        device = cloud.devices[-1]
+        assert device.mic_bytes == 51200 and device.mic.qsize() == 100
+        assert device.accept_audio and not device.stop.is_set()
+
+        await upstream.send_json({"type": "session.started", "session": {"id": "live-buffered"}})
+        await control(socket, "ack")
+        assert (await control(socket, "phase"))["value"] == "listening"
+        # Preserve every buffered input sample through the stateful conversion.
+        expected_bytes = ((100 * 256 - 1) * 3 // 2 + 1) * 2
+        received = 0
+        while received < expected_bytes:
+            event = await cloud.next_event("session.input_audio.append")
+            pcm = base64.b64decode(event["audio"], validate=True)
+            assert not any(pcm)
+            received += len(pcm)
+        assert received == expected_bytes
+        assert device.accept_audio and device.last_stop_reason is None
+        await socket.close()
+
+
+async def test_startup_still_stops_when_pcm_exceeds_two_second_byte_bound(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        await asyncio.wait_for(cloud.starts.get(), 2)
+        for _ in range(125):
+            await socket.send_bytes(b"\0" * 512)
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        device = cloud.devices[-1]
+        assert device.mic_bytes == 64000 and device.mic.qsize() == 125
+        assert not device.stop.is_set()
+
+        await socket.send_bytes(b"\0" * 512)
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "mic_backlog"
+        assert device.mic_bytes == 64000 and not device.accept_audio
+        assert device.session.finalized
+        await socket.close()
+
+
 @pytest.mark.parametrize("stop_event", ["button_cancel", "interrupt"])
 async def test_pcm_keeps_flowing_while_backend_waits_and_stop_preserves_accepted_work(
     monkeypatch, stop_event
