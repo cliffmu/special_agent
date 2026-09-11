@@ -1,0 +1,64 @@
+{
+  "title": "Special Agent",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Special Agent settings",
+        "data": {
+          "openai_api_key": "OpenAI API key",
+          "spotify_client_id": "Spotify client ID",
+          "spotify_client_secret": "Spotify client secret",
+          "agent_model": "Agent model",
+          "reasoning_effort": "Reasoning effort",
+          "fast_mode": "Fast mode (higher API cost)",
+          "require_confirmation": "Require confirmation",
+          "session_timeout_minutes": "Agent conversation history timeout (minutes)",
+          "enable_performance_tracking": "Save detailed performance CSV",
+          "scene_memory_enabled": "Enable learned routine memory"
+        },
+        "data_description": {
+          "openai_api_key": "Leave blank in Configure to keep the saved key.",
+          "spotify_client_secret": "Leave blank to keep the saved secret.",
+          "agent_model": "Model used by the Python agent for delegated work. Terra is a balanced starting point; Luna costs less; Sol and Astra offer more capability. Live speech keeps its separate voice model.",
+          "reasoning_effort": "Low is recommended for voice latency. An effort unsupported by the selected model is saved as low.",
+          "fast_mode": "Requests OpenAI Fast processing at higher token rates (currently 2x for the new models). Off explicitly requests standard processing. This cannot speed up external tools.",
+          "session_timeout_minutes": "Controls stored Python-agent conversation context. The Voice listening idle timeout is set separately in the Special Agent Live app.",
+          "enable_performance_tracking": "Optional detailed diagnostics. Concise activity logs are available in Home Assistant Core without this setting.",
+          "scene_memory_enabled": "Learn and reuse routines in Special Agent scene_memory.json. These are separate from Home Assistant scenes.yaml."
+        }
+      }
+    },
+    "error": {
+      "required_key": "Enter an OpenAI API key."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Special Agent settings",
+        "data": {
+          "openai_api_key": "OpenAI API key",
+          "spotify_client_id": "Spotify client ID",
+          "spotify_client_secret": "Spotify client secret",
+          "agent_model": "Agent model",
+          "reasoning_effort": "Reasoning effort",
+          "fast_mode": "Fast mode (higher API cost)",
+          "require_confirmation": "Require confirmation",
+          "session_timeout_minutes": "Agent conversation history timeout (minutes)",
+          "enable_performance_tracking": "Save detailed performance CSV",
+          "scene_memory_enabled": "Enable learned routine memory"
+        },
+        "data_description": {
+          "openai_api_key": "Leave blank in Configure to keep the saved key.",
+          "spotify_client_secret": "Leave blank to keep the saved secret.",
+          "agent_model": "Model used by the Python agent for delegated work. Terra is a balanced starting point; Luna costs less; Sol and Astra offer more capability. Live speech keeps its separate voice model.",
+          "reasoning_effort": "Low is recommended for voice latency. An effort unsupported by the selected model is saved as low.",
+          "fast_mode": "Requests OpenAI Fast processing at higher token rates (currently 2x for the new models). Off explicitly requests standard processing. This cannot speed up external tools.",
+          "session_timeout_minutes": "Controls stored Python-agent conversation context. The Voice listening idle timeout is set separately in the Special Agent Live app.",
+          "enable_performance_tracking": "Optional detailed diagnostics. Concise activity logs are available in Home Assistant Core without this setting.",
+          "scene_memory_enabled": "Learn and reuse routines in Special Agent scene_memory.json. These are separate from Home Assistant scenes.yaml."
+        }
+      }
+    }
+  }
+}

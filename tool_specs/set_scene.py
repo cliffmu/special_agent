@@ -67,16 +67,15 @@ async def set_scene(
     """
     log.debug("set_scene: intent=%s, area=%s, outcome=%s, steps=%s", 
               intent, area, outcome, f"{len(steps)} provided" if steps else "fetching from memory")
+    entry_id = f"{intent}_{area or 'global'}"
     
     # If no steps provided, try to fetch from existing scene
     if not steps or len(steps) == 0:
         if outcome == "success":
             # Try to fetch existing scene
             try:
-                from ..utils.scene_memory_store import SceneMemoryStore
-                store = SceneMemoryStore()
-                entry_id = f"{intent}_{area}" if area else intent
-                existing = store.get(entry_id)
+                from ..utils.scene_memory_store import async_get
+                existing = await async_get(entry_id, hass)
                 
                 if existing and existing.get("steps"):
                     steps = existing.get("steps")
@@ -114,7 +113,7 @@ async def set_scene(
             from ..utils.scene_memory_store import (
                 normalize_and_validate_steps, 
                 should_update_scene,
-                SceneMemoryStore
+                async_get,
             )
             import time
             
@@ -136,12 +135,10 @@ async def set_scene(
                 log.warning("Scene validation: %s", err)
             
             # Stable ID for updates
-            entry_id = f"{intent}_{area or 'global'}"
             confidence = 0.8 if outcome == "success" else 0.3 if outcome == "fail" else 0.6
             
             # Check if update needed
-            store = SceneMemoryStore()
-            existing = store.get(entry_id)
+            existing = await async_get(entry_id, hass)
             should_update, update_reason = should_update_scene(existing, normalized_steps, outcome)
             
             if not should_update:

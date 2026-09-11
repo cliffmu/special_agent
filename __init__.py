@@ -18,9 +18,11 @@ except Exception:  # pragma: no cover - during unit tests
 try:
     from .session_store import SessionManager
     from .utils import performance
+    from .utils.constants import DEFAULT_AGENT_MODEL
 except Exception:  # pragma: no cover
     from session_store import SessionManager
     from utils import performance
+    from utils.constants import DEFAULT_AGENT_MODEL
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -144,7 +146,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     
     _LOGGER.info("Special Agent setup complete. Model: %s, Confirmation: %s, Timeout: %d min", 
-                 entry.options.get("agent_model", entry.data.get("agent_model", "gpt-5")),
+                 entry.options.get("agent_model", entry.data.get("agent_model", DEFAULT_AGENT_MODEL)),
                  entry.options.get("require_confirmation", entry.data.get("require_confirmation", True)),
                  timeout_minutes)
     return True

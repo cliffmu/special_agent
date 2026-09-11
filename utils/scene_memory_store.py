@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -181,6 +182,13 @@ def get(entry_id: str) -> Dict[str, Any] | None:
     return get_store().get(entry_id)
 
 
+async def async_get(entry_id: str, hass: Any | None = None) -> Dict[str, Any] | None:
+    """Read a scene without blocking HA, including lazy store construction."""
+    if hass is not None:
+        return await hass.async_add_executor_job(get, entry_id)
+    return await asyncio.to_thread(get, entry_id)
+
+
 def upsert(entry: Dict[str, Any]) -> None:
     """Insert or update entry."""
     get_store().upsert(entry)
@@ -270,6 +278,8 @@ def should_update_scene(existing_entry: dict | None, new_steps: list, outcome: s
             if a.get("data") != b.get("data"):
                 return False
             if a.get("seconds") != b.get("seconds"):
+                return False
+            if a.get("post_condition") != b.get("post_condition"):
                 return False
         return True
     
@@ -442,7 +452,13 @@ def normalize_and_validate_steps(steps: list) -> tuple[list, list]:
             )
             continue
         
+        if normalized.get("type") == "service_call" and "post_condition" in s:
+            post_condition = s["post_condition"]
+            if not isinstance(post_condition, dict) or not post_condition:
+                validation_errors.append(f"Step {idx}: post_condition must be a non-empty object")
+                continue
+            normalized["post_condition"] = post_condition.copy()
+
         normalized_steps.append(normalized)
     
     return normalized_steps, validation_errors
-

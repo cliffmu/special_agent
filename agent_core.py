@@ -15,6 +15,7 @@ SCENE_MEMORY_CONFIG = {
 
 try:
     from .utils import logging as log
+    from .utils.constants import DEFAULT_AGENT_MODEL, normalize_reasoning_effort
     from . import DOMAIN
     from .utils.session_helpers import load_session, store_session, clear_session, generate_message_id
     from .utils.response_utils import validate_and_execute_tools
@@ -24,6 +25,7 @@ try:
     from .utils import tool_registry as _tool_registry
 except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
+    from utils.constants import DEFAULT_AGENT_MODEL, normalize_reasoning_effort
     from utils.session_helpers import load_session, store_session, clear_session, generate_message_id
     from utils.response_utils import validate_and_execute_tools
     from utils.llm_client import get_async_client, call_llm, handle_llm_error
@@ -80,7 +82,7 @@ class Agent:
         await self.load_tools(hass)
         
         # Get model and reasoning_effort from config
-        model = model or self.config.get("agent_model", "gpt-5")
+        model = model or self.config.get("agent_model", DEFAULT_AGENT_MODEL)
         reasoning_effort = self.config.get("reasoning_effort", "low")
         require_confirmation = self.config.get("require_confirmation", True)
         session_timeout_minutes = self.config.get("session_timeout_minutes", 5)
@@ -92,6 +94,7 @@ class Agent:
             session_key=session_key,
             model=model,
             reasoning_effort=reasoning_effort,
+            fast_mode=self.config.get("fast_mode", False),
             require_confirmation=require_confirmation,
             session_timeout_minutes=session_timeout_minutes,
         )
@@ -106,14 +109,16 @@ async def plan_execute(
     prompt: str,
     tools: List[ToolSpec],
     hass: Optional[Any] = None,
-    model: str = "gpt-5",
+    model: str = DEFAULT_AGENT_MODEL,
     goals: Optional[List[str]] = None,
     session_key: tuple[str, str] | None = None,
     reasoning_effort: str = "low",
     require_confirmation: bool = True,
     session_timeout_minutes: int = 5,
+    fast_mode: bool = False,
 ) -> Any:
     """Execute ReAct agent loop with clean orchestration."""
+    reasoning_effort = normalize_reasoning_effort(model, reasoning_effort)
     
     # Validate API key
     if not os.environ.get("OPENAI_API_KEY"):
@@ -126,7 +131,7 @@ async def plan_execute(
             tools, hass, session_key, model, reasoning_effort, require_confirmation, goals
         )
     except Exception as err:
-        log.error("Setup failed: %s", err)
+        log.error("Setup failed: %s", type(err).__name__)
         return "Error initializing agent"
 
     # Load session (tracks internally)
@@ -166,7 +171,7 @@ async def plan_execute(
         # Call LLM with performance tracking
         try:
             async with performance.track_llm_call(model, reasoning_effort, depth, len(messages)) as tracker:
-                response = await call_llm(client, messages, tool_json, model, reasoning_effort, depth)
+                response = await call_llm(client, messages, tool_json, model, reasoning_effort, depth, fast_mode=fast_mode)
                 tracker.set_response(response)
         except Exception as err:
             # Handle LLM errors
