@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from dataclasses import dataclass
 
 import aiohttp
+from utils.logging import activity
+
+LOG = logging.getLogger(__name__ + ".activity")
+LOG.setLevel(logging.INFO)
 
 
 class BackendError(Exception):
@@ -54,23 +60,45 @@ class HomeAssistantBackend:
             body["conversation_id"] = conversation_id
         # The bridge owns speaker audio. Omitting device_id avoids duplicate satellite TTS.
         async with self.lock:
+            started = time.monotonic()
+            http_status = None
+            status = "error"
+            error_type = None
+            activity("ha_request", logger=LOG, phase="sent", backend="home-assistant")
             try:
                 async with self.http.post(
                     self.url + "/api/conversation/process",
                     headers={"Authorization": f"Bearer {self.token}"},
                     json=body, timeout=aiohttp.ClientTimeout(total=120), allow_redirects=False,
                 ) as response:
+                    http_status = response.status
                     if response.status != 200:
                         raise BackendError(f"Home Assistant returned HTTP {response.status}. "
                                            "The request was not retried; check device state before retrying.", uncertain=True)
                     data = await response.json()
+                reply = data.get("response", {})
+                speech = reply.get("speech", {}).get("plain", {}).get("speech", "")
+                if reply.get("response_type") == "error":
+                    raise BackendError(speech or "Home Assistant could not process this request.")
+                if not isinstance(speech, str) or not speech.strip():
+                    raise BackendError("Home Assistant returned no spoken result; check its conversation logs.", uncertain=True)
+                status = "completed"
+                return BackendResult(speech, data.get("conversation_id"))
+            except asyncio.CancelledError:
+                status = "cancelled"
+                raise
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+                error_type = type(error).__name__
                 raise BackendError("Home Assistant's result could not be confirmed. "
                                    "An action may still finish; check device state before retrying.", uncertain=True) from error
-        reply = data.get("response", {})
-        speech = reply.get("speech", {}).get("plain", {}).get("speech", "")
-        if reply.get("response_type") == "error":
-            raise BackendError(speech or "Home Assistant could not process this request.")
-        if not isinstance(speech, str) or not speech.strip():
-            raise BackendError("Home Assistant returned no spoken result; check its conversation logs.", uncertain=True)
-        return BackendResult(speech, data.get("conversation_id"))
+            except Exception as error:
+                error_type = type(error).__name__
+                raise
+            finally:
+                fields = {"phase": "received" if http_status is not None else "failed", "status": status,
+                          "elapsed_ms": round((time.monotonic() - started) * 1000)}
+                if http_status is not None:
+                    fields["http_status"] = http_status
+                if error_type:
+                    fields["error_type"] = error_type
+                activity("ha_request", logger=LOG, **fields)
