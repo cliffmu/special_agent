@@ -95,6 +95,7 @@ async def test_addon_settings_start_shared_app_with_health_endpoint_without_clou
         assert response.status == 200
         assert await response.json() == {
             "model": "gpt-live-1", "backend": "demo", "device_connected": False, "audio_active": False,
+            "last_stop_reason": None,
         }
 
 

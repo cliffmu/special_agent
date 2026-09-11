@@ -2,8 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import audioop  # stdlib through Python 3.12; audioop-lts on Python 3.13+.
 import sys
+import time
+
+
+class AudioPacer:
+    """Pace PCM16 mono24k on an audio clock that does not accumulate loop jitter.
+
+    Ordinary late wakeups shorten the next wait. A stall longer than 40 ms
+    rebases the clock instead of replaying accumulated audio in a fast burst.
+    The caller still owns any queue-age and transport-timeout limits.
+    """
+
+    def __init__(self, *, clock=time.monotonic, sleep=asyncio.sleep):
+        self._clock, self._sleep = clock, sleep
+        self._deadline = None
+
+    async def wait_for_chunk(self, byte_count: int) -> None:
+        """Wait until this chunk is due, then advance by its sample duration."""
+        if byte_count <= 0 or byte_count % 2:
+            raise ValueError("A paced PCM16 chunk must contain complete samples")
+        now = self._clock()
+        if self._deadline is None or now - self._deadline > 0.04:
+            self._deadline = now
+        await self._sleep(max(0, self._deadline - now))
+        # The event loop can also stall during sleep, so check on both sides.
+        now = self._clock()
+        if now - self._deadline > 0.04:
+            self._deadline = now
+        self._deadline += byte_count / 48000
 
 
 class PCM16Resampler:

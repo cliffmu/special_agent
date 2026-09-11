@@ -63,6 +63,15 @@ va_client:
   # speaker audio; test with low volume first. This setting alone cannot guarantee
   # clean barge-in. The bridge keeps one continuous listening phase until close.
   barge_in: true
+  # Append to the package's phase actions. Its local Stop detector can otherwise
+  # treat "stop, change the story" (or speaker echo) as ending the entire session.
+  # Live receives that speech; the center button and mute still end the session.
+  on_phase:
+    - if:
+        condition:
+          lambda: 'return phase == "listening";'
+        then:
+          - micro_wake_word.disable_model: stop
 
 micro_wake_word:
   vad:

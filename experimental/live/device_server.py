@@ -17,13 +17,18 @@ from dataclasses import dataclass, field
 import aiohttp
 from aiohttp import web
 
-from .audio import PCM16Resampler
+from .audio import AudioPacer, PCM16Resampler
 from .backend import DemoBackend, HomeAssistantBackend
 from .server import Settings, voice_instructions
 from .session import LiveSession
 
 LOG = logging.getLogger(__name__)
 LIVE_URL = "wss://api.openai.com/v1/live/sessions"
+SAFE_LIVE_ERROR_CODES = frozenset({
+    "authentication_error", "credit_balance_exhausted", "insufficient_quota",
+    "invalid_api_key", "invalid_request_error", "model_not_found",
+    "permission_denied", "rate_limit_exceeded", "server_error",
+})
 
 
 @dataclass
@@ -57,6 +62,30 @@ class VoiceDevice:
         self.completed = set()
         self.restart = False
         self.closing = False
+        self.stop_reason = None
+        self.last_stop_reason = None
+
+    def record_stop(self, reason):
+        """Keep the first fixed reason code; never include device or API payloads."""
+        if self.stop_reason is None:
+            self.stop_reason = self.last_stop_reason = reason
+            LOG.info("Voice session stopping: reason=%s", reason)
+
+    def stop_for(self, reason):
+        self.record_stop(reason)
+        self.stop.set()
+
+    def inspect_tasks(self, tasks):
+        """Observe failures without changing which completion ends the session."""
+        for task in tasks:
+            if task.done() and not task.cancelled():
+                error = task.exception()
+                if error is not None:
+                    self.record_stop({"cloud_reader": "cloud_read_error", "microphone": "mic_task_error",
+                                      "speaker": "speaker_write_error", "limits": "limits_error"}.get(
+                                          task.get_name(), "session_task_error"))
+                    LOG.warning("Voice task failed: task=%s exception_type=%s",
+                                task.get_name(), type(error).__name__)
 
     async def control(self, kind, **values):
         # The pinned firmware parses compact JSON with substring comparisons.
@@ -68,7 +97,7 @@ class VoiceDevice:
             if self.accept_audio:
                 if len(message.data) > 8192 or self.mic.full() or self.mic_bytes + len(message.data) > 64000:
                     # Never build an unbounded delayed recording or replay stale microphone data.
-                    self.stop.set()
+                    self.stop_for("mic_packet_oversized" if len(message.data) > 8192 else "mic_backlog")
                     self.restart = self.accept_audio = False
                 else:
                     self.mic.put_nowait((time.monotonic(), message.data))
@@ -85,6 +114,7 @@ class VoiceDevice:
         elif kind == "wake" and not self.closing:
             if self.runner is None or self.runner.done():
                 self.stop = asyncio.Event()
+                self.stop_reason = None
                 self.mic = asyncio.Queue(maxsize=64)
                 self.mic_bytes = 0
                 self.accept_audio = True
@@ -95,11 +125,15 @@ class VoiceDevice:
                 self.mic = asyncio.Queue(maxsize=64)
                 self.mic_bytes = 0
                 self.accept_audio = True
+            elif self.accept_audio and self.session and self.session.state == "active":
+                # A repeated wake starts the firmware's no-speech watchdog even
+                # while Live is active. Acknowledge it without losing context.
+                await self.control("ack")
         elif kind in ("interrupt", "button_cancel", "flush", "false_flag"):
             self.accept_audio = False
             self.play_audio = False
             self.restart = False
-            self.stop.set()
+            self.stop_for("device_control_" + kind)
 
     async def run_sessions(self):
         while not self.closing:
@@ -113,12 +147,14 @@ class VoiceDevice:
                 return
             self.restart = False
             self.stop = asyncio.Event()
+            self.stop_reason = None
             self.accept_audio = True
 
     async def run_session(self):
         session, cloud, tasks = None, None, []
         microphone, stop = self.mic, self.stop
         speaker = asyncio.Queue(maxsize=16)
+        stage = "cloud_connect"
         try:
             cloud = await asyncio.wait_for(self.http.ws_connect(
                 LIVE_URL, headers={"Authorization": f"Bearer {self.settings.api_key}"},
@@ -127,7 +163,11 @@ class VoiceDevice:
 
             async def send(event):
                 async with send_lock:
-                    await asyncio.wait_for(cloud.send_json(event), 5)
+                    try:
+                        await asyncio.wait_for(cloud.send_json(event), 5)
+                    except asyncio.TimeoutError:
+                        self.record_stop("cloud_write_timeout")
+                        raise
 
             session = self.session = LiveSession("pending", send, self.backend)
             started = asyncio.Event()
@@ -147,7 +187,7 @@ class VoiceDevice:
                                 # Do not block cloud control/delegation events on satellite Wi-Fi.
                                 for offset in range(0, len(pcm), 4096):
                                     if speaker.full():
-                                        stop.set()
+                                        self.stop_for("speaker_backlog")
                                         return
                                     speaker.put_nowait((time.monotonic(), pcm[offset:offset+4096]))
                         else:
@@ -156,26 +196,41 @@ class VoiceDevice:
                                 session.live_id = event.get("session", {}).get("id", "unknown")
                                 started.set()
                             elif kind == "error":
-                                LOG.warning("Live error code: %s", event.get("error", {}).get("code", "unknown"))
+                                self.record_stop("cloud_error")
+                                detail = event.get("error")
+                                code = detail.get("code") if isinstance(detail, dict) else None
+                                safe_code = code if isinstance(code, str) and code in SAFE_LIVE_ERROR_CODES else "unknown"
+                                LOG.warning("Live error code: %s", safe_code)
+                            elif kind == "session.closed":
+                                self.record_stop("cloud_closed")
                         if session.finalized or session.state == "error":
+                            if session.state == "error":
+                                self.record_stop("session_error")
                             return
                     elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                        self.record_stop("cloud_disconnected")
                         return
+                self.record_stop("cloud_disconnected")
 
-            reader = asyncio.create_task(read_cloud())
+            reader = asyncio.create_task(read_cloud(), name="cloud_reader")
             tasks.append(reader)
+            stage = "cloud_start"
             await send({"type": "session.start", "event_id": uuid.uuid4().hex, "session": {
                 "model": "gpt-live-1", "instructions": voice_instructions(self.settings.backend, self.settings.room),
                 "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": "marin"}},
                 "delegation": {"type": "client"}}})
-            ready = asyncio.create_task(started.wait())
-            stopped = asyncio.create_task(self.stop.wait())
+            ready = asyncio.create_task(started.wait(), name="cloud_ready")
+            stopped = asyncio.create_task(self.stop.wait(), name="stop_waiter")
             tasks.extend((ready, stopped))
-            await asyncio.wait((ready, reader, stopped), timeout=15, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait((ready, reader, stopped), timeout=15, return_when=asyncio.FIRST_COMPLETED)
+            self.inspect_tasks(done)
+            if not done:
+                self.record_stop("cloud_start_timeout")
             if not started.is_set() or reader.done() or self.stop.is_set():
                 return
             self.accept_audio = True
             self.play_audio = True
+            stage = "device_control"
             await self.control("ack")
             # Never send replying/thinking/listening per utterance: upstream phase changes
             # can gate capture or flush playback. The device stays duplex until session end.
@@ -183,25 +238,26 @@ class VoiceDevice:
 
             async def send_microphone():
                 converter = PCM16Resampler()
-                next_send = time.monotonic()
+                pacer = AudioPacer()
                 while True:
-                    received_at, pcm = await asyncio.wait_for(microphone.get(), 3)
+                    try:
+                        received_at, pcm = await asyncio.wait_for(microphone.get(), 3)
+                    except asyncio.TimeoutError:
+                        self.record_stop("mic_starvation")
+                        raise
                     if stop.is_set():
                         return
                     if microphone is self.mic:
                         self.mic_bytes -= len(pcm)
                     if time.monotonic() - received_at > 2:
-                        self.stop.set()
+                        self.stop_for("mic_stale")
                         return
                     for chunk in converter.feed(pcm):
-                        await asyncio.sleep(max(0, next_send - time.monotonic()))
+                        await pacer.wait_for_chunk(len(chunk))
                         if stop.is_set():
                             return
-                        sent_at = time.monotonic()
                         await send({"type": "session.input_audio.append",
                                     "audio": base64.b64encode(chunk).decode("ascii")})
-                        # Preserve startup audio without flooding Live faster than real time.
-                        next_send = sent_at + len(chunk) / 48000
 
             async def play_speaker():
                 while not stop.is_set():
@@ -209,28 +265,39 @@ class VoiceDevice:
                     if stop.is_set() or not self.play_audio:
                         return
                     if time.monotonic() - received_at > 0.5:
-                        stop.set()
+                        self.stop_for("speaker_stale")
                         return
-                    await asyncio.wait_for(self.socket.send_bytes(pcm), 0.5)
+                    try:
+                        await asyncio.wait_for(self.socket.send_bytes(pcm), 0.5)
+                    except asyncio.TimeoutError:
+                        self.record_stop("speaker_write_timeout")
+                        raise
 
             async def limits():
                 while not self.stop.is_set():
                     await asyncio.sleep(0.25)
                     now = time.monotonic()
                     busy = any(j.status in ("waiting_for_context", "running") for j in session.jobs.values())
-                    if (session.state == "error" or now-session.created_at >= self.settings.max_duration
-                            or (not busy and now-session.last_activity >= self.settings.idle_timeout)):
-                        self.stop.set()
+                    if session.state == "error":
+                        self.stop_for("session_error")
+                    elif now-session.created_at >= self.settings.max_duration:
+                        self.stop_for("max_duration")
+                    elif not busy and now-session.last_activity >= self.settings.idle_timeout:
+                        self.stop_for("idle_timeout")
 
-            pump = asyncio.create_task(send_microphone())
-            playback = asyncio.create_task(play_speaker())
-            monitor = asyncio.create_task(limits())
+            stage = "streaming"
+            pump = asyncio.create_task(send_microphone(), name="microphone")
+            playback = asyncio.create_task(play_speaker(), name="speaker")
+            monitor = asyncio.create_task(limits(), name="limits")
             tasks.extend((pump, playback, monitor))
-            await asyncio.wait((reader, stopped, pump, playback, monitor), return_when=asyncio.FIRST_COMPLETED)
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, binascii.Error):
+            done, _ = await asyncio.wait((reader, stopped, pump, playback, monitor), return_when=asyncio.FIRST_COMPLETED)
+            self.inspect_tasks(done)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, binascii.Error) as error:
             # Do not log connection URLs (device token), audio or private transcripts.
-            LOG.warning("Voice transport failed; check connectivity and GPT-Live model access")
+            self.record_stop(stage + ("_timeout" if isinstance(error, asyncio.TimeoutError) else "_error"))
+            LOG.warning("Voice transport failed: stage=%s exception_type=%s", stage, type(error).__name__)
         finally:
+            self.record_stop("stop_requested")
             self.accept_audio = self.restart and not self.closing
             self.play_audio = False
             # Stop all input producers before graceful close. Only the cloud reader
@@ -251,8 +318,8 @@ class VoiceDevice:
             if cloud:
                 await cloud.close()
             if session:
-                LOG.info("Voice session ended: finalized=%s seconds=%s tasks=%s",
-                         session.finalized, session.usage.get("seconds", "unknown"),
+                LOG.info("Voice session ended: reason=%s finalized=%s seconds=%s tasks=%s",
+                         self.stop_reason, session.finalized, session.usage.get("seconds", "unknown"),
                          [j.status for j in session.jobs.values()])
                 # Audio closure does not cancel a home action already accepted by HA.
                 drain = asyncio.create_task(session.drain())
@@ -263,7 +330,7 @@ class VoiceDevice:
         self.closing = True
         self.restart = False
         self.accept_audio = False
-        self.stop.set()
+        self.stop_for("device_connection_closed")
         if self.runner:
             await asyncio.shield(self.runner)
         await asyncio.gather(*self.completed, return_exceptions=True)
@@ -278,6 +345,7 @@ def create_app(settings):
     app = web.Application(client_max_size=16384)
     connections = set()
     connect_lock = asyncio.Lock()
+    last_stop_reason = None
 
     async def resources(app):
         async with aiohttp.ClientSession() as http:
@@ -293,6 +361,7 @@ def create_app(settings):
         await asyncio.gather(*(close(device) for device in list(connections)), return_exceptions=True)
 
     async def voice(request):
+        nonlocal last_stop_reason
         supplied = request.query.get("token", "")
         if request.headers.get("Origin") or not hmac.compare_digest(
                 supplied.encode("utf-8"), settings.device_token.encode("ascii")):
@@ -312,9 +381,10 @@ def create_app(settings):
         finally:
             device.closing = True
             device.restart = device.accept_audio = False
-            device.stop.set()
+            device.stop_for("device_connection_closed")
             await socket.close()
             await device.close()
+            last_stop_reason = device.last_stop_reason
             connections.discard(device)
         return socket
 
@@ -322,7 +392,8 @@ def create_app(settings):
         device = next((d for d in connections if not d.socket.closed), None)
         return web.json_response({"model": "gpt-live-1", "backend": settings.backend,
                                   "device_connected": bool(device and not device.socket.closed),
-                                  "audio_active": bool(device and device.accept_audio)})
+                                  "audio_active": bool(device and device.accept_audio),
+                                  "last_stop_reason": device.last_stop_reason if device else last_stop_reason})
 
     app.cleanup_ctx.append(resources)
     app.on_shutdown.append(shutdown)
