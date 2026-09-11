@@ -9,8 +9,8 @@ from pathlib import Path
 import tarfile
 from urllib.request import urlopen
 
-REVISION = "39bac9cad01714d45b4abc7b80b17ef7958da400"
-ARCHIVE_SHA256 = "eff6b232a267192494c7648d626ef17fa692e7834266353365e5270549fa7a3d"
+REVISION = "e6bc40109fcd99a6ccc3c2edeab0d5aa552ed26f"
+ARCHIVE_SHA256 = "64218f4dd36ee2550eef75fed671d23e8222d0abd4e3b3ccfeebeed410ea70ac"
 SOURCE_URL = f"https://codeload.github.com/cliffmu/special_agent/tar.gz/{REVISION}"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 RUNTIME_FILES = (

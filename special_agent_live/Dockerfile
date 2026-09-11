@@ -1,6 +1,6 @@
 FROM python:3.12.14-slim-bookworm
 
-ARG BUILD_VERSION="0.1.1"
+ARG BUILD_VERSION="0.1.2"
 ARG BUILD_ARCH
 LABEL io.hass.name="Special Agent Live" \
       io.hass.description="GPT-Live audio bridge for Home Assistant Voice PE" \
