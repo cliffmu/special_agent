@@ -132,13 +132,26 @@ only after a wake/button event, not merely when the device connects.
 
 Keep your existing ESPHome device configuration and its restore image. Match the
 existing device name, API encryption key and OTA password in this configuration,
-and retain the device's encrypted ESPHome integration in Home Assistant; the
-upstream firmware starts its voice client after HA connects.
+and retain the device's encrypted ESPHome integration in Home Assistant. The
+voice WebSocket connects independently of HA API pairing; a wake/button event
+can start a Live session before pairing completes.
 
 Factory firmware can have no configured API encryption key. In that case, use a
 new random 32-byte Base64 key for this firmware, then enter it in the existing
 ESPHome integration when HA requests an encryption key after installation.
-This device key is separate from the OpenAI API key used by the bridge.
+
+These credentials serve different connections:
+
+| Credential | Where it belongs |
+| --- | --- |
+| OpenAI API key | The app's `api_key` option; authenticates GPT-Live access. |
+| ESPHome API encryption key | Firmware `secrets.yaml` → `api_key` and HA's ESPHome pairing dialog. |
+| Device token | The app's `device_token` option and the firmware's compiled bridge URL. |
+
+Paste credential values into HA fields **without surrounding quotes**. Editing
+saved pairing JSON alone does not change the flashed device. To change the
+device token, update the app option and rebuild/reflash the Voice PE with the
+matching token in its bridge URL.
 
 When identifying the USB device, compare its **custom** MAC with the sticker and
 HA device page. ESPHome uses that address; `esptool read-mac` instead reports the
@@ -173,8 +186,9 @@ Assist. The configuration preserves the center button, physical mute, speaker
 controls and encrypted native HA API.
 
 This firmware can also update the Voice PE's XMOS audio processor to its bundled
-firmware (1.3.1). Restoring stock behavior requires reflashing firmware; the
-factory-reset button only clears preferences. The
+firmware (1.3.1). An ESP32 flash backup does **not** include the separate XMOS
+firmware. Restoring stock behavior requires reflashing firmware; the factory-reset
+button only clears preferences. The
 [official Voice PE installer](https://esphome.github.io/home-assistant-voice-pe/)
 provides a USB recovery path.
 
@@ -185,15 +199,19 @@ sources and notices remain in `.generated/` and at the linked upstream revision.
 
 ### 3. Test with the actual device
 
-Say **“Okay Nabu”** or press the center button. Wait for the listening indication
-on your first tests, then say “Run the demo task.” While it works, ask “Tell me a
-joke.” Both speech input and playback remain active during the backend task.
+For the first audio test, press the center button, wait for the chime and about
+one second, then say **“Say hello in one short sentence.”** Stop with the center
+button or physical mute. Once that works, say **“Okay Nabu”** or press the button
+and ask “Run the demo task.” While it works, ask “Tell me a joke.” Both speech
+input and playback remain active during the backend task.
 The bridge retains up to two seconds of startup microphone audio and paces it
 to Live after session creation, so normal connection setup does not lose the
 first words. A slow connection or stalled audio ends the attempt instead of
 accumulating a delayed recording; wake it again once connectivity is restored.
 
-The center button, mute control, or configured stop word closes the Live session.
+The center button or physical mute closes the Live session. Do not rely on the
+configured spoken stop word: continuous listening bypasses the firmware step
+that enables its stop-word detector.
 Ordinary spoken interruptions are heard by Live while it is talking. Full duplex
 is experimental: test at low speaker volume first. The upstream firmware normally
 disables this mode because acoustic echo can leak through the Voice PE's XMOS
@@ -273,15 +291,17 @@ Existing integration tests require a parent import alias named `special_agent`
 when the checkout directory is named `special-agent`. The original dev suite also
 contains stale tests importing removed APIs.
 
-**A physical Voice PE and an authenticated GPT-Live session have not yet been
-tested.** The configuration and mocked audio/delegation path can be validated
-locally; actual speaker echo, interruptions, model access and latency require the
-device test above. The earlier browser diagnostic remains in
+The app was installed and started successfully on the HA host. The Office Voice
+PE's ESP32 firmware was flashed with hash verification, and HA API pairing
+succeeded; HA recognizes the device as `special-agent-live`.
+
+**An authenticated GPT-Live audio session has not yet been tested.** Model
+access, microphone/speaker audio, echo, interruptions and latency still require
+the device test above. The earlier browser diagnostic remains in
 `experimental/live/server.py`; it is not used by this hardware setup.
 
 The full Voice PE firmware compiled successfully with ESPHome 2026.8.2 and
-ESP-IDF 5.5.5 using placeholder credentials (39.3% application flash, 51.2%
-static RAM). Rebuild with your real device settings before installing it.
+ESP-IDF 5.5.5. Rebuild with your own device settings before installing it.
 
 References: [Live WebSocket audio](https://developers.openai.com/api/docs/guides/voice-websockets?api=live),
 [Live playback controls](https://developers.openai.com/api/docs/guides/voice-server-controls?api=live),
