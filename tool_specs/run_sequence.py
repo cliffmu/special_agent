@@ -23,7 +23,8 @@ PARAMS: Dict[str, Any] = {
         },
         "timeout": {
             "type": "integer",
-            "description": "Overall timeout in seconds",
+            "description": "Overall timeout in seconds, shared by all actions and verification waits",
+            "minimum": 0,
             "default": 30,
         },
     },
@@ -71,9 +72,14 @@ SPEC = ToolSpec(
         "TOOL CALLS:\n"
         "- Only tools explicitly flagged as sequence-safe may run here (validated on save)\n"
         "- Use 'expect' ({path, equals/not_equals/contains/exists}) to auto-verify outputs\n\n"
-        "Returns: dict with steps[], each with status='ok'/'skipped'/'error'/'timeout'"
+        "VERIFICATION: Every service action is sent once and supported states/settings are checked automatically. "
+        "Acceptance alone is not success. Checks use HA-reported state, not independent physical proof. "
+        "Unsupported commands/missing telemetry remain unverified; later steps may continue, but the workflow returns partial. "
+        "Known mismatches, explicit post-condition failures, and timeouts abort dependent steps. Never blindly retry actions. "
+        "Service steps may add post_condition:{entity_id,state,attribute,value,timeout_ms}; state and attribute are checked together. "
+        "Returns result='completed'/'partial'/'failed' with verification and counts; steps have status='ok'/'unverified'/'skipped'/'error'/'timeout'."
     ),
     parameters=PARAMS,
-    returns="dict(result, steps, total_steps, completed_steps)",
+    returns="dict(result, status, verification, steps, total_steps, attempted_steps, completed_steps, verified_steps, unverified_steps, unattempted_steps)",
     func=run_sequence,
 )

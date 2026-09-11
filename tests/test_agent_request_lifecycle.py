@@ -133,6 +133,28 @@ async def test_only_satellite_requests_restart_tts_pipeline(
     assert conversation_entity.hass.services.async_call.await_count == bool(device_id)
 
 
+@pytest.mark.parametrize("failure", [RuntimeError("PRIVATE_EXCEPTION"), asyncio.CancelledError()])
+async def test_request_activity_finishes_and_resets_context_on_failure(
+    monkeypatch, conversation_entity, caplog, failure
+):
+    from special_agent.utils import logging as activity_log
+
+    monkeypatch.setattr(conversation_entity, "_async_process", AsyncMock(side_effect=failure))
+    with pytest.raises(type(failure)):
+        await conversation_entity.async_process(user_input())
+    lines = [record.getMessage() for record in caplog.records
+             if record.name == "custom_components.special_agent.activity"]
+    assert len(lines) == 2
+    fields = [dict(field.split("=", 1) for field in line.split()) for line in lines]
+    assert fields[0]["request"] == fields[1]["request"] != "-"
+    assert fields[1]["phase"] == "finished"
+    assert fields[1]["status"] == ("cancelled" if isinstance(failure, asyncio.CancelledError) else "error")
+    assert int(fields[1]["elapsed_ms"]) >= 0
+    assert "PRIVATE_EXCEPTION" not in caplog.text
+    activity_log.activity("outside")
+    assert "request=-" in caplog.records[-1].getMessage()
+
+
 @pytest.fixture
 def prepared_loop(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-only")
@@ -144,6 +166,37 @@ def prepared_loop(monkeypatch):
     save = Mock()
     monkeypatch.setattr(agent_core, "store_session", save)
     return history, save
+
+
+@pytest.mark.parametrize("config,model,effort,fast", [
+    ({}, "gpt-5.6-terra", "low", False),
+    ({"agent_model": "gpt-5", "reasoning_effort": "minimal"}, "gpt-5", "minimal", False),
+    ({"agent_model": "gpt-6-astra", "reasoning_effort": "max", "fast_mode": True}, "gpt-6-astra", "max", True),
+])
+async def test_agent_propagates_saved_model_effort_and_fast_mode(monkeypatch, config, model, effort, fast):
+    monkeypatch.setattr(agent_core, "load_all_tools", AsyncMock(return_value={}))
+    execute = AsyncMock(return_value="done")
+    monkeypatch.setattr(agent_core, "plan_execute", execute)
+    assert await agent_core.Agent(config).plan("hello") == "done"
+    assert execute.await_args.kwargs["model"] == model
+    assert execute.await_args.kwargs["reasoning_effort"] == effort
+    assert execute.await_args.kwargs["fast_mode"] is fast
+
+
+async def test_loop_normalizes_effort_before_prompt_and_propagates_fast_mode(monkeypatch, prepared_loop):
+    response = SimpleNamespace(output=[], function_calls=[], final_text="done", reasoning_count=0, usage={})
+    call = AsyncMock(return_value=response)
+    monkeypatch.setattr(agent_core, "call_llm", call)
+    await agent_core.plan_execute("hello", [], model="gpt-5.6-terra", reasoning_effort="minimal", fast_mode=True)
+    assert agent_core.build_system_prompt.await_args.args[3:5] == ("gpt-5.6-terra", "low")
+    assert call.await_args.args[3:5] == ("gpt-5.6-terra", "low")
+    assert call.await_args.kwargs["fast_mode"] is True
+
+
+async def test_setup_failure_never_logs_exception_body(monkeypatch, prepared_loop, caplog):
+    monkeypatch.setattr(agent_core, "get_async_client", AsyncMock(side_effect=RuntimeError("PRIVATE_SETUP_ERROR")))
+    assert await agent_core.plan_execute("hello", []) == "Error initializing agent"
+    assert "RuntimeError" in caplog.text and "PRIVATE_SETUP_ERROR" not in caplog.text
 
 
 @pytest.mark.asyncio

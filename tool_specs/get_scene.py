@@ -107,7 +107,7 @@ async def get_scene(
 SPEC = ToolSpec(
     name="get_scene",
     description=(
-        "Retrieve learned, deterministic routines (scenes) containing pre-tested step sequences.\n\n"
+        "Retrieve learned routines from Special Agent memory, separate from native Home Assistant scene entities/scenes.yaml. Stored steps may be stale; inspect targets and results rather than assuming a routine still works.\n\n"
         "USE FOR:\n"
         "✓ Multi-step workflows - device power, app switching, media playback\n"
         "✓ Complex device setups - learned timing, IP addresses, entity mappings\n"

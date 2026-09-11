@@ -79,28 +79,27 @@ def extract_final_text(resp: Any) -> str | None:
 
 
 def summarize_result(result: Any) -> str:
-    """Summarize tool result for agent observation."""
+    """Keep observations intact; never cut commands or failures out of JSON."""
     try:
-        if isinstance(result, list):
-            json_txt = json.dumps(result)
-            if len(result) <= 5 and len(json_txt) <= 200:
-                return json_txt
-            head = ", ".join(map(str, result[:5]))
-            return f"{len(result)} items: {head}{' …' if len(result) > 5 else ''}"
-
+        text = json.dumps(result, ensure_ascii=False) if isinstance(result, (dict, list)) else str(result)
+        if len(text) <= 64000:
+            return text
+        outcome = {}
         if isinstance(result, dict):
-            # Don't truncate tool results - agent needs to see the data
-            json_txt = json.dumps(result, ensure_ascii=False)
-            # Only truncate if extremely long (>2000 chars)
-            if len(json_txt) <= 2000:
-                return json_txt
-            # For very long results, show first part
-            return json_txt[:2000] + "... (truncated)"
-
-        txt = str(result)
-        return txt if len(txt) <= 200 else txt[:200] + " …"
+            for key in ("status", "result", "accepted", "verification", "verification_basis",
+                        "success", "ok", "total_steps", "completed_steps", "verified_steps", "unverified_steps"):
+                value = result.get(key)
+                if type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 100):
+                    outcome[key] = value
+        return json.dumps({
+            "observation_status": "details_omitted", "reported_outcome": outcome,
+            "message": "The tool returned more detail than fits this observation. Do not infer missing commands, "
+                       "targets, results, or verification. Do not repeat a modifying action to retrieve its result. "
+                       "Use a narrower read-only lookup or explain that details could not be confirmed.",
+        })
     except Exception as err:
-        return f"(summary error: {err})"
+        return json.dumps({"observation_status": "serialization_error", "error_type": type(err).__name__,
+                           "message": "Tool output could not be represented. Its outcome is unknown; do not repeat a modifying action."})
 
 
 @dataclass
@@ -111,6 +110,27 @@ class ToolExecutionResult:
     prompt_response: Dict | None  # If tool returned speak/confirm
     all_failed: bool  # True if every tool failed
     error_message: str | None  # Error to return to user
+
+
+def _tool_activity_status(result):
+    """Report explicit failure signals without copying result text to logs."""
+    if isinstance(result, dict):
+        if result.get("error") or result.get("success") is False or result.get("ok") is False:
+            return "error"
+        outcome = result.get("status")
+        if isinstance(outcome, str):
+            if outcome.lower() in {"error", "failed", "failure", "fail", "timeout", "cancelled"}:
+                return "error"
+            if outcome.lower() in {"partial", "skipped", "unverified"}:
+                return outcome.lower()
+        verification = result.get("verification")
+        if verification == "failed":
+            return "error"
+        if verification == "unverified":
+            return "unverified"
+    if isinstance(result, str) and result.startswith("Error:"):
+        return "error"
+    return "ok"
 
 
 async def validate_and_execute_tools(
@@ -157,6 +177,8 @@ async def validate_and_execute_tools(
 
         # Add error messages for dropped non-parallel tools
         for dropped_call in dropped_calls:
+            log.activity("tool", tool=spec_map[dropped_call.name].name,
+                         phase="skipped", status="not_parallel")
             parallel_tools = [fc.name for fc in function_calls]
             validation_errors.append((
                 dropped_call,
@@ -168,25 +190,25 @@ async def validate_and_execute_tools(
     for call in function_calls:
         call_name = call.name
         raw_json = call.arguments or "{}"
-        canonical = (call_name, json.dumps(json.loads(raw_json), sort_keys=True))
-
-        # duplicate guard
-        if canonical in tried_calls:
-            log.debug("Duplicate call blocked: %s", canonical)
-            validation_errors.append((call, "Error: Duplicate call. Already tried this exact query."))
-            continue
-        tried_calls.add(canonical)
-
-        # validate
         try:
             spec = spec_map[call_name]
             args = json.loads(raw_json)
+            if not isinstance(args, dict):
+                raise ValueError("Tool arguments must be an object")
+            canonical = (call_name, json.dumps(args, sort_keys=True))
+            if canonical in tried_calls:
+                log.activity("tool", tool=spec.name, phase="skipped", status="duplicate")
+                validation_errors.append((call, "Error: Duplicate call. Already tried this exact query."))
+                continue
+            tried_calls.add(canonical)
             # Use custom validation if provided, otherwise skip validation
             if spec.validate:
                 args = spec.validate(args)
             tasks_to_run.append((call, spec, args))
         except Exception as err:
             log.debug("Validation error: %s", err)
+            log.activity("tool", tool=spec_map[call_name].name if call_name in spec_map else "unknown",
+                         phase="skipped", status="invalid_arguments", error_type=type(err).__name__)
             validation_errors.append((call, f"Error: Tool arguments were invalid: {err}"))
             continue
 
@@ -217,6 +239,9 @@ async def validate_and_execute_tools(
         start_mono = time.perf_counter()
         start_wall = time.time()
         status = "ok"
+        error_type = None
+        verification = None
+        log.activity("tool", tool=call_name, phase="started")
         
         try:
             if hass and "hass" in inspect.signature(spec.func).parameters:
@@ -228,12 +253,25 @@ async def validate_and_execute_tools(
                 log.debug("Tool_Input[%s]: %s", call_name, call_args)
                 result = await spec.func(**call_args)
             log.debug("Tool_Result[%s]: %s", call_name, result)
+            status = _tool_activity_status(result)
+            if isinstance(result, dict) and isinstance(result.get("verification"), str) and result["verification"] in {"verified", "failed", "unverified", "not_applicable"}:
+                verification = result["verification"]
             return (call, spec, args, result, False)
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except Exception as err:
-            log.error("Tool execution failed: %s", err)
             status = "error"
+            error_type = type(err).__name__
             return (call, spec, args, f"Error: Tool failed: {err}", True)
         finally:
+            fields = {"tool": call_name, "phase": "finished", "status": status,
+                      "elapsed_ms": round((time.perf_counter() - start_mono) * 1000)}
+            if error_type:
+                fields["error_type"] = error_type
+            if verification:
+                fields["verification"] = verification
+            log.activity("tool", **fields)
             # Track tool execution with parallel_group if applicable
             if perf.is_enabled():
                 end_mono = time.perf_counter()
@@ -310,13 +348,13 @@ async def validate_and_execute_tools(
             continue
 
         # Update focus tracking
-        if call_name == "control_device":
+        if isinstance(result, dict) and result.get("focus"):
+            focus = result["focus"]
+        elif call_name == "control_device":
             focus = {
                 "targets": [args.get("entity_id")],  # entity_id is now top-level parameter
                 "action": args.get("service"),
             }
-        elif isinstance(result, dict) and result.get("focus"):
-            focus = result["focus"]
 
         # Append function call result in Responses API format
         result_str = summarize_result(result)
@@ -332,9 +370,7 @@ async def validate_and_execute_tools(
             if has_prompt_response:
                 # Multiple tools returned "speak" in parallel - prioritize deterministic order
                 log.warning(
-                    "Multiple tools returned 'speak' in parallel: %s and %s",
-                    prompt_result.get("kind", "unknown"),
-                    result.get("kind", "unknown")
+                    "Multiple tools returned speech in parallel"
                 )
                 result_kind = result.get("kind", "")
                 current_kind = prompt_result.get("kind", "")
@@ -349,7 +385,7 @@ async def validate_and_execute_tools(
     error_message = errors_encountered[0] if all_failed else None
     
     if all_failed:
-        log.warning("All tool calls failed in this iteration: %s", error_message)
+        log.warning("All %d executed tool calls failed in this iteration", len(results))
 
     return ToolExecutionResult(
         messages=messages_to_add,
@@ -358,4 +394,3 @@ async def validate_and_execute_tools(
         all_failed=all_failed,
         error_message=error_message
     )
-

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from homeassistant.components.conversation import (
     AbstractConversationAgent,
     ConversationEntity,
@@ -13,6 +15,8 @@ from homeassistant.helpers import intent
 from .agent_core import Agent
 from . import DOMAIN
 from .utils import performance
+from .utils import logging as activity_log
+from .utils.constants import DEFAULT_AGENT_MODEL
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -55,6 +59,33 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     async def async_process(
         self, conversation_input, context=None
     ) -> ConversationResult:
+        token = activity_log.begin_request()
+        started = time.perf_counter()
+        status = "error"
+        error_type = None
+        try:
+            activity_log.activity("request", phase="received",
+                                  source="satellite" if getattr(conversation_input, "device_id", None) else "text")
+            result = await self._async_process(conversation_input, context)
+            status = "completed"
+            return result
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            try:
+                fields = {"phase": "finished", "status": status,
+                          "elapsed_ms": round((time.perf_counter() - started) * 1000)}
+                if error_type:
+                    fields["error_type"] = error_type
+                activity_log.activity("request", **fields)
+            finally:
+                activity_log.end_request(token)
+
+    async def _async_process(self, conversation_input, context=None) -> ConversationResult:
         # Reuse loaded tools until options change. Existing requests retain their
         # own agent when a new configuration is installed.
         config = dict(self.config_entry.data)
@@ -68,7 +99,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         sess_key = (conversation_input.conversation_id, device_id)
         
         _LOGGER.debug("Agent config reload: model=%s, require_confirmation=%s", 
-                     config.get("agent_model", "gpt-5"), 
+                     config.get("agent_model", DEFAULT_AGENT_MODEL),
                      config.get("require_confirmation", True))
         
         # Track entire request lifecycle with user prompt in metadata

@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import re
 import time
 from typing import Any, Dict, List, Tuple
 
 from . import logging as log
-from .data_sources import call_service_tracked
 from .tool_registry import ToolSpec, get_sequence_safe_tool_specs
+from .service_verification import (
+    call_service_verified, validate_post_condition, verify_post_condition, wait_state as _wait_state,
+)
 
 
 def _substitute_vars(obj: Any, vars: Dict) -> Any:
@@ -26,40 +29,6 @@ def _substitute_vars(obj: Any, vars: Dict) -> Any:
     if isinstance(obj, list):
         return [_substitute_vars(item, vars) for item in obj]
     return obj
-
-
-async def _call_service(hass: Any, service: str, data: Dict) -> None:
-    """Call a Home Assistant service (tracked in data_sources wrapper)."""
-    domain, name = service.split(".", 1)
-    await call_service_tracked(hass, domain, name, data, blocking=True)
-
-
-async def _wait_state(
-    hass: Any,
-    entity_id: str,
-    in_states: List[str] | None = None,
-    not_in: List[str] | None = None,
-    attr: str | None = None,
-    equals: Any | None = None,
-    timeout: int = 10,
-) -> bool:
-    """Wait for an entity to reach the desired state."""
-
-    start = time.monotonic()
-    while time.monotonic() - start < timeout:
-        state_obj = hass.states.get(entity_id)
-        if state_obj:
-            value = state_obj.state if not attr else state_obj.attributes.get(attr)
-
-            if in_states and value in in_states:
-                return True
-            if not_in and value not in not_in:
-                return True
-            if equals is not None and value == equals:
-                return True
-
-        await asyncio.sleep(0.5)
-    return False
 
 
 def _prepare_tool_kwargs(spec: ToolSpec, args: Dict[str, Any], hass: Any | None) -> Dict[str, Any]:
@@ -90,6 +59,8 @@ def _extract_path_value(result: Any, path: str | None) -> Tuple[Any, bool]:
     current = result
     for part in path.split("."):
         if isinstance(current, dict):
+            if part not in current:
+                return None, False
             current = current.get(part)
         elif isinstance(current, (list, tuple)):
             try:
@@ -134,6 +105,26 @@ def _evaluate_expectation(expect: Dict[str, Any], result: Any) -> Tuple[bool, st
     return True, None, value
 
 
+def _sequence_result(results, total_steps, error=None):
+    failed = bool(error) or any(step["status"] in {"error", "timeout"} for step in results)
+    unverified = any(step.get("verification") == "unverified" for step in results) or (total_steps > 0 and (bool(error) or len(results) < total_steps))
+    verification = ("failed" if any(step.get("verification") == "failed" for step in results)
+                    else "unverified" if unverified
+                    else "verified" if any(step.get("verification") == "verified" for step in results)
+                    else "not_applicable")
+    result = {"result": "failed" if failed else "partial" if unverified else "completed",
+              "status": "error" if failed else "partial" if unverified else "ok",
+              "verification": verification, "steps": results, "total_steps": total_steps,
+              "attempted_steps": len(results),
+              "completed_steps": sum(step["status"] in {"ok", "skipped"} for step in results),
+              "verified_steps": sum(step.get("verification") == "verified" for step in results),
+              "unverified_steps": sum(step.get("verification") == "unverified" for step in results),
+              "unattempted_steps": max(0, total_steps - len(results))}
+    if error:
+        result["error"] = error
+    return result
+
+
 async def run_sequence(
     sequence_ref: str | None = None,
     sequence: Dict | None = None,
@@ -144,6 +135,8 @@ async def run_sequence(
     """Execute a sequence of steps with variable substitution and guards."""
 
     log.debug("run_sequence: ref=%s, inline=%s", sequence_ref, bool(sequence))
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout < 10**15:
+        raise ValueError("Sequence timeout must be a finite non-negative number")
 
     # Load sequence from scene memory if ref provided
     if sequence_ref:
@@ -168,16 +161,13 @@ async def run_sequence(
     vars = vars or {}
     results: List[Dict[str, Any]] = []
     started = time.monotonic()
+    deadline = started + timeout
+    if not steps:
+        return _sequence_result([], 0, "No sequence steps found")
 
     for step in steps:
-        if time.monotonic() - started > timeout:
-            return {
-                "result": "failed",
-                "steps": results,
-                "total_steps": len(steps),
-                "completed_steps": len(results),
-                "error": "Sequence timeout exceeded",
-            }
+        if time.monotonic() >= deadline:
+            return _sequence_result(results, len(steps), "Sequence timeout exceeded")
 
         step_type = step.get("type")
         step_result: Dict[str, Any] = {
@@ -245,46 +235,27 @@ async def run_sequence(
                 data = _substitute_vars(step.get("data", {}), vars)
                 if hass is None:
                     raise RuntimeError("Home Assistant instance required for service_call")
-                await _call_service(hass, service, data)
-                step_result["status"] = "ok"
-
-                post_condition = step.get("post_condition")
-                if post_condition and hass:
-                    try:
-                        from ..agent_core import SCENE_MEMORY_CONFIG
-                    except ImportError:  # pragma: no cover - direct execution fallback
-                        from agent_core import SCENE_MEMORY_CONFIG  # type: ignore
-
-                    default_timeout_ms = SCENE_MEMORY_CONFIG.get("post_condition_timeout_ms", 4000)
-                    timeout_ms = post_condition.get("timeout_ms", default_timeout_ms)
-                    timeout_seconds = timeout_ms / 1000.0
-
-                    entity_id = post_condition.get("entity_id")
-                    expected_state = post_condition.get("state")
-                    expected_attr = post_condition.get("attribute")
-                    expected_value = post_condition.get("value")
-
-                    if entity_id and (expected_state or expected_attr):
-                        success = await _wait_state(
-                            hass,
-                            entity_id,
-                            in_states=[expected_state] if expected_state else None,
-                            attr=expected_attr,
-                            equals=expected_value,
-                            timeout=int(timeout_seconds),
-                        )
-
-                        if not success:
-                            state_obj = hass.states.get(entity_id)
-                            current = state_obj.state if state_obj else "unknown"
-                            step_result["status"] = "error"
-                            step_result["error"] = (
-                                f"Post-condition failed: {entity_id} expected {expected_state or expected_value}, "
-                                f"got {current} after {timeout_ms}ms"
-                            )
-                            step_result["post_condition_failed"] = True
-                        else:
-                            step_result["post_condition_verified"] = True
+                post_condition = _substitute_vars(step.get("post_condition"), vars)
+                if "post_condition" in step:
+                    validate_post_condition(post_condition)
+                check = await call_service_verified(
+                    hass, service, data, deadline=deadline,
+                    verify_timeout=post_condition.get("timeout_ms", 4000) / 1000 if post_condition else None,
+                )
+                step_result.update(check)
+                if post_condition and check["accepted"] is True:
+                    observed = await verify_post_condition(hass, post_condition, deadline=deadline)
+                    step_result["post_condition_result"] = observed
+                    if observed["verification"] != "verified":
+                        step_result.update(status="error", verification=observed["verification"],
+                                           post_condition_failed=True, error="Required post-condition was not verified")
+                    else:
+                        step_result["post_condition_verified"] = True
+                        # An explicit condition can establish a result for an otherwise
+                        # unsupported command, but cannot erase a known mismatch.
+                        if check["verification"] != "failed" and (not check["checks"] or all(
+                                item.get("reason") == "unsupported_service" for item in check["checks"])):
+                            step_result.update(status="ok", verification="verified")
 
             elif step_type == "wait_state":
                 entity = _substitute_vars(step["entity_id"], vars)
@@ -298,12 +269,14 @@ async def run_sequence(
                     not_in=step.get("not_in"),
                     attr=step.get("attr"),
                     equals=step.get("equals"),
-                    timeout=wait_timeout,
+                    timeout=min(wait_timeout, max(0, deadline - time.monotonic())),
                 )
                 if success:
                     step_result["status"] = "ok"
+                    step_result["verification"] = "verified"
                 else:
                     step_result["status"] = "timeout"
+                    step_result["verification"] = "unverified"
                     state_obj = hass.states.get(entity) if hass else None
                     current = state_obj.state if state_obj else "unknown"
                     expected = step.get("in") or step.get("equals") or step.get("not_in")
@@ -313,7 +286,7 @@ async def run_sequence(
 
             elif step_type == "delay":
                 seconds = step.get("seconds", 0)
-                await asyncio.sleep(seconds)
+                await asyncio.wait_for(asyncio.sleep(seconds), max(0, deadline - time.monotonic()))
                 step_result["status"] = "ok"
 
             elif step_type == "tool_call":
@@ -322,13 +295,24 @@ async def run_sequence(
                 if not spec:
                     step_result["status"] = "error"
                     step_result["error"] = f"Tool '{tool_name}' not allowed in sequences"
-                    log.error("run_sequence: tool '%s' is not sequence-safe", tool_name)
+                    log.error("run_sequence: tool is not sequence-safe at step %d", len(results) + 1)
                 else:
                     step_result["tool"] = tool_name
                     substituted_args = _substitute_vars(step.get("args", {}), vars)
                     kwargs = _prepare_tool_kwargs(spec, substituted_args, hass)
-                    tool_result = await spec.func(**kwargs)
+                    tool_result = await asyncio.wait_for(spec.func(**kwargs), max(0, deadline - time.monotonic()))
                     step_result["tool_result"] = tool_result
+                    from .response_utils import _tool_activity_status
+                    outcome = _tool_activity_status(tool_result)
+                    step_result["verification"] = "unverified"
+                    if outcome == "error":
+                        step_result.update(status="error", verification="failed", error="Tool reported a failure")
+                    elif isinstance(tool_result, dict) and isinstance(tool_result.get("verification"), str) and tool_result["verification"] in {"verified", "failed", "unverified"}:
+                        step_result["verification"] = tool_result["verification"]
+                        if tool_result["verification"] == "failed":
+                            step_result.update(status="error", error="Tool reported failed verification")
+                    if outcome in {"partial", "unverified"}:
+                        step_result["verification"] = "unverified"
                     result_var = step.get("result_var")
                     stored_value = tool_result
                     if result_var:
@@ -350,13 +334,16 @@ async def run_sequence(
                         ok, message, observed = _evaluate_expectation(expect, tool_result)
                         if ok:
                             step_result["expect_verified"] = True
+                            if outcome not in {"partial", "unverified"}:
+                                step_result["verification"] = "verified"
                         else:
                             step_result["status"] = "error"
+                            step_result["verification"] = "failed"
                             step_result["error"] = message
                             step_result["expect_failed"] = True
                             step_result["observed"] = observed
                     if step_result["status"] != "error":
-                        step_result["status"] = "ok"
+                        step_result["status"] = "ok" if step_result["verification"] == "verified" else "unverified"
 
             elif step_type == "if":
                 condition = step.get("when")
@@ -365,49 +352,41 @@ async def run_sequence(
                 if is_true and "then" in step:
                     if hass is None:
                         raise RuntimeError("Home Assistant instance required for conditional service execution")
-                    for sub_step in step["then"]:
-                        if sub_step["type"] == "service_call":
-                            service = sub_step["service"]
-                            data = _substitute_vars(sub_step.get("data", {}), vars)
-                            await _call_service(hass, service, data)
-
-                step_result["status"] = "ok"
+                    nested = await run_sequence(sequence={"steps": step["then"]}, vars=vars,
+                                                timeout=max(0, deadline - time.monotonic()), hass=hass)
+                    step_result.update(status="error" if nested["result"] == "failed" else
+                                       "unverified" if nested["result"] == "partial" else "ok",
+                                       verification=nested["verification"], steps=nested["steps"])
+                else:
+                    step_result["status"] = "skipped"
 
             else:
                 step_result["status"] = "error"
                 step_result["error"] = f"Unknown step type: {step_type}"
 
+        except asyncio.TimeoutError:
+            step_result.update(status="timeout", verification="unverified", accepted=None,
+                               error="Step completion is unknown after the sequence deadline; do not retry blindly")
         except Exception as err:  # pragma: no cover - runtime guard
-            log.error("Step %s failed: %s", step_result["name"], err)
+            log.error("Sequence step failed: exception_type=%s", type(err).__name__)
             step_result["status"] = "error"
+            step_result["verification"] = "failed"
             step_result["error"] = str(err)
 
         results.append(step_result)
 
-        if step_result.get("post_condition_failed") or step_result.get("expect_failed"):
+        log.activity("sequence_step", phase="finished", iteration=len(results),
+                     status=step_result["status"], verification=step_result.get("verification", "not_applicable"))
+        if step_result["status"] in {"error", "timeout"}:
             failure_reason = (
-                "post-condition failure" if step_result.get("post_condition_failed") else "tool expectation failure"
+                "post-condition failure" if step_result.get("post_condition_failed") else
+                "tool expectation failure" if step_result.get("expect_failed") else "step verification or execution failure"
             )
             log.warning(
-                "Aborting sequence due to %s on step: %s",
+                "Aborting sequence due to %s at step %d",
                 failure_reason,
-                step_result.get("name"),
+                len(results),
             )
-            return {
-                "result": "failed",
-                "steps": results,
-                "total_steps": len(steps),
-                "completed_steps": len(results),
-                "error": f"Sequence aborted due to {failure_reason}",
-            }
+            return _sequence_result(results, len(steps), f"Sequence aborted due to {failure_reason}")
 
-    all_ok = all(s["status"] in ("ok", "skipped") for s in results)
-    any_error = any(s["status"] == "error" for s in results)
-    result = "completed" if all_ok else ("failed" if any_error else "partial")
-
-    return {
-        "result": result,
-        "steps": results,
-        "total_steps": len(steps),
-        "completed_steps": len(results),
-    }
+    return _sequence_result(results, len(steps))

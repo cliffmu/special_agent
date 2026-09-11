@@ -10,9 +10,57 @@ Install by copying this repository into your `custom_components/special_agent`
 folder and restart Home Assistant. Use the `special_agent.reload` service to
 reload the integration after making changes.
 
-## Debug logging
-Go to Settings \u25b8 Devices & Services \u25b8 Special\u00a0Agent \u25b8 3-dot menu \u25b8 Enable debug logging.
-Switch off to return to normal (INFO) logging.
+## Agent model and activity logs
+
+Open **Settings → Devices & services → Special Agent → Configure** to select the
+Python agent model, reasoning effort, and **Fast mode**. Existing installations
+keep their saved model until changed. New setups default to **gpt-5.6-terra / low**.
+Terra is a balanced starting point for tool use; try Luna for lower cost and
+compare accuracy on your routines. Sol and Astra are options for harder requests.
+A newer small model is not automatically more reliable on every task.
+[Model documentation](https://developers.openai.com/api/docs/models/gpt-5.6-terra).
+
+Fast mode explicitly requests OpenAI Fast processing; off explicitly requests the
+standard tier, even if the API project enables Fast. Fast currently costs **2×**
+standard token rates for these four models. It can shorten model processing, but
+cannot speed up an external device or service call. Logs show the requested and
+actual tier (5.6 may report `priority` for Fast, or `default` if downgraded).
+[Fast mode](https://developers.openai.com/api/docs/guides/fast-mode).
+This setting affects delegated Python-agent work; Live speech still uses
+`gpt-live-1` configured in the Live app. Unsupported reasoning choices are saved
+as `low` when switching models. Leave secret fields blank to keep existing keys.
+
+Concise activity logs are on by default:
+
+- **Python agent:** Settings → System → Logs → Home Assistant Core → menu →
+  **Show raw logs**, then filter `special_agent.activity`. The default summary
+  mostly shows warnings/errors. Activity records show request IDs, model/tier,
+  token counts, tool names, durations, failures, and completion.
+- **Voice bridge:** Settings → Apps → Special Agent Live → **Log** shows voice
+  session start/end, queued/running/completed jobs, and HA request timing.
+
+These activity records omit prompts, transcripts, raw tool arguments/results,
+and credentials. Optional detailed performance CSV and integration debug logging
+are separate diagnostics and may contain request content. Enable debug logging
+from the Special Agent integration menu only when investigating a specific issue.
+
+Special Agent's learned routines live in `scene_memory.json` under its
+`sa_vector_index` persistence directory, separate from Home Assistant `scenes.yaml`.
+On the current installation this is
+`/config/custom_components/sa_vector_index/scene_memory.json`.
+`.storage/.special_agent_sessions.json` contains conversation/tool history, not
+native HA scene definitions. A successful service-call result confirms the API
+call completed; Home Assistant state readback is a separate check and still
+reflects integration telemetry rather than independent physical proof.
+
+Direct controls and scene service steps share mandatory verification in Python.
+They submit the command once, then compare supported state/settings against HA
+readback within a bounded deadline. Already-matching settings verify immediately.
+Results separate `accepted` from `verification: verified / failed / unverified`;
+unsupported commands or missing telemetry stay unverified. The agent cannot skip
+this check by omitting a tool argument. Saved explicit post-conditions are retained
+and checked in addition to the automatic checks. No verification failure
+automatically repeats a device command.
 
 ## Vector index utilities
 `utils/vector_index.py` includes helpers to build and query a simple NumPy-based
@@ -328,8 +376,12 @@ the Office Voice PE. With app 0.1.1, a 116-second conversation included several
 successful spoken interruptions. Spoken “stop” silenced the response, and the
 center button then closed the session with confirmed final usage. With app 0.1.2,
 the owner also confirmed the Office light-status lookup and concurrent joke test
-worked. Device-changing actions and echo performance across rooms and volumes
-remain unverified. The earlier browser diagnostic remains in
+worked. With app 0.1.3, the owner confirmed Okay Nabu wake and an initial idle-timeout
+test; broader timeout testing remains useful. App 0.1.4 is installed with the
+Office device reconnected and concise activity logging. A saved Office routine
+was found in real tool history with 16 accepted HA service calls; this does not
+independently verify physical device outcomes. Echo performance across rooms and
+volumes remains unverified. The earlier browser diagnostic remains in
 `experimental/live/server.py`; it is not used by this hardware setup.
 
 The full Voice PE firmware compiled successfully with ESPHome 2026.8.2 and

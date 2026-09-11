@@ -1,8 +1,8 @@
 {
     "domain": "special_agent",
     "name": "Special Agent",
-    "version": "0.3.0",
-    "documentation": "https://example.com",
+    "version": "0.3.1",
+    "documentation": "https://github.com/cliffmu/special_agent/tree/codex/gpt-live-test",
     "dependencies": ["conversation", "assist_pipeline"],
     "requirements": [
         "langchain",

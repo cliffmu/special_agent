@@ -16,6 +16,7 @@ _FIELD_NAMES = frozenset({
     "elapsed_ms", "http_status", "iteration", "attempt", "tools", "tool_count",
     "input_tokens", "output_tokens", "cached_tokens", "total_tokens", "session", "job",
     "effort", "requested_tier", "effective_tier", "function_count", "function_names",
+    "verification", "verified_steps", "completed_steps", "total_steps",
 })
 _ATOM = re.compile(r"[A-Za-z0-9_.:-]{1,100}\Z")
 
