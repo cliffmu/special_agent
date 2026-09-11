@@ -46,13 +46,15 @@ class Settings:
                 raise ValueError("Set HA_TOKEN and HA_AGENT_ID for the Home Assistant backend")
 
 
-def voice_instructions(mode):
+def voice_instructions(mode, room=""):
     capabilities = (
         "The backend only runs a five-second demonstration task. It cannot control devices or look up facts. "
         "Clearly describe demo results as simulated."
         if mode == "demo" else
         "The backend is Special Agent in Home Assistant. It can check home state, use configured home/media tools, "
-        "and look up current information. This browser has no room identity; ask which room when unclear."
+        "and look up current information. " +
+        (f"This voice device is in {room}. Use that room when the user says here."
+         if room else "This client has no room identity; ask which room when unclear.")
     )
     return (
         "You are Special Agent, a concise, natural home voice assistant. "

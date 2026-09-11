@@ -174,7 +174,7 @@ class LiveSession:
                     job.duration_ms = round((time.monotonic() - started) * 1000)
                 # A later delegation may correct this one. Keep the old result visible, but quiet.
                 kind = "session.thinking.append" if not self._queue.empty() else "session.commentary.append"
-                report = job.result if len(job.result) <= 4000 else "The backend returned a long result. Please review it on the test page."
+                report = job.result if len(job.result) <= 4000 else job.result[:3500] + "\n[Result truncated; ask a narrower follow-up for more detail.]"
                 await self.append(kind, job.id, report)
             finally:
                 self._queue.task_done()

@@ -6,6 +6,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-firmware/
 venv/
 ENV/
 env/
@@ -41,5 +42,4 @@ desktop.ini
 
 # Jupyter
 .ipynb_checkpoints/
-
 
