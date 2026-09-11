@@ -1,6 +1,7 @@
 """Core agent structures and stubs (v0.2) - SIMPLIFIED."""
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Dict, List, Optional
 
@@ -45,8 +46,9 @@ class Agent:
 
     def __init__(self, config: Dict[str, Any] | None = None) -> None:
         self.tools: Dict[str, ToolSpec] = {}
-        self.config = config or {}
+        self.config = dict(config or {})
         self._tools_loaded = False
+        self._tools_lock = asyncio.Lock()
 
     # —— tool registry ——
     async def load_tools(self, hass: Any | None = None) -> None:
@@ -54,9 +56,11 @@ class Agent:
         if self._tools_loaded:
             return
         
-        # Use centralized tool loading from tool_registry
-        self.tools = await load_all_tools(hass, self.config)
-        self._tools_loaded = True
+        # Simultaneous satellite requests share one completed tool load.
+        async with self._tools_lock:
+            if not self._tools_loaded:
+                self.tools = await load_all_tools(hass, self.config)
+                self._tools_loaded = True
 
     def register_tool(self, spec: ToolSpec) -> None:
         """Register a single tool."""
@@ -153,6 +157,7 @@ async def plan_execute(
     tried_calls: set[tuple[str, str]] = set()
     depth, max_depth = 0, 10
     retry_budget = 2
+    error_retries_remaining = 2
     spec_map = {t.name: t for t in tools}
     tool_json = [spec_to_json(t) for t in tools]
 
@@ -169,6 +174,11 @@ async def plan_execute(
             if error_msg:  # Unrecoverable error
                 store_session(mgr, session_key, messages, pending, focus)
                 return error_msg
+            if error_retries_remaining == 0:
+                log.warning("LLM error retry limit reached")
+                store_session(mgr, session_key, messages, pending, focus)
+                return "I'm having trouble with this conversation. Please start a new request."
+            error_retries_remaining -= 1
             continue  # Retry with updated messages
         
         # Log response

@@ -55,13 +55,13 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     async def async_process(
         self, conversation_input, context=None
     ) -> ConversationResult:
-        # Reload agent config from config_entry on each request to pick up option changes
+        # Reuse loaded tools until options change. Existing requests retain their
+        # own agent when a new configuration is installed.
         config = dict(self.config_entry.data)
         config.update(self.config_entry.options)
-        self.agent.config = config
-        # Reset tools to force reload with new config
-        self.agent._tools_loaded = False
-        self.agent.tools.clear()  # Clear existing tools
+        if config != self.agent.config:
+            self.agent = Agent(config)
+        agent = self.agent
         
         user_text = getattr(conversation_input, "text", "")
         device_id = conversation_input.device_id or ""
@@ -76,7 +76,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             "session",
             metadata={"prompt": user_text[:100]}  # First 100 chars
         ):
-            result = await self.agent.plan(user_text, hass=self.hass, session_key=sess_key)
+            result = await agent.plan(user_text, hass=self.hass, session_key=sess_key)
         
         # Write performance metrics after track_request completes (ensures session record is captured)
         if performance.is_enabled():
@@ -103,7 +103,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             
             service_domain = "assist_pipeline"
             service_name = "run"
-            if self.hass.services.has_service(service_domain, service_name):
+            if device_id and self.hass.services.has_service(service_domain, service_name):
                 await self.hass.services.async_call(
                     service_domain,
                     service_name,
