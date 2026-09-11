@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Special Agent Live</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="wordmark"><span class="mark" aria-hidden="true">sa</span> SPECIAL AGENT</div>
+        <span class="experiment">VOICE EXPERIMENT</span>
+      </header>
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">A more natural conversation</p>
+        <h1 id="page-title">Special Agent <span>Live.</span></h1>
+        <p class="lede">Speak, interrupt, and keep talking while your agent works in the background.</p>
+        <div class="configuration">
+          <span id="model">Loading model…</span>
+          <span id="backend">Loading backend…</span>
+          <span id="demo-note" class="demo" hidden>Demo · no devices changed</span>
+        </div>
+      </section>
+
+      <section class="console" aria-label="Conversation controls">
+        <div class="session-summary">
+          <span id="signal" class="signal" data-state="idle" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+          <div><h2 id="status" role="status">Getting ready</h2><p id="status-detail">Checking the local bridge.</p></div>
+          <div class="elapsed"><strong id="elapsed">00:00</strong><span>session time</span></div>
+        </div>
+        <div class="controls">
+          <button id="start" class="primary" disabled>Start conversation <span aria-hidden="true">↗</span></button>
+          <button id="end" disabled>End conversation</button>
+          <button id="mute" class="mute" aria-pressed="false" disabled>Mute mic</button>
+        </div>
+        <p id="message" class="message" role="alert" hidden></p>
+        <div class="audio-row">
+          <div><label for="audio">Assistant audio</label><p>Use play if your browser blocks sound.</p></div>
+          <audio id="audio" autoplay controls></audio>
+        </div>
+        <div class="session-notes"><span id="limits">Session limits are set by the bridge.</span><span>Your microphone streams only during a session.</span></div>
+      </section>
+
+      <div class="workspace">
+        <section class="panel" aria-labelledby="transcript-title">
+          <div class="panel-title"><h2 id="transcript-title">Conversation</h2><span>TRANSCRIPT</span></div>
+          <div id="transcripts" class="entries transcripts" role="log" aria-live="polite" aria-relevant="additions text">
+            <div class="empty"><span aria-hidden="true">“</span><p>Your conversation will appear here.</p><small>Start with a greeting or ask for a joke.</small></div>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="jobs-title">
+          <div class="panel-title"><h2 id="jobs-title">Background work</h2><span id="task-count">0 TASKS</span></div>
+          <div id="tasks" class="entries tasks" aria-live="polite">
+            <div class="empty"><span aria-hidden="true">⌁</span><p>Room to keep talking.</p><small>Delegated requests and their results appear here.</small></div>
+          </div>
+        </section>
+      </div>
+      <footer>
+        <p>Browser microphone test · Home Assistant Voice hardware needs a separate audio bridge.</p>
+        <details id="usage-panel"><summary id="usage-summary">Final API usage appears after the session ends</summary><pre id="usage">No finalized usage yet.</pre></details>
+      </footer>
+      <noscript><p class="message">Enable JavaScript to start a voice conversation.</p></noscript>
+    </main>
+  </body>
+</html>

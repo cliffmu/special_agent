@@ -154,10 +154,25 @@ def handle_llm_error(error: Exception, messages: List[Dict]) -> Tuple[str | None
     """
     error_msg = str(error)
     
-    if "context_overflow" in error_msg:
+    if "context_overflow" in error_msg or "context_length_exceeded" in error_msg:
         log.error("LLM context overflow - reducing message history")
-        # Keep system message and last 10 messages (5 exchanges)
-        trimmed_messages = messages[:1] + messages[-10:]
+        # Drop complete older turns, keeping function calls with their outputs.
+        # A raw last-ten slice can orphan a tool output or duplicate the system
+        # message when the history is already short.
+        system_count = int(
+            bool(messages) and isinstance(messages[0], dict)
+            and messages[0].get("role") == "system"
+        )
+        turn_starts = [
+            i for i, message in enumerate(messages)
+            if i > system_count and isinstance(message, dict)
+            and message.get("role") == "user"
+        ]
+        if not turn_starts:
+            return "That request is too large to process. Please start a shorter request.", messages
+        cutoff = max(system_count, len(messages) - 10)
+        trim_at = next((i for i in turn_starts if i >= cutoff), turn_starts[-1])
+        trimmed_messages = messages[:system_count] + messages[trim_at:]
         return None, trimmed_messages  # Retry with trimmed history
     
     elif "modality_mismatch" in error_msg:
@@ -172,4 +187,3 @@ def handle_llm_error(error: Exception, messages: List[Dict]) -> Tuple[str | None
     else:
         log.error("LLM API error: %s", error)
         return "I'm having issues right now. Please try again.", messages
-
