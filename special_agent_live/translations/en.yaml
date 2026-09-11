@@ -1,0 +1,24 @@
+configuration:
+  api_key:
+    name: OpenAI API key
+    description: An OpenAI API key with GPT-Live access. Demo mode also uses paid Live audio.
+  device_token:
+    name: Voice device token
+    description: A random 32–256 character URL-safe token matching the token in your Voice PE WebSocket URL. Use letters, digits, underscores and hyphens only.
+  room:
+    name: Room
+    description: Room containing this Voice PE, used to interpret requests such as "turn on the lights here".
+  backend:
+    name: Backend
+    description: Start with demo for an audio test. Select home-assistant to delegate requests to your configured Special Agent.
+  agent_id:
+    name: Conversation agent entity
+    description: Your available conversation agent entity ID, for example conversation.special_agent_2. Used by the home-assistant backend.
+  idle_timeout:
+    name: Idle timeout (seconds)
+    description: End a Live session after this much inactivity, from 10 to 600 seconds.
+  max_duration:
+    name: Maximum session duration (seconds)
+    description: End a Live session after this duration, from 30 to 1800 seconds.
+network:
+  8099/tcp: Voice PE WebSocket audio and the /health endpoint. Use this host port in the firmware URL.
