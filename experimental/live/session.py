@@ -42,6 +42,7 @@ class LiveSession:
         self.state, self.error = "connecting", None
         self.usage, self.finalized = {}, False
         self.created_at = self.last_activity = time.monotonic()
+        self.playback_until = self.created_at
         self.last_input_at = 0.0
         self.transcripts: deque[dict] = deque(maxlen=120)
         self.jobs: dict[str, Job] = {}
@@ -53,6 +54,22 @@ class LiveSession:
         self._closed = asyncio.Event()
         self._worker: asyncio.Task | None = None
         self._close_lock = asyncio.Lock()
+
+    def mark_activity(self, at=None):
+        """Preserve the latest speech/work time, including queued audible playback."""
+        self.last_activity = max(self.last_activity, time.monotonic() if at is None else at)
+
+    def mark_playback(self, duration_seconds, *, audible=True):
+        """Estimate speaker completion without treating generated silence as speech."""
+        self.playback_until = max(time.monotonic(), self.playback_until) + duration_seconds
+        if audible:
+            self.mark_activity(self.playback_until)
+
+    def is_idle(self, now, timeout):
+        """Only start idle grace after speech playback and all queued work finish."""
+        busy = any(job.status in ("waiting_for_context", "running") for job in self.jobs.values())
+        busy = busy or (self._worker is not None and not self._worker.done())
+        return not busy and now - self.last_activity >= timeout
 
     def snapshot(self):
         return {"state": self.state, "error": self.error, "finalized": self.finalized,
@@ -69,6 +86,7 @@ class LiveSession:
         kind = event.get("type")
         if kind == "session.started":
             self.state = "active"
+            self.mark_activity()
         elif kind in ("session.input_transcript.delta", "session.output_transcript.delta"):
             delta = event.get("delta", "")
             if not isinstance(delta, str) or not delta:
@@ -76,9 +94,10 @@ class LiveSession:
             role = "user" if kind == "session.input_transcript.delta" else "assistant"
             self.transcripts.append({"role": role, "text": delta,
                                      "start_ms": event.get("start_ms"), "end_ms": event.get("end_ms")})
-            self.last_activity = time.monotonic()
+            now = time.monotonic()
+            self.mark_activity(now)
             if role == "user":
-                self.last_input_at = self.last_activity
+                self.last_input_at = now
                 self._pending_text += delta  # Preserve fragments exactly, including whitespace.
                 if len(self._pending_text) > 16000:
                     self.fail("Request is too long. End this session and start a shorter request.")
@@ -93,7 +112,7 @@ class LiveSession:
                 return
             self.jobs[job_id] = Job(job_id)
             self._queue.put_nowait(job_id)
-            self.last_activity = time.monotonic()
+            self.mark_activity()
             if self._worker is None or self._worker.done():
                 self._worker = asyncio.create_task(self._run_jobs())
         elif kind in ("session.usage.updated", "session.closed"):
@@ -148,6 +167,7 @@ class LiveSession:
                     continue
                 if not self._pending_text.strip() or time.monotonic() - self.last_input_at < self.settle_seconds:
                     job.status = "needs_context"
+                    self.mark_activity()
                     await self.append("session.commentary.append", job.id,
                                       "I don't have a clear request yet. Please repeat what you would like me to do.")
                     continue
@@ -172,11 +192,14 @@ class LiveSession:
                     self.fail(job.result)
                 finally:
                     job.duration_ms = round((time.monotonic() - started) * 1000)
+                    self.mark_activity()
                 # A later delegation may correct this one. Keep the old result visible, but quiet.
                 kind = "session.thinking.append" if not self._queue.empty() else "session.commentary.append"
                 report = job.result if len(job.result) <= 4000 else job.result[:3500] + "\n[Result truncated; ask a narrower follow-up for more detail.]"
                 await self.append(kind, job.id, report)
             finally:
+                # Success, ordinary failure and clarification all get fresh grace.
+                self.mark_activity()
                 self._queue.task_done()
 
     def _skip_queued(self):

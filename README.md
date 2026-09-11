@@ -96,6 +96,15 @@ it. The app uses Supervisor's Core API proxy and its app token; you do not need
 to create or paste a separate long-lived HA access token. Its Home Assistant API
 permission lets delegated requests use the configured Special Agent tools.
 
+**Keep listening after activity (seconds)** controls the follow-up window and
+defaults to **30**. The session stays open while the agent speaks or has pending
+work, then gives you the full window after the latest recognized speech, audible
+reply, or completed task. Speaking again restarts the countdown. Save and restart
+the app after changing the value. Set **Optional session length limit (seconds)**
+to **0** (the default) to avoid a cutoff measured from the initial wake; a positive
+value explicitly enables that separate limit. Existing installations keep their
+saved values, so change them to `30` and `0` when updating.
+
 Continue with the firmware preparation below. HACS installation and app
 installation do not change the Voice PE firmware automatically.
 
@@ -215,6 +224,19 @@ closes the Live session; the idle and total-duration limits below also end it.
 The local stop-word detector is disabled during Live conversation so ordinary
 speech cannot falsely trigger its end-session command. Spoken corrections go
 directly to GPT-Live.
+
+For hands-free startup, use **“Okay Nabu”**, wait for the wake chime, then speak.
+Under **Settings → Devices & services → ESPHome → Office Home Assistant Voice →
+Configuration → Wake word**, choose the active dropdown. This firmware includes
+**Okay Nabu**, **Hey Jarvis**, and **Hey Leonard**; the selection is saved on the
+device and does not require rebuilding. An unavailable wake-word field left over
+from stock firmware is not the active selector. Wake detection runs on the Voice
+PE using microWakeWord, so the openWakeWord app is not used for this Live path.
+An arbitrary typed phrase is not enough: a custom phrase needs a compatible
+[trained wake-word model](https://esphome.io/components/micro_wake_word/#model-json)
+and a firmware rebuild. The app's idle setting and the device's wake-word selector
+are independent; you do not need another wake word during an open conversation.
+
 Ordinary spoken interruptions are heard by Live while it is talking. Full duplex
 is experimental: test at low speaker volume first. The upstream firmware normally
 disables this mode because acoustic echo can leak through the Voice PE's XMOS
@@ -261,10 +283,13 @@ Special Agent. A separate lightweight information backend is not implemented.
   continuous throughout playback, and firmware phases do not change per utterance.
   Device input is PCM16 mono 16 kHz, resampled continuously to Live's negotiated 24 kHz;
   Live output passes directly to the firmware's 24 kHz speaker path.
-- Idle sessions close after 90 seconds without transcript activity or pending
-  work; total duration defaults to 10 minutes. Configure `--idle-timeout` and
-  `--max-duration` in seconds. The firmware may stop earlier if it detects no
-  speech. GPT-Live bills session duration separately from the backend model.
+- Idle sessions close after 30 seconds following the latest recognized speech,
+  audible playback, or completed backend work. Pending work prevents idle closure;
+  microphone silence and silent output packets do not keep it awake. Speech timing
+  uses received transcript fragments, so this is an approximate inactivity window.
+  Configure `--idle-timeout` in seconds; `--max-duration 0` disables the optional
+  duration cap (the default). API and transport limits still apply. GPT-Live bills
+  session duration separately from the backend model.
 - Normal close waits for `session.closed` and logs cumulative usage. Lost
   connections or finalization timeouts leave final usage unconfirmed and stop
   automatic restart. No device action is automatically retried after an uncertain
@@ -301,9 +326,10 @@ succeeded; HA recognizes the device as `special-agent-live`.
 Authenticated GPT-Live speech input and speaker replies have been confirmed on
 the Office Voice PE. With app 0.1.1, a 116-second conversation included several
 successful spoken interruptions. Spoken “stop” silenced the response, and the
-center button then closed the session with confirmed final usage. Background
-Home Assistant actions and echo performance across rooms and volumes remain
-unverified. The earlier browser diagnostic remains in
+center button then closed the session with confirmed final usage. With app 0.1.2,
+the owner also confirmed the Office light-status lookup and concurrent joke test
+worked. Device-changing actions and echo performance across rooms and volumes
+remain unverified. The earlier browser diagnostic remains in
 `experimental/live/server.py`; it is not used by this hardware setup.
 
 The full Voice PE firmware compiled successfully with ESPHome 2026.8.2 and

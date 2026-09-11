@@ -24,8 +24,8 @@ options:
   room: Office
   backend: demo
   agent_id: conversation.special_agent
-  idle_timeout: 90
-  max_duration: 600
+  idle_timeout: 30
+  max_duration: 0
 schema:
   api_key: password
   device_token: password
@@ -33,4 +33,4 @@ schema:
   backend: list(demo|home-assistant)
   agent_id: str(1,255)
   idle_timeout: int(10,600)
-  max_duration: int(30,1800)
+  max_duration: int(0,1800)

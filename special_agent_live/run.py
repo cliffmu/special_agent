@@ -40,7 +40,7 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
     if not agent_id.strip():
         raise ValueError("Set agent_id to your available conversation agent")
     limits = {}
-    for name, default, low, high in (("idle_timeout", 90, 10, 600), ("max_duration", 600, 30, 1800)):
+    for name, default, low, high in (("idle_timeout", 30, 10, 600), ("max_duration", 0, 0, 1800)):
         value = options.get(name, default)
         if type(value) is not int or not low <= value <= high:
             raise ValueError(f"{name} must be an integer from {low} to {high}")
