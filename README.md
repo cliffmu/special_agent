@@ -44,9 +44,65 @@ alone does not change the stock wake → STT → conversation → TTS pipeline. 
 firmware is for the official Voice Preview Edition; other ESPHome voice devices
 need a hardware-specific configuration.
 
+### Install the integration branch through HACS
+
+The **Redownload → Need a different version?** dropdown lists releases; a test
+branch may not appear there. In Home Assistant, open **Settings → Tools → Actions**
+(called **Developer Tools → Actions** on older versions), choose YAML mode, and run:
+
+```yaml
+action: update.install
+target:
+  entity_id: update.special_agent_update
+data:
+  version: codex/gpt-live-test
+```
+
+Restart Home Assistant after the download. This installs the integration changes;
+it does not flash the Voice device or launch the audio bridge. Use your actual
+HACS update entity ID if it differs. HACS documents branch and full-commit installs
+through its [update action](https://www.hacs.dev/docs/use/entities/update/).
+
+### Run the bridge as a Home Assistant app/add-on
+
+On Home Assistant OS/Supervised, the bridge can run beside Core. In **Settings →
+Apps → Install app → ⋮ → Repositories** (older versions: **Add-ons → Add-on Store**),
+add this repository URL, including the branch suffix:
+
+```text
+https://github.com/cliffmu/special_agent#codex/gpt-live-test
+```
+
+Refresh the store and select **Special Agent Live**, then install it. Its
+first installation builds a container from a pinned, hash-verified bridge source
+revision. The app repository and the HACS integration use the same GitHub project,
+but are installed and updated independently.
+
+In the app's Configuration tab, set `api_key` to the OpenAI API key, `device_token`
+to a random URL-safe token of at least 32 characters, `room` to the room name,
+and `agent_id` to your active Special Agent conversation entity ID.
+Check **Tools → States** for the entity: an older restored
+`conversation.special_agent` can be unavailable while the active entity has a
+suffix such as `conversation.special_agent_2`.
+
+Start with the demo backend. Keep the network mapping **8099/tcp → 8099** and start
+the app. Enable **Start on boot** after the first successful test. The firmware
+URL is `ws://HA_HOST:8099/voice?token=YOUR_DEVICE_TOKEN`, using your HA host's LAN
+IP, not its port 8123 or a cloud/remote-access URL. `/health` on port 8099 reports
+the bridge and device connection state. Do not expose this port to the internet.
+
+After device audio works, switch the app backend to `home-assistant` and restart
+it. The app uses Supervisor's Core API proxy and its app token; you do not need
+to create or paste a separate long-lived HA access token. Its Home Assistant API
+permission lets delegated requests use the configured Special Agent tools.
+
+Continue with the firmware preparation below. HACS installation and app
+installation do not change the Voice PE firmware automatically.
+
 ### 1. Run the LAN bridge
 
-Use Python 3.11 or later on an always-on machine reachable by the Voice device.
+Skip this section when using the Home Assistant app above. For a separate LAN
+machine, use Python 3.11 or later on an always-on machine reachable by the Voice device.
 Run these commands from the repository root:
 
 ```sh
@@ -105,6 +161,12 @@ existing ESPHome OTA workflow. Restore the previous firmware to return to stock
 Assist. The configuration preserves the center button, physical mute, speaker
 controls and encrypted native HA API.
 
+This firmware can also update the Voice PE's XMOS audio processor to its bundled
+firmware (1.3.1). Restoring stock behavior requires reflashing firmware; the
+factory-reset button only clears preferences. The
+[official Voice PE installer](https://esphome.github.io/home-assistant-voice-pe/)
+provides a USB recovery path.
+
 The preparation script downloads hash-verified community YAML and its license
 from a pinned revision, then pins its external components. The community YAML
 and Python portions are MIT licensed; its C++ audio client is GPLv3. Original
@@ -128,6 +190,10 @@ processing. Software validation cannot establish how well interruption and echo
 cancellation work in your room.
 
 ### 4. Connect your Special Agent tools
+
+If using the Home Assistant app, select its `home-assistant` backend and restart
+the app as described above. The environment commands below are only for a
+standalone bridge on another machine.
 
 Install this branch into `custom_components/special_agent` and restart HA. Check
 that a normal Special Agent conversation works, then restart the bridge with:

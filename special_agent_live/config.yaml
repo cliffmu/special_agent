@@ -1,0 +1,36 @@
+name: Special Agent Live
+version: "0.1.0"
+slug: special_agent_live
+description: GPT-Live audio bridge for a Home Assistant Voice Preview Edition
+url: https://github.com/cliffmu/special_agent/tree/codex/gpt-live-test
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: true
+# Allow the bridge to close Live and finish an already accepted HA request.
+timeout: 150
+stage: experimental
+homeassistant_api: true
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Voice PE WebSocket audio and health endpoint
+watchdog: http://[HOST]:[PORT:8099]/health
+options:
+  api_key: null
+  device_token: null
+  room: Office
+  backend: demo
+  agent_id: conversation.special_agent
+  idle_timeout: 90
+  max_duration: 600
+schema:
+  api_key: password
+  device_token: password
+  room: str(0,120)
+  backend: list(demo|home-assistant)
+  agent_id: str(1,255)
+  idle_timeout: int(10,600)
+  max_duration: int(30,1800)
