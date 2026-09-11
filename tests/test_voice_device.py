@@ -216,6 +216,9 @@ async def test_pcm_keeps_flowing_while_backend_waits_and_stop_preserves_accepted
             await cloud.next_event("session.close")
             await asyncio.wait_for(device.runner, 2)
             assert device.session.finalized and device.session.usage["seconds"] == 17
+            assert device.last_stop_reason == "device_control_" + stop_event
+            health = await (await client.get("/health")).json()
+            assert health["last_stop_reason"] == device.last_stop_reason
             assert device.session.jobs["job-1"].status == "running"
             release.set()
             await asyncio.wait_for(device.session.drain(), 2)
@@ -396,3 +399,134 @@ async def test_blocked_speaker_does_not_block_cloud_events_or_replay_after_stop(
             release_write.set()
             release_backend.set()
             await socket.close()
+
+
+async def test_repeated_wake_acknowledges_watchdog_without_restarting_cloud_or_context(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        previous = device.session
+        previous.conversation_id = "ha-existing-context"
+        await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Tell me a story"})
+        await socket.send_json({"type": "wake"})
+        await control(socket, "ack")
+        await socket.send_bytes(struct.pack("<3h", 0, 300, 600))
+        await cloud.next_event("session.input_audio.append")
+        assert device.session is previous and previous.conversation_id == "ha-existing-context"
+        assert len(cloud.connections) == 1 and cloud.starts.empty()
+        assert not device.stop.is_set() and not device.restart
+        assert not any(event["type"] == "session.close" for _, event in cloud.received)
+        await socket.close()
+
+
+async def test_repeated_wake_during_connecting_does_not_ack_before_cloud_ready(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        await socket.send_json({"type": "wake"})
+        await socket.send_json({"type": "start"})
+        # Handshake response is an ordering barrier; a premature ack would be first.
+        await control(socket, "hello")
+        assert len(cloud.connections) == 1
+        await upstream.send_json({"type": "session.started", "session": {"id": "live-ready"}})
+        await control(socket, "ack")
+        await control(socket, "phase")
+        await socket.close()
+
+
+async def test_spoken_correction_during_story_keeps_same_session_open(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        previous = device.session
+        await upstream.send_json({"type": "session.output_transcript.delta", "delta": "Once upon a time"})
+        await upstream.send_json({"type": "session.output_audio.delta", "delta": "AQACAAMA"})
+        assert (await asyncio.wait_for(socket.receive(), 2)).type == aiohttp.WSMsgType.BINARY
+        # Speech alone contains no terminal device-control message.
+        await socket.send_bytes(struct.pack("<3h", 0, 300, 600))
+        await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Make the story more interesting"})
+        await cloud.next_event("session.input_audio.append")
+        await upstream.send_json({"type": "session.output_audio.delta", "delta": "BAAFAA=="})
+        assert (await asyncio.wait_for(socket.receive(), 2)).data == b"\x04\0\x05\0"
+        assert device.session is previous and device.accept_audio and not device.stop.is_set()
+        assert device.last_stop_reason is None
+        assert not any(event["type"] == "session.close" for _, event in cloud.received)
+        await socket.close()
+
+
+async def test_microphone_starvation_records_reason_and_task_exception_type(monkeypatch, caplog):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        # Playback alone must not hide a missing microphone transport.
+        await upstream.send_json({"type": "session.output_audio.delta", "delta": "AQACAAMA"})
+        await socket.receive()
+        await asyncio.wait_for(asyncio.shield(device.runner), 4.5)
+        assert device.last_stop_reason == "mic_starvation"
+        assert "task=microphone exception_type=TimeoutError" in caplog.text
+        health = await (await client.get("/health")).json()
+        assert health["last_stop_reason"] == "mic_starvation"
+        assert not health["audio_active"] and health["device_connected"]
+        await socket.close()
+
+
+async def test_speaker_burst_records_backlog_without_misreporting_cloud_close(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        # One large delta overflows the 16-slot queue before the writer can run.
+        await upstream.send_json({"type": "session.output_audio.delta",
+                                  "delta": base64.b64encode(b"\x01\0" * (4096 * 17 // 2)).decode("ascii")})
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "speaker_backlog"
+        await socket.close()
+
+
+async def test_speaker_failure_logs_exception_type_without_private_error_text(monkeypatch, caplog):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        monkeypatch.setattr(device.socket, "send_bytes", AsyncMock(side_effect=OSError("PRIVATE_AUDIO_URL_OR_TOKEN")))
+        await upstream.send_json({"type": "session.output_audio.delta", "delta": "AQACAAMA"})
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "speaker_write_error"
+        assert "task=speaker exception_type=OSError" in caplog.text
+        assert "PRIVATE_AUDIO_URL_OR_TOKEN" not in caplog.text
+        await socket.close()
+
+
+@pytest.mark.parametrize("reason", ["idle_timeout", "max_duration"])
+async def test_session_deadline_has_specific_reason(monkeypatch, reason):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, _, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        if reason == "idle_timeout":
+            device.session.last_activity -= device.settings.idle_timeout + 1
+        else:
+            device.session.created_at -= device.settings.max_duration + 1
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == reason
+        assert device.session.finalized
+        await socket.close()
+
+
+@pytest.mark.parametrize("code,logged_code", [
+    ("credit_balance_exhausted", "credit_balance_exhausted"),
+    ("private_token_could_be_in_unknown_code", "unknown"),
+])
+async def test_live_error_logs_known_machine_code_without_secret_message(monkeypatch, caplog, code, logged_code):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        await upstream.send_json({"type": "error", "error": {
+            "code": code, "message": "PRIVATE_API_KEY_URL_OR_TRANSCRIPT", "param": "PRIVATE_PARAM",
+        }})
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "cloud_error"
+        assert "Live error code: " + logged_code in caplog.text
+        assert "PRIVATE_API_KEY_URL_OR_TRANSCRIPT" not in caplog.text
+        assert "PRIVATE_PARAM" not in caplog.text
+        if logged_code == "unknown":
+            assert code not in caplog.text
+        await socket.close()

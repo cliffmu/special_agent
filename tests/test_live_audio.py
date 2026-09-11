@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-from experimental.live.audio import PCM16Resampler
+from experimental.live.audio import AudioPacer, PCM16Resampler
 
 
 def pcm(samples):
@@ -99,3 +99,56 @@ def test_reset_discards_partial_sample_and_old_interpolation_history():
 def test_invalid_chunk_limit_is_rejected(size):
     with pytest.raises(ValueError, match="even integer"):
         PCM16Resampler(max_chunk_bytes=size)
+
+
+class VirtualClock:
+    def __init__(self, jitter=0.001):
+        self.now = 0.0
+        self.jitter = jitter
+        self.waits = []
+
+    async def sleep(self, delay):
+        self.waits.append(delay)
+        self.now += delay + self.jitter
+
+
+async def test_pacing_16ms_frames_for_twenty_seconds_does_not_accumulate_scheduler_jitter():
+    clock = VirtualClock(jitter=0.001)
+    pacer = AudioPacer(clock=lambda: clock.now, sleep=clock.sleep)
+    sent = []
+    for frame in range(1250):
+        # Firmware produces 512 bytes at 16 kHz every 16 ms: 768 bytes at 24 kHz.
+        clock.now = max(clock.now, frame * 0.016)
+        await pacer.wait_for_chunk(768)
+        sent.append(clock.now)
+    # The old actual-send-time deadline accumulated 1.25 s (78 queued frames),
+    # overflowing the device bridge's 64-frame microphone queue around 17 s.
+    assert max(actual - frame * 0.016 for frame, actual in enumerate(sent)) <= 0.001 + 1e-10
+    assert sent[-1] == pytest.approx(1249 * 0.016 + 0.001)
+
+
+@pytest.mark.parametrize("stall_during_sleep", [False, True])
+async def test_long_stall_rebases_audio_clock_without_a_catchup_burst(stall_during_sleep):
+    clock = VirtualClock(jitter=0)
+    pacer = AudioPacer(clock=lambda: clock.now, sleep=clock.sleep)
+    await pacer.wait_for_chunk(768)
+    if stall_during_sleep:
+        clock.jitter = 0.250
+    else:
+        clock.now += 0.250
+    await pacer.wait_for_chunk(768)
+    first_after_stall = clock.now
+    clock.jitter = 0
+    await pacer.wait_for_chunk(768)
+    assert clock.now - first_after_stall == pytest.approx(0.016)
+    assert clock.waits[-1] == pytest.approx(0.016)
+
+
+async def test_brief_jitter_is_recovered_within_the_bounded_audio_window():
+    clock = VirtualClock(jitter=0)
+    pacer = AudioPacer(clock=lambda: clock.now, sleep=clock.sleep)
+    await pacer.wait_for_chunk(768)
+    clock.now += 0.030  # Less than the 40 ms catch-up bound.
+    await pacer.wait_for_chunk(768)
+    await pacer.wait_for_chunk(768)
+    assert clock.now == pytest.approx(0.032)

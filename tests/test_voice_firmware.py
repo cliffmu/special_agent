@@ -103,3 +103,20 @@ def test_wrapper_preserves_continuous_audio_secret_transport_and_physical_mute()
     assert "/voice?token=" in (FIRMWARE / "secrets.example.yaml").read_text()
     ignored = (FIRMWARE / ".gitignore").read_text().splitlines()
     assert "secrets.yaml" in ignored and ".generated/" in ignored
+
+
+def test_listening_override_disables_only_local_stop_detection():
+    # ESPHome config validation additionally checks this appends an eighth action
+    # after all seven upstream LED/wake/idle actions; it must not replace them.
+    config = (FIRMWARE / "voice-pe.yaml").read_text()
+    client = re.search(r"(?ms)^va_client:\n(.*?)(?=^[a-z_]+:)", config).group(1)
+    assert re.search(
+        r"(?m)^  on_phase:\n    - if:\n        condition:\n"
+        r"          lambda: 'return phase == \"listening\";'\n"
+        r"        then:\n          - micro_wake_word.disable_model: stop$",
+        client,
+    )
+    assert "!override" not in client
+    assert "micro_wake_word.stop" not in client  # Its engine also owns the microphone.
+    assert "send_interrupt" not in client
+    assert "on_wake_word_detected:" not in config  # Preserve upstream wake/button handling.
