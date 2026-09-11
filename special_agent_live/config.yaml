@@ -1,5 +1,5 @@
 name: Special Agent Live
-version: "0.1.3"
+version: "0.1.4"
 slug: special_agent_live
 description: GPT-Live audio bridge for a Home Assistant Voice Preview Edition
 url: https://github.com/cliffmu/special_agent/tree/codex/gpt-live-test
