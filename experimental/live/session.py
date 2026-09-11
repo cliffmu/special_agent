@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 import time
 import uuid
 from collections import deque
@@ -10,6 +12,10 @@ from dataclasses import asdict, dataclass
 from typing import Awaitable, Callable
 
 from .backend import BackendError
+from utils.logging import activity, begin_job, end_job
+
+LOG = logging.getLogger(__name__ + ".activity")
+LOG.setLevel(logging.INFO)
 
 
 def commentary_chunks(text: str):
@@ -71,6 +77,12 @@ class LiveSession:
         busy = busy or (self._worker is not None and not self._worker.done())
         return not busy and now - self.last_activity >= timeout
 
+    def log_job(self, job, phase, **fields):
+        # Upstream delegation identifiers are opaque input; hash before logging.
+        activity("delegation", logger=LOG, session=self.id[:10],
+                 job=hashlib.sha256(str(job.id).encode()).hexdigest()[:10],
+                 phase=phase, status=job.status, **fields)
+
     def snapshot(self):
         return {"state": self.state, "error": self.error, "finalized": self.finalized,
                 "seconds": self.usage.get("seconds", 0), "usage": self.usage,
@@ -111,6 +123,7 @@ class LiveSession:
                                   "The test session has too many pending tasks. Please start a new session.")
                 return
             self.jobs[job_id] = Job(job_id)
+            self.log_job(self.jobs[job_id], "queued")
             self._queue.put_nowait(job_id)
             self.mark_activity()
             if self._worker is None or self._worker.done():
@@ -152,6 +165,8 @@ class LiveSession:
     async def _run_jobs(self):
         while not self._queue.empty():
             job = self.jobs[await self._queue.get()]
+            token = begin_job(self.id[:10], hashlib.sha256(str(job.id).encode()).hexdigest()[:10])
+            job_started = time.monotonic()
             try:
                 if self.state in ("closing", "closed", "error"):
                     job.status = "not_started"
@@ -179,6 +194,7 @@ class LiveSession:
                 history = self._history()
                 job.status = "running"
                 started = time.monotonic()
+                self.log_job(job, "started")
                 try:
                     result = await self.backend.execute(job.request, history, self.conversation_id)
                     self.conversation_id = result.conversation_id or self.conversation_id
@@ -201,10 +217,16 @@ class LiveSession:
                 # Success, ordinary failure and clarification all get fresh grace.
                 self.mark_activity()
                 self._queue.task_done()
+                try:
+                    self.log_job(job, "finished", elapsed_ms=round((time.monotonic() - job_started) * 1000))
+                finally:
+                    end_job(token)
 
     def _skip_queued(self):
         while not self._queue.empty():
-            self.jobs[self._queue.get_nowait()].status = "not_started"
+            job = self.jobs[self._queue.get_nowait()]
+            job.status = "not_started"
+            self.log_job(job, "finished")
             self._queue.task_done()
 
     async def close(self, timeout=12):

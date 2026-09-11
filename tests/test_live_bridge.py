@@ -1,6 +1,7 @@
 """Protocol and lifecycle tests use fake Live events; no paid API or HA actions."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -323,6 +324,27 @@ async def test_ha_adapter_preserves_conversation_and_reports_semantic_errors():
     assert "conversation_id" not in bodies[0]
     assert bodies[1]["conversation_id"] == "ha-123"
     assert all("device_id" not in body for body in bodies)
+
+
+async def test_ha_transport_timeout_logs_timing_and_type_without_private_details(caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+
+    @asynccontextmanager
+    async def post(*args, **kwargs):
+        raise asyncio.TimeoutError("PRIVATE_TRANSPORT_URL_AND_TOKEN")
+        yield  # Make this a context manager without making any network request.
+
+    backend = HomeAssistantBackend(SimpleNamespace(post=post), "http://private.invalid", "PRIVATE_TOKEN", "agent")
+    with pytest.raises(BackendError) as error:
+        await backend.execute("PRIVATE_REQUEST", [], None)
+    assert error.value.uncertain
+    messages = [record.getMessage() for record in caplog.records
+                if record.name == "experimental.live.backend.activity"]
+    assert len(messages) == 2 and "phase=sent" in messages[0]
+    assert "phase=failed" in messages[1] and "status=error" in messages[1]
+    assert "error_type=TimeoutError" in messages[1] and "elapsed_ms=" in messages[1]
+    assert "PRIVATE" not in caplog.text and "private.invalid" not in caplog.text
 
 
 async def test_local_http_rejects_cross_origin_and_missing_key_without_exposing_config():

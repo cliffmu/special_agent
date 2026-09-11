@@ -23,6 +23,7 @@ from .audio import AudioPacer, PCM16Resampler
 from .backend import DemoBackend, HomeAssistantBackend
 from .server import Settings, voice_instructions
 from .session import LiveSession
+from utils.logging import activity
 
 LOG = logging.getLogger(__name__)
 LIVE_URL = "wss://api.openai.com/v1/live/sessions"
@@ -210,6 +211,7 @@ class VoiceDevice:
                             if kind == "session.started":
                                 session.live_id = event.get("session", {}).get("id", "unknown")
                                 started.set()
+                                activity("live_session", logger=LOG, session=session.id[:10], phase="started")
                             elif kind == "error":
                                 self.record_stop("cloud_error")
                                 detail = event.get("error")
@@ -333,8 +335,8 @@ class VoiceDevice:
             if cloud:
                 await cloud.close()
             if session:
-                LOG.info("Voice session ended: reason=%s finalized=%s seconds=%s tasks=%s",
-                         self.stop_reason, session.finalized, session.usage.get("seconds", "unknown"),
+                LOG.info("Voice session ended: session=%s reason=%s finalized=%s seconds=%s tasks=%s",
+                         session.id[:10], self.stop_reason, session.finalized, session.usage.get("seconds", "unknown"),
                          [j.status for j in session.jobs.values()])
                 # Audio closure does not cancel a home action already accepted by HA.
                 drain = asyncio.create_task(session.drain())

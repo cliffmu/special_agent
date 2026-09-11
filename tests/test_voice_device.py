@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 import struct
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -383,6 +384,51 @@ async def test_hardware_room_reaches_ha_without_triggering_satellite_tts(monkeyp
             assert "device_id" not in body
             await asyncio.wait_for(device.session.drain(), 2)
             assert device.session.conversation_id == "ha-room-1"
+            await socket.close()
+            await asyncio.wait_for(device.runner, 2)
+
+
+@pytest.mark.parametrize("outcome", ["success", "semantic_error", "http_error"])
+async def test_live_job_and_ha_activity_share_safe_ids_and_report_outcomes(monkeypatch, caplog, outcome):
+    caplog.set_level(logging.INFO)
+    requests = asyncio.Queue()
+
+    async def converse(request):
+        requests.put_nowait(await request.json())
+        if outcome == "http_error":
+            return web.Response(status=503, text="PRIVATE_HTTP_BODY")
+        return web.json_response({"conversation_id": "PRIVATE_CONVERSATION_ID", "response": {
+            "response_type": "error" if outcome == "semantic_error" else "action_done",
+            "speech": {"plain": {"speech": "PRIVATE_HA_RESULT"}}}})
+
+    ha = web.Application()
+    ha.router.add_post("/api/conversation/process", converse)
+    async with TestServer(ha) as server:
+        settings = {"backend": "home-assistant", "ha_url": str(server.make_url("/")),
+                    "ha_token": "PRIVATE_HA_TOKEN", "room": "PRIVATE_ROOM"}
+        async with harness(monkeypatch, settings_overrides=settings) as (client, cloud):
+            socket, upstream, _ = await ready_device(client, cloud)
+            device = cloud.devices[-1]
+            device.session.settle_seconds = 0
+            await upstream.send_json({"type": "session.input_transcript.delta", "delta": "PRIVATE_REQUEST_TEXT"})
+            await upstream.send_json({"type": "session.delegation.created",
+                                      "delegation": {"id": "PRIVATE_JOB_ID", "target": "client"}})
+            await asyncio.wait_for(requests.get(), 2)
+            await asyncio.wait_for(device.session.drain(), 2)
+            events = [dict(field.split("=", 1) for field in record.getMessage().split())
+                      for record in caplog.records if record.name.startswith("experimental.live.")
+                      and record.name.endswith(".activity")]
+            delegation = [event for event in events if event["event"] == "delegation"]
+            ha_events = [event for event in events if event["event"] == "ha_request"]
+            assert [event["phase"] for event in delegation] == ["queued", "started", "finished"]
+            assert [event["phase"] for event in ha_events] == ["sent", "received"]
+            assert len({(event["session"], event["job"]) for event in events}) == 1
+            assert ha_events[-1]["status"] == ("completed" if outcome == "success" else "error")
+            assert ha_events[-1]["http_status"] == ("503" if outcome == "http_error" else "200")
+            assert delegation[-1]["status"] == ("completed" if outcome == "success" else "failed")
+            assert int(ha_events[-1]["elapsed_ms"]) >= 0 and int(delegation[-1]["elapsed_ms"]) >= 0
+            assert "PRIVATE" not in caplog.text and TOKEN not in caplog.text
+            assert "fake-cloud-key" not in caplog.text
             await socket.close()
             await asyncio.wait_for(device.runner, 2)
 
