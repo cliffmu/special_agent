@@ -15,10 +15,10 @@ configuration:
     name: Conversation agent entity
     description: Your available conversation agent entity ID, for example conversation.special_agent_2. Used by the home-assistant backend.
   idle_timeout:
-    name: Idle timeout (seconds)
-    description: End a Live session after this much inactivity, from 10 to 600 seconds.
+    name: Keep listening after activity (seconds)
+    description: Stay awake while speaking or working, then wait this long after the latest speech or completed task. New speech restarts the countdown. Default 30; range 10–600 seconds. Save and restart to apply.
   max_duration:
-    name: Maximum session duration (seconds)
-    description: End a Live session after this duration, from 30 to 1800 seconds.
+    name: Optional session length limit (seconds)
+    description: Set to 0 to let conversations continue until the idle countdown expires (default). A positive value, up to 1800, ends the session that many seconds after it started, even during activity.
 network:
   8099/tcp: Voice PE WebSocket audio and the /health endpoint. Use this host port in the firmware URL.

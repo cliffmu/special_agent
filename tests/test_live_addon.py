@@ -34,7 +34,7 @@ def test_home_assistant_options_use_supervisor_proxy_and_preserve_agent_identity
 def test_demo_defaults_do_not_use_supervisor_access():
     settings = run.settings_from_options(valid_options(), {"SUPERVISOR_TOKEN": "unused"})
     assert (settings.backend, settings.room, settings.ha_token) == ("demo", "Office", "")
-    assert (settings.idle_timeout, settings.max_duration) == (90, 600)
+    assert (settings.idle_timeout, settings.max_duration) == (30, 0)
 
 
 @pytest.mark.parametrize("options, field", [
@@ -49,6 +49,7 @@ def test_demo_defaults_do_not_use_supervisor_access():
     (valid_options(room="x" * 121), "room"),
     (valid_options(idle_timeout=True), "idle_timeout"),
     (valid_options(idle_timeout=9), "idle_timeout"),
+    (valid_options(max_duration=-1), "max_duration"),
     (valid_options(max_duration=1801), "max_duration"),
     (valid_options(max_duration="600"), "max_duration"),
 ])

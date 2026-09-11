@@ -26,8 +26,8 @@ OPENAI_URL = "https://api.openai.com/v1/live/sessions"
 class Settings:
     backend: str = "demo"
     port: int = 8099
-    idle_timeout: int = 90
-    max_duration: int = 600
+    idle_timeout: int = 30
+    max_duration: int = 0
     api_key: str = field(default="", repr=False)
     ha_url: str = ""
     ha_token: str = field(default="", repr=False)
@@ -36,7 +36,7 @@ class Settings:
     def validate(self):
         if self.backend not in ("demo", "home-assistant"):
             raise ValueError("Unknown backend")
-        if not 1 <= self.port <= 65535 or not 10 <= self.idle_timeout <= 600 or not 30 <= self.max_duration <= 1800:
+        if not 1 <= self.port <= 65535 or not 10 <= self.idle_timeout <= 600 or not 0 <= self.max_duration <= 1800:
             raise ValueError("Invalid port or timeout limits")
         if self.backend == "home-assistant":
             url = urlsplit(self.ha_url)
@@ -59,6 +59,7 @@ def voice_instructions(mode, room=""):
     return (
         "You are Special Agent, a concise, natural home voice assistant. "
         "Backchannel policy: Use occasional brief acknowledgments. "
+        "After answering, wait quietly for the user unless a pending task has a new result to report. "
         "Interruption policy: Stop speaking when interrupted and listen to the correction. "
         "Delegation policy:\nBackend tools:\n" + capabilities +
         "\nDelegate to the backend when:\n"
@@ -170,9 +171,8 @@ class Bridge:
             await asyncio.sleep(1)
             now = time.monotonic()
             for session in list(self.sessions.values()):
-                pending = any(job.status in ("waiting_for_context", "running") for job in session.jobs.values())
-                expired = now - session.created_at > self.settings.max_duration
-                idle = now - session.last_activity > self.settings.idle_timeout and not pending
+                expired = self.settings.max_duration > 0 and now - session.created_at > self.settings.max_duration
+                idle = session.is_idle(now, self.settings.idle_timeout)
                 local_error = session.state == "error"
                 if session.state not in ("closing", "closed") and not self.sockets[session.id].closed and (expired or idle or local_error):
                     await self.close(session)
@@ -268,8 +268,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("demo", "home-assistant"), default="demo")
     parser.add_argument("--port", type=int, default=8099)
-    parser.add_argument("--idle-timeout", type=int, default=90)
-    parser.add_argument("--max-duration", type=int, default=600)
+    parser.add_argument("--idle-timeout", type=int, default=30)
+    parser.add_argument("--max-duration", type=int, default=0, help="Optional session length cap in seconds; 0 disables it")
     args = parser.parse_args()
     settings = Settings(**vars(args), api_key=os.getenv("OPENAI_API_KEY", ""),
                         ha_url=os.getenv("HA_URL", ""), ha_token=os.getenv("HA_TOKEN", ""),

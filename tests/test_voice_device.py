@@ -13,7 +13,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from experimental.live import device_server
-from experimental.live.backend import BackendResult
+from experimental.live.backend import BackendError, BackendResult
 
 
 TOKEN = "test-device-token-0123456789abcdef0123456789"
@@ -550,7 +550,7 @@ async def test_speaker_failure_logs_exception_type_without_private_error_text(mo
 
 @pytest.mark.parametrize("reason", ["idle_timeout", "max_duration"])
 async def test_session_deadline_has_specific_reason(monkeypatch, reason):
-    async with harness(monkeypatch) as (client, cloud):
+    async with harness(monkeypatch, settings_overrides={"max_duration": 30}) as (client, cloud):
         socket, _, _ = await ready_device(client, cloud)
         device = cloud.devices[-1]
         if reason == "idle_timeout":
@@ -561,6 +561,89 @@ async def test_session_deadline_has_specific_reason(monkeypatch, reason):
         assert device.last_stop_reason == reason
         assert device.session.finalized
         await socket.close()
+
+
+async def test_disabled_duration_cap_keeps_active_conversation_past_ten_minutes(monkeypatch):
+    async with harness(monkeypatch, settings_overrides={"max_duration": 0}) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        device.session.created_at -= 601
+        await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Keep going"})
+        await asyncio.sleep(0.35)
+        assert device.accept_audio and not device.stop.is_set()
+        assert device.last_stop_reason is None
+        await socket.close()
+
+
+@pytest.mark.parametrize("output_level", [0, 32])
+async def test_silent_output_and_untranscribed_microphone_noise_do_not_reset_idle(monkeypatch, output_level):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        device.session.last_activity -= device.settings.idle_timeout + 1
+        # Room noise/silence streams continuously; only recognized user speech counts.
+        await socket.send_bytes(struct.pack("<256h", *([1000] * 256)))
+        await upstream.send_json({"type": "session.output_audio.delta",
+                                  "delta": base64.b64encode(struct.pack("<256h", *([output_level] * 256))).decode("ascii")})
+        await cloud.next_event("session.input_audio.append")
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "idle_timeout"
+        await socket.close()
+
+
+async def test_audible_output_without_transcript_resets_idle_and_tracks_playback_end(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        device.session.last_activity -= device.settings.idle_timeout + 1
+        audio = struct.pack("<2400h", *([1000] * 2400))  # 100 ms at 24 kHz.
+        await upstream.send_json({"type": "session.output_audio.delta",
+                                  "delta": base64.b64encode(audio).decode("ascii")})
+        played = b""
+        while len(played) < len(audio):
+            played += (await asyncio.wait_for(socket.receive(), 2)).data
+        await asyncio.sleep(0.35)
+        assert device.accept_audio and not device.stop.is_set()
+        assert device.session.last_activity == device.session.playback_until
+        assert device.session.last_activity > device.session.created_at
+        await socket.close()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_long_backend_work_and_completion_get_full_idle_grace(monkeypatch, failed):
+    running, release = asyncio.Event(), asyncio.Event()
+
+    async def execute(*args):
+        running.set()
+        await release.wait()
+        if failed:
+            raise BackendError("No matching device")
+        return BackendResult("The work finished")
+
+    backend = SimpleNamespace(execute=execute)
+    async with harness(monkeypatch, backend) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        device.session.settle_seconds = 0
+        try:
+            await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Do the work"})
+            await upstream.send_json({"type": "session.delegation.created",
+                                      "delegation": {"id": "long-job", "target": "client"}})
+            await asyncio.wait_for(running.wait(), 2)
+            device.session.last_activity -= device.settings.idle_timeout + 100
+            await asyncio.sleep(0.35)
+            assert not device.stop.is_set()
+            release.set()
+            await asyncio.wait_for(device.session.drain(), 2)
+            assert device.session.jobs["long-job"].status == ("failed" if failed else "completed")
+            await asyncio.sleep(0.35)
+            assert device.accept_audio and not device.stop.is_set()
+            device.session.last_activity -= device.settings.idle_timeout + 1
+            await asyncio.wait_for(asyncio.shield(device.runner), 2)
+            assert device.last_stop_reason == "idle_timeout"
+        finally:
+            release.set()
+            await socket.close()
 
 
 @pytest.mark.parametrize("code,logged_code", [

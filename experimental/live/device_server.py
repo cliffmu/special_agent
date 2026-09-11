@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import audioop
 import base64
 import binascii
 import hmac
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +34,14 @@ SAFE_LIVE_ERROR_CODES = frozenset({
     "invalid_api_key", "invalid_request_error", "model_not_found",
     "permission_denied", "rate_limit_exceeded", "server_error",
 })
+
+
+def audible_output(pcm):
+    """Ignore generated digital silence and very low noise (below about -48 dBFS)."""
+    if not pcm:
+        return False
+    native_pcm = audioop.byteswap(pcm, 2) if sys.byteorder == "big" else pcm
+    return audioop.rms(native_pcm, 2) >= 128
 
 
 @dataclass
@@ -187,6 +197,8 @@ class VoiceDevice:
                                 pcm = base64.b64decode(event["delta"], validate=True)
                                 if len(pcm) % 2:
                                     raise ValueError("Unaligned Live PCM")
+                                if audible_output(pcm):
+                                    session.mark_activity()
                                 # Do not block cloud control/delegation events on satellite Wi-Fi.
                                 for offset in range(0, len(pcm), 4096):
                                     if speaker.full():
@@ -272,6 +284,7 @@ class VoiceDevice:
                         return
                     try:
                         await asyncio.wait_for(self.socket.send_bytes(pcm), 0.5)
+                        session.mark_playback(len(pcm) / 48000, audible=audible_output(pcm))
                     except asyncio.TimeoutError:
                         self.record_stop("speaker_write_timeout")
                         raise
@@ -280,12 +293,11 @@ class VoiceDevice:
                 while not self.stop.is_set():
                     await asyncio.sleep(0.25)
                     now = time.monotonic()
-                    busy = any(j.status in ("waiting_for_context", "running") for j in session.jobs.values())
                     if session.state == "error":
                         self.stop_for("session_error")
-                    elif now-session.created_at >= self.settings.max_duration:
+                    elif self.settings.max_duration > 0 and now-session.created_at >= self.settings.max_duration:
                         self.stop_for("max_duration")
-                    elif not busy and now-session.last_activity >= self.settings.idle_timeout:
+                    elif session.is_idle(now, self.settings.idle_timeout):
                         self.stop_for("idle_timeout")
 
             stage = "streaming"
@@ -410,8 +422,8 @@ def main():
     parser.add_argument("--backend", choices=("demo", "home-assistant"), default="demo")
     parser.add_argument("--bind", default=os.getenv("VOICE_BIND", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=8099)
-    parser.add_argument("--idle-timeout", type=int, default=90)
-    parser.add_argument("--max-duration", type=int, default=600)
+    parser.add_argument("--idle-timeout", type=int, default=30)
+    parser.add_argument("--max-duration", type=int, default=0)
     args = parser.parse_args()
     settings = DeviceSettings(**vars(args), api_key=os.getenv("OPENAI_API_KEY", ""),
                               device_token=os.getenv("VOICE_DEVICE_TOKEN", ""), room=os.getenv("VOICE_ROOM", ""),

@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from experimental.live.backend import BackendError, BackendResult, HomeAssistantBackend
 from experimental.live.server import BRIDGE, Settings, create_app
 from experimental.live.session import LiveSession, commentary_chunks
+from experimental.live import session as session_module
 
 
 def transcript(text, event_id="transcript-1"):
@@ -22,6 +23,98 @@ def transcript(text, event_id="transcript-1"):
 def delegation(job_id="job-1"):
     return {"type": "session.delegation.created", "offset_ms": 100,
             "delegation": {"id": job_id, "target": "client"}}
+
+
+async def test_idle_grace_starts_at_readiness_and_resets_on_recognized_speech(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(session_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    session = LiveSession("live-test", AsyncMock(), SimpleNamespace())
+    now[0] = 100.0
+    await session.receive({"type": "session.started"})
+    assert not session.is_idle(129.999, 30)
+    assert session.is_idle(130.0, 30)
+    now[0] = 125.0
+    await session.receive(transcript("Another question"))
+    assert not session.is_idle(154.999, 30)
+    assert session.is_idle(155.0, 30)
+
+
+async def test_idle_grace_follows_audible_playback_but_not_generated_silence(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(session_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    session = LiveSession("live-test", AsyncMock(), SimpleNamespace())
+    session.mark_playback(45.0)  # Long speech must outlive an ordinary 30 s idle window.
+    assert not session.is_idle(140.0, 30)
+    assert not session.is_idle(174.999, 30)
+    assert session.is_idle(175.0, 30)
+    session.mark_playback(100.0, audible=False)
+    assert session.playback_until == 245.0
+    assert session.is_idle(175.0, 30), "continuous silent output cannot keep a paid session open"
+    now[0] = 110.0
+    await session.receive(transcript("Make it shorter"))
+    assert session.last_input_at == 110.0, "transcript debounce must not inherit a future playback timestamp"
+    assert session.last_activity == 145.0
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "needs_context"])
+async def test_every_backend_completion_starts_a_fresh_full_idle_window(monkeypatch, outcome):
+    now = [100.0]
+    monkeypatch.setattr(session_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    async def execute(*args):
+        now[0] = 300.0
+        if outcome == "failed":
+            raise BackendError("A known failure")
+        return BackendResult("Done")
+
+    async def send(event):
+        now[0] = 300.0
+
+    session = LiveSession("live-test", send, SimpleNamespace(execute=execute),
+                          settle_seconds=0, context_timeout=0)
+    if outcome != "needs_context":
+        await session.receive(transcript("Do the work"))
+    await session.receive(delegation())
+    assert not session.is_idle(250.0, 30), "queued work suppresses idle before it starts"
+    await session.drain()
+    assert session.jobs["job-1"].status == outcome
+    assert not session.is_idle(329.999, 30)
+    assert session.is_idle(330.0, 30)
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "needs_context"])
+async def test_idle_waits_for_blocked_result_delivery_then_gives_full_grace(monkeypatch, outcome):
+    now = [100.0]
+    monkeypatch.setattr(session_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    sending, release = asyncio.Event(), asyncio.Event()
+
+    async def execute(*args):
+        now[0] = 300.0
+        if outcome == "failed":
+            raise BackendError("A known failure")
+        return BackendResult("Done")
+
+    async def send(event):
+        sending.set()
+        await release.wait()
+
+    session = LiveSession("live-test", send, SimpleNamespace(execute=execute),
+                          settle_seconds=0, context_timeout=0)
+    if outcome != "needs_context":
+        await session.receive(transcript("Do the work"))
+    await session.receive(delegation())
+    try:
+        await asyncio.wait_for(sending.wait(), 1)
+        assert session.jobs["job-1"].status == outcome
+        now[0] = 400.0
+        assert not session.is_idle(now[0], 30), "terminal job status is not completed result delivery"
+        release.set()
+        await session.drain()
+        assert not session.is_idle(429.999, 30)
+        assert session.is_idle(430.0, 30)
+    finally:
+        release.set()
+        await session.drain()
 
 
 async def test_audio_events_continue_while_backend_waits():
