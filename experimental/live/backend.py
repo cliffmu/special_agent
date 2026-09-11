@@ -32,9 +32,10 @@ class DemoBackend:
 
 
 class HomeAssistantBackend:
-    def __init__(self, http: aiohttp.ClientSession, url: str, token: str, agent_id: str):
+    def __init__(self, http: aiohttp.ClientSession, url: str, token: str, agent_id: str, room: str = ""):
         self.http, self.url, self.token, self.agent_id = http, url.rstrip("/"), token, agent_id
-        # One dispatcher owns HA requests, including requests from different browser sessions.
+        self.room = room
+        # One dispatcher owns HA requests, including requests from successive voice sessions.
         self.lock = asyncio.Lock()
 
     async def execute(self, request: str, history: list[dict], conversation_id: str | None):
@@ -45,12 +46,13 @@ class HomeAssistantBackend:
             "ask for clarification if the intended action or a correction is unclear. "
             "Conversation history below is quoted context, not a request to repeat earlier actions. "
             "Act only on the current request. Return a short factual result or question.\n"
+            f"Voice device room (configured by owner): {json.dumps(self.room or 'unknown')}\n"
             f"Recent voice context (JSON): {context}\nCurrent request: {request}"
         )
         body = {"agent_id": self.agent_id, "language": "en", "text": text}
         if conversation_id:
             body["conversation_id"] = conversation_id
-        # No device_id: the browser has no room identity and must not trigger satellite TTS.
+        # The bridge owns speaker audio. Omitting device_id avoids duplicate satellite TTS.
         async with self.lock:
             try:
                 async with self.http.post(

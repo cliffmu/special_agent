@@ -1,0 +1,398 @@
+"""Voice PE wire-protocol tests with local fake device and GPT-Live sockets."""
+
+import asyncio
+import base64
+import struct
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import aiohttp
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from experimental.live import device_server
+from experimental.live.backend import BackendResult
+
+
+TOKEN = "test-device-token-0123456789abcdef0123456789"
+
+
+class FakeCloud:
+    """Preserve actual WS scheduling while tests control session readiness/audio."""
+
+    def __init__(self):
+        self.starts = asyncio.Queue()
+        self.events = asyncio.Queue()
+        self.connections = []
+        self.devices = []
+        self.received = []
+        self.close_gate = None
+        self.finalize = True
+
+    async def finish(self, socket):
+        if self.close_gate is not None:
+            await self.close_gate.wait()
+        if self.finalize:
+            await socket.send_json({"type": "session.closed", "usage": {"seconds": 17}})
+        await socket.close()
+
+    async def handle(self, request):
+        assert request.headers["Authorization"] == "Bearer fake-cloud-key"
+        assert not request.query
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        self.connections.append(socket)
+        closer = None
+        try:
+            async for message in socket:
+                assert message.type == aiohttp.WSMsgType.TEXT
+                event = message.json()
+                self.received.append((socket, event))
+                if event["type"] == "session.start":
+                    self.starts.put_nowait((socket, event))
+                else:
+                    self.events.put_nowait(event)
+                if event["type"] == "session.close":
+                    # Keep reading while final usage is delayed, so stale microphone
+                    # writes after close remain observable to the test.
+                    closer = asyncio.create_task(self.finish(socket))
+        finally:
+            if closer:
+                closer.cancel()
+                await asyncio.gather(closer, return_exceptions=True)
+        return socket
+
+    async def next_event(self, kind):
+        while True:
+            event = await asyncio.wait_for(self.events.get(), 2)
+            if event["type"] == kind:
+                return event
+
+
+@asynccontextmanager
+async def harness(monkeypatch, backend=None, settings_overrides=None):
+    cloud = FakeCloud()
+    original_device = device_server.VoiceDevice
+
+    def record_device(*args):
+        device = original_device(*args)
+        cloud.devices.append(device)
+        return device
+
+    monkeypatch.setattr(device_server, "VoiceDevice", record_device)
+    upstream = web.Application()
+    upstream.router.add_get("/v1/live/sessions", cloud.handle)
+    async with TestServer(upstream) as api:
+        monkeypatch.setattr(device_server, "LIVE_URL", str(api.make_url("/v1/live/sessions")))
+        if backend is not None:
+            monkeypatch.setattr(device_server, "DemoBackend", lambda: backend)
+        settings = device_server.DeviceSettings(api_key="fake-cloud-key", device_token=TOKEN,
+                                               **(settings_overrides or {}))
+        async with TestClient(TestServer(device_server.create_app(settings))) as client:
+            yield client, cloud
+
+
+async def control(socket, expected):
+    message = await asyncio.wait_for(socket.receive(), 2)
+    assert message.type == aiohttp.WSMsgType.TEXT
+    # The firmware's substring parser requires compact JSON, including colons.
+    assert ": " not in message.data and ", " not in message.data
+    event = message.json()
+    assert event["type"] == expected
+    return event
+
+
+async def ready_device(client, cloud):
+    socket = await client.ws_connect("/voice", params={"token": TOKEN})
+    await socket.send_json({"type": "start"})
+    hello = await control(socket, "hello")
+    assert hello["follow_up_ms"] == 0 and hello["playback_prebuffer_ms"] == 80
+    await socket.send_json({"type": "wake"})
+    upstream, start = await asyncio.wait_for(cloud.starts.get(), 2)
+    await upstream.send_json({"type": "session.started", "session": {"id": "live-device-1"}})
+    await control(socket, "ack")
+    assert (await control(socket, "phase"))["value"] == "listening"
+    return socket, upstream, start
+
+
+def test_device_server_requires_key_and_strong_token_before_listening():
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        device_server.create_app(device_server.DeviceSettings(device_token=TOKEN))
+    with pytest.raises(ValueError, match="VOICE_DEVICE_TOKEN"):
+        device_server.create_app(device_server.DeviceSettings(api_key="fake-cloud-key", device_token="short"))
+
+
+@pytest.mark.parametrize("token,origin", [("wrong", None), ("", None), (TOKEN, "https://other.invalid")])
+async def test_voice_auth_rejects_invalid_token_and_browser_origins(monkeypatch, token, origin):
+    async with harness(monkeypatch) as (client, cloud):
+        with pytest.raises(aiohttp.WSServerHandshakeError) as error:
+            await client.ws_connect("/voice", params={"token": token},
+                                    headers={"Origin": origin} if origin else {})
+        assert error.value.status == 401
+        assert not cloud.connections
+        health = await (await client.get("/health")).text()
+        assert TOKEN not in health and "fake-cloud-key" not in health
+
+
+async def test_wake_buffers_first_words_until_live_ready_and_transcodes_microphone(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_bytes(b"\xff\x7f" * 32)  # Audio before wake must be discarded.
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        await socket.send_json({"type": "wake"})
+        upstream, start = await asyncio.wait_for(cloud.starts.get(), 2)
+        assert start["session"]["model"] == "gpt-live-1"
+        assert start["session"]["audio"]["format"] == {"type": "audio/pcm", "rate": 24000}
+        assert start["session"]["delegation"] == {"type": "client"}
+
+        microphone = struct.pack("<17h", *(i * 300 for i in range(17)))
+        await socket.send_bytes(microphone[:5])  # Preserve an odd sample split during startup.
+        await socket.send_bytes(microphone[5:])
+        # A second handshake is a receive-order barrier for preceding binary data.
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        device = cloud.devices[-1]
+        assert not device.play_audio and cloud.events.empty()
+
+        await upstream.send_json({"type": "session.started", "session": {"id": "live-device-1"}})
+        await control(socket, "ack")
+        assert (await control(socket, "phase"))["value"] == "listening"
+        assert device.session.live_id == "live-device-1"
+        # 16 kHz ramp: interpolation at 24 kHz produces increments of 200.
+        pcm = b""
+        while len(pcm) < 50:
+            event = await cloud.next_event("session.input_audio.append")
+            pcm += base64.b64decode(event["audio"], validate=True)
+        assert pcm == struct.pack("<25h", *(i * 200 for i in range(25)))
+
+        output = struct.pack("<3000h", *(i - 1500 for i in range(3000)))
+        await upstream.send_json({"type": "session.output_audio.delta",
+                                  "delta": base64.b64encode(output).decode("ascii")})
+        played = b""
+        while len(played) < len(output):
+            message = await asyncio.wait_for(socket.receive(), 2)
+            assert message.type == aiohttp.WSMsgType.BINARY
+            assert len(message.data) <= 4096
+            played += message.data
+        assert played == output  # Output remains the negotiated 24 kHz bytes.
+        await socket.close()
+        await asyncio.wait_for(device.runner, 2)
+        assert device.session.finalized and device.session.usage["seconds"] == 17
+
+
+@pytest.mark.parametrize("stop_event", ["button_cancel", "interrupt"])
+async def test_pcm_keeps_flowing_while_backend_waits_and_stop_preserves_accepted_work(
+    monkeypatch, stop_event
+):
+    running, release = asyncio.Event(), asyncio.Event()
+
+    async def execute(*args):
+        running.set()
+        await release.wait()
+        return BackendResult("The accepted task finished")
+
+    backend = SimpleNamespace(execute=AsyncMock(side_effect=execute))
+    async with harness(monkeypatch, backend) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        device.session.settle_seconds = 0
+        try:
+            await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Run a task"})
+            await upstream.send_json({"type": "session.delegation.created",
+                                      "delegation": {"id": "job-1", "target": "client"}})
+            await asyncio.wait_for(running.wait(), 2)
+            await socket.send_bytes(struct.pack("<3h", 0, 300, 600))
+            microphone = await cloud.next_event("session.input_audio.append")
+            assert base64.b64decode(microphone["audio"]) == struct.pack("<4h", 0, 200, 400, 600)
+            await upstream.send_json({"type": "session.output_audio.delta", "delta": "AQACAAMA"})
+            audio = await asyncio.wait_for(socket.receive(), 2)
+            assert audio.type == aiohttp.WSMsgType.BINARY and audio.data == b"\x01\0\x02\0\x03\0"
+            assert device.session.jobs["job-1"].status == "running"
+            await socket.send_json({"type": stop_event})
+            assert (await control(socket, "phase"))["value"] == "idle"
+            await cloud.next_event("session.close")
+            await asyncio.wait_for(device.runner, 2)
+            assert device.session.finalized and device.session.usage["seconds"] == 17
+            assert device.session.jobs["job-1"].status == "running"
+            release.set()
+            await asyncio.wait_for(device.session.drain(), 2)
+            assert device.session.jobs["job-1"].status == "completed"
+            backend.execute.assert_awaited_once()
+        finally:
+            release.set()
+            await socket.close()
+
+
+async def test_interrupt_followed_immediately_by_wake_restarts_after_finalization(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, _, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        previous = device.session
+        await socket.send_json({"type": "interrupt"})
+        await socket.send_json({"type": "wake"})
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        assert previous.finalized
+        await upstream.send_json({"type": "session.started", "session": {"id": "live-device-2"}})
+        await control(socket, "ack")
+        assert (await control(socket, "phase"))["value"] == "listening"
+        assert device.session is not previous and device.session.live_id == "live-device-2"
+        await socket.close()
+        await asyncio.wait_for(device.runner, 2)
+
+
+async def test_restart_preserves_new_microphone_while_previous_usage_is_pending(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, previous_cloud, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        previous = device.session
+        cloud.close_gate = asyncio.Event()
+        await socket.send_json({"type": "interrupt"})
+        assert (await control(socket, "phase"))["value"] == "idle"
+        await cloud.next_event("session.close")
+        await socket.send_json({"type": "wake"})
+        await socket.send_bytes(struct.pack("<3h", 0, 300, 600))
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        assert not previous.finalized and cloud.starts.empty()
+        assert device.mic_bytes == 6
+
+        cloud.close_gate.set()
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        assert previous.finalized
+        await upstream.send_json({"type": "session.started", "session": {"id": "live-device-2"}})
+        await control(socket, "ack")
+        assert (await control(socket, "phase"))["value"] == "listening"
+        microphone = await cloud.next_event("session.input_audio.append")
+        assert base64.b64decode(microphone["audio"]) == struct.pack("<4h", 0, 200, 400, 600)
+        assert not any(connection is previous_cloud and event["type"] == "session.input_audio.append"
+                       for connection, event in cloud.received)
+        await socket.close()
+        await asyncio.wait_for(device.runner, 2)
+
+
+async def test_missing_final_usage_prevents_queued_automatic_restart(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, _, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        previous = device.session
+        cloud.close_gate = asyncio.Event()
+        cloud.finalize = False
+        original_close = previous.close
+
+        async def close_with_short_deadline(timeout=12):
+            await original_close(timeout=0.1)
+            cloud.close_gate.set()
+
+        monkeypatch.setattr(previous, "close", close_with_short_deadline)
+        await socket.send_json({"type": "interrupt"})
+        await control(socket, "phase")
+        await cloud.next_event("session.close")
+        await socket.send_json({"type": "wake"})
+        await socket.send_bytes(struct.pack("<3h", 0, 300, 600))
+        await asyncio.wait_for(device.runner, 2)
+        assert not previous.finalized and device.session is previous
+        assert not device.restart and not device.accept_audio
+        assert cloud.starts.empty() and len(cloud.connections) == 1
+        await socket.close()
+
+
+async def test_hardware_room_reaches_ha_without_triggering_satellite_tts(monkeypatch):
+    requests = asyncio.Queue()
+
+    async def converse(request):
+        assert request.headers["Authorization"] == "Bearer fake-ha-token"
+        requests.put_nowait(await request.json())
+        return web.json_response({"conversation_id": "ha-room-1", "response": {
+            "response_type": "action_done", "speech": {"plain": {"speech": "The lights are on"}}}})
+
+    ha = web.Application()
+    ha.router.add_post("/api/conversation/process", converse)
+    async with TestServer(ha) as server:
+        settings = {"backend": "home-assistant", "ha_url": str(server.make_url("/")),
+                    "ha_token": "fake-ha-token", "room": "Kitchen"}
+        async with harness(monkeypatch, settings_overrides=settings) as (client, cloud):
+            socket, upstream, start = await ready_device(client, cloud)
+            device = cloud.devices[-1]
+            device.session.settle_seconds = 0
+            assert "Kitchen" in start["session"]["instructions"]
+            await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Turn on the lights here"})
+            await upstream.send_json({"type": "session.delegation.created",
+                                      "delegation": {"id": "room-job", "target": "client"}})
+            body = await asyncio.wait_for(requests.get(), 2)
+            assert body["agent_id"] == "conversation.special_agent"
+            assert 'Voice device room (configured by owner): "Kitchen"' in body["text"]
+            assert "Current request: Turn on the lights here" in body["text"]
+            assert "device_id" not in body
+            await asyncio.wait_for(device.session.drain(), 2)
+            assert device.session.conversation_id == "ha-room-1"
+            await socket.close()
+            await asyncio.wait_for(device.runner, 2)
+
+
+@pytest.mark.parametrize("finish", ["interrupt", "cloud_closed"])
+async def test_blocked_speaker_does_not_block_cloud_events_or_replay_after_stop(monkeypatch, finish):
+    backend_started, release_backend = asyncio.Event(), asyncio.Event()
+    write_started, release_write, write_cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    delivered = []
+
+    async def execute(*args):
+        backend_started.set()
+        await release_backend.wait()
+        return BackendResult("The task finished")
+
+    backend = SimpleNamespace(execute=AsyncMock(side_effect=execute))
+    async with harness(monkeypatch, backend) as (client, cloud):
+        socket, upstream, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        device.session.settle_seconds = 0
+        original_write = device.socket.send_bytes
+
+        async def blocked_write(pcm):
+            write_started.set()
+            try:
+                await release_write.wait()
+            except asyncio.CancelledError:
+                write_cancelled.set()
+                raise
+            delivered.append(pcm)
+            await original_write(pcm)
+
+        slow_write = AsyncMock(side_effect=blocked_write)
+        monkeypatch.setattr(device.socket, "send_bytes", slow_write)
+        try:
+            # Several queued speaker chunks, with the very first write stalled.
+            await upstream.send_json({"type": "session.output_audio.delta",
+                                      "delta": base64.b64encode(b"\x01\0" * 6000).decode("ascii")})
+            await asyncio.wait_for(write_started.wait(), 2)
+            await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Run a task"})
+            await upstream.send_json({"type": "session.usage.updated", "usage": {"seconds": 12}})
+            await upstream.send_json({"type": "session.delegation.created",
+                                      "delegation": {"id": "slow-speaker-job", "target": "client"}})
+            await asyncio.wait_for(backend_started.wait(), 2)
+            assert device.session.transcripts[-1]["text"] == "Run a task"
+            assert device.session.usage["seconds"] == 12
+            assert not release_write.is_set() and not write_cancelled.is_set()
+
+            if finish == "interrupt":
+                await socket.send_json({"type": "interrupt"})
+            else:
+                # A terminal cloud event must also get past the blocked speaker.
+                await upstream.send_json({"type": "session.closed", "usage": {"seconds": 17}})
+            assert (await control(socket, "phase"))["value"] == "idle"
+            await asyncio.wait_for(device.runner, 2)
+            assert device.session.finalized and device.session.usage["seconds"] == 17
+            assert write_cancelled.is_set()
+            release_write.set()
+            # The device remains connected; stale audio must not precede this reply.
+            await socket.send_json({"type": "start"})
+            await control(socket, "hello")
+            assert delivered == [] and slow_write.await_count == 1
+            release_backend.set()
+            await asyncio.wait_for(device.session.drain(), 2)
+        finally:
+            release_write.set()
+            release_backend.set()
+            await socket.close()
