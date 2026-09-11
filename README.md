@@ -209,9 +209,12 @@ to Live after session creation, so normal connection setup does not lose the
 first words. A slow connection or stalled audio ends the attempt instead of
 accumulating a delayed recording; wake it again once connectivity is restored.
 
-The center button or physical mute closes the Live session. The local stop-word
-detector is disabled during Live conversation so ordinary speech cannot falsely
-trigger its end-session command. Spoken corrections go directly to GPT-Live.
+Saying **“stop”** stops the current spoken response while the session keeps
+listening, so the ring can remain animated. The center button or physical mute
+closes the Live session; the idle and total-duration limits below also end it.
+The local stop-word detector is disabled during Live conversation so ordinary
+speech cannot falsely trigger its end-session command. Spoken corrections go
+directly to GPT-Live.
 Ordinary spoken interruptions are heard by Live while it is talking. Full duplex
 is experimental: test at low speaker volume first. The upstream firmware normally
 disables this mode because acoustic echo can leak through the Voice PE's XMOS
@@ -296,10 +299,11 @@ PE's ESP32 firmware was flashed with hash verification, and HA API pairing
 succeeded; HA recognizes the device as `special-agent-live`.
 
 Authenticated GPT-Live speech input and speaker replies have been confirmed on
-the Office Voice PE, including a spoken correction during playback. Longer
-conversations and repeated interruptions still require the device test above;
-background Home Assistant actions and acoustic echo remain unverified. The
-earlier browser diagnostic remains in
+the Office Voice PE. With app 0.1.1, a 116-second conversation included several
+successful spoken interruptions. Spoken “stop” silenced the response, and the
+center button then closed the session with confirmed final usage. Background
+Home Assistant actions and echo performance across rooms and volumes remain
+unverified. The earlier browser diagnostic remains in
 `experimental/live/server.py`; it is not used by this hardware setup.
 
 The full Voice PE firmware compiled successfully with ESPHome 2026.8.2 and
