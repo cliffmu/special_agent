@@ -64,11 +64,19 @@ reflects integration telemetry rather than independent physical proof.
 Direct controls and scene service steps share mandatory verification in Python.
 They submit the command once, then compare supported state/settings against HA
 readback within a bounded deadline. Already-matching settings verify immediately.
-Lights get a minimum five-second verification budget, even if a model asks for a
-shorter wait (longer waits and transitions are respected). The overall scene
-deadline still caps that budget.
+Checks run immediately after service completion, then once per second for up to
+five seconds, returning early on success. This fixed budget applies to all device
+types; legacy timeout arguments and light transitions cannot extend or shorten it.
+Automatic and explicit scene post-conditions share one polling window per action;
+the overall scene deadline can still shorten it. Longer transitions that have not
+finished remain unverified. Explicit workflow delays and state-wait steps retain
+their own timing.
+All polling runs locally in Python with no model calls between checks. One final
+tool result goes back to the configured Agent model to compose the response; Live
+voice then receives the backend response. Tools do not request extra reads solely
+to repeat verification, and status queries add no deliberate wait.
 After an observed light-setting mismatch, a matching readback must remain stable
-for half a second. A deadline reached during settling stays unverified. Results
+across successive polls. A deadline reached during settling stays unverified. Results
 include both HA's raw 0–255 `brightness` and the derived `brightness_pct` with
 explicit units, so raw 40 cannot be mistaken for 40%.
 Results separate `accepted` from `verification: verified / failed / unverified`;
@@ -76,6 +84,14 @@ unsupported commands or missing telemetry stay unverified. The agent cannot skip
 this check by omitting a tool argument. Saved explicit post-conditions are retained
 and checked in addition to the automatic checks. No verification failure
 automatically repeats a device command.
+
+Manual checks for new development are in
+[`docs/manual_test_checklist.csv`](docs/manual_test_checklist.csv). Replace bracketed
+room/device names with your own, run the listed prompts and actions, and update
+`Status`, `Actual result / notes`, and `Tested on`. Statuses are `Not run`, `Pass`,
+`Fail`, `Blocked`, or `Not applicable`. Verification timing is measured after the
+service completes, separately from model/voice response time. Future development
+adds checks here while preserving your recorded results.
 
 ## Vector index utilities
 `utils/vector_index.py` includes helpers to build and query a simple NumPy-based

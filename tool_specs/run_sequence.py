@@ -73,10 +73,13 @@ SPEC = ToolSpec(
         "- Only tools explicitly flagged as sequence-safe may run here (validated on save)\n"
         "- Use 'expect' ({path, equals/not_equals/contains/exists}) to auto-verify outputs\n\n"
         "VERIFICATION: Every service action is sent once and supported states/settings are checked automatically. "
+        "Python checks immediately, then every second for up to five seconds per action, returning early on success. "
+        "Automatic and explicit checks share this window; the overall sequence deadline can shorten it. "
         "Acceptance alone is not success. Checks use HA-reported state, not independent physical proof. "
         "Unsupported commands/missing telemetry remain unverified; later steps may continue, but the workflow returns partial. "
         "Known mismatches, explicit post-condition failures, and timeouts abort dependent steps. Never blindly retry actions. "
-        "Service steps may add post_condition:{entity_id,state,attribute,value,timeout_ms}; state and attribute are checked together. "
+        "Service steps may add post_condition:{entity_id,state,attribute,value}; state and attribute are checked together. "
+        "Results already include polling; do not add reads solely to repeat verification. "
         "Returns result='completed'/'partial'/'failed' with verification and counts; steps have status='ok'/'unverified'/'skipped'/'error'/'timeout'."
     ),
     parameters=PARAMS,

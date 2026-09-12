@@ -103,12 +103,10 @@ async def get_entity_state(
 SPEC = ToolSpec(
     name="get_entity_state",
     description=(
-        "Return current state and attributes for entities. Returns {state, available, ...attributes}. "
-        "Use this to: (1) Check if entity is available before controlling it, "
-        "(2) Validate an action succeeded by checking state after, "
-        "(3) Wait/delay for device startup (call this tool to introduce ~1-2 second delay while checking state). "
-        "Media players: 'unavailable'=device off, 'idle'=on but nothing playing, 'playing'=active playback. "
-        "The 'available' field is True unless state is 'unavailable' or 'unknown'."
+        "Read current Home Assistant state for status questions, explicit user rechecks, or information needed for a next action. "
+        "This is an immediate read with no deliberate delay. Control results already include verification polling. "
+        "Unknown or unavailable means the integration cannot confirm state; it does not prove a device is off. "
+        "Media players: 'off'=reported off, 'idle'=on but nothing playing, 'playing'=active playback."
     ),
     parameters=PARAMS,
     returns="dict of {entity_id: {state, available, ...attributes}}",

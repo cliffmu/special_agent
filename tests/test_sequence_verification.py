@@ -1,6 +1,7 @@
 """Actual control/sequence wiring with reported HA state and a virtual clock."""
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,10 +20,14 @@ def environment(monkeypatch):
     class Clock:
         now = 0.0
 
+        def __init__(self):
+            self.sleeps = []
+
         def monotonic(self):
             return self.now
 
         async def sleep(self, seconds):
+            self.sleeps.append(seconds)
             self.now += max(0, seconds)
             for at, callback in scheduled[:]:
                 if at <= self.now:
@@ -157,7 +162,7 @@ async def test_sequence_service_checks_share_one_deadline_across_steps(environme
 
     async def delayed_state(domain, action, data, **kwargs):
         entity = data["entity_id"]
-        after = 1.25 if entity == "light.first" else 3
+        after = 1 if entity == "light.first" else 3
         env.scheduled.append((after, lambda: env.set_state(entity, "on")))
 
     env.hass.services.async_call.side_effect = delayed_state
@@ -195,3 +200,115 @@ async def test_conditional_service_steps_cannot_bypass_mandatory_verification(en
 
     assert result["result"] == "failed"
     env.hass.services.async_call.assert_awaited_once()
+
+
+@pytest.mark.parametrize("domain", ["switch", "fan", "light", "media_player"])
+@pytest.mark.parametrize("update_at,elapsed,verified", [
+    (0, 0, True), (2.2, 3, True), (5, 5, True), (5.1, 5, False),
+])
+async def test_power_off_polls_locally_once_per_second_until_success_or_five_seconds(
+    environment, domain, update_at, elapsed, verified,
+):
+    env = environment
+    entity = domain + ".test"
+    env.set_state(entity, "on")
+
+    async def dispatch(*args, **kwargs):
+        env.set_state(entity, "unavailable")
+        if update_at == 0:
+            env.set_state(entity, "off")
+        else:
+            env.scheduled.append((update_at, lambda: env.set_state(entity, "off")))
+
+    env.hass.services.async_call.side_effect = dispatch
+    result = await control_device(domain + ".turn_off", entity, hass=env.hass)
+
+    assert result["accepted"] is True
+    assert result["verification"] == ("verified" if verified else "unverified")
+    assert env.clock.now == elapsed
+    assert env.clock.sleeps == [1] * elapsed
+    env.hass.services.async_call.assert_awaited_once()
+
+
+@pytest.mark.parametrize("legacy_wait", [None, 0, 1, 30])
+async def test_legacy_timeout_cannot_change_five_second_polling_budget(environment, legacy_wait):
+    env = environment
+    env.set_state("media_player.test", "off")
+    result = await control_device("media_player.turn_on", "media_player.test",
+                                  verify_after_seconds=legacy_wait, hass=env.hass)
+    assert result["verification"] == "failed"
+    assert env.clock.now == 5
+    assert env.clock.sleeps == [1] * 5
+    env.hass.services.async_call.assert_awaited_once()
+
+
+@pytest.mark.parametrize("post_at,elapsed,verified", [(4, 4, True), (7, 5, False)])
+async def test_scene_automatic_and_explicit_checks_share_one_polling_window(
+    environment, post_at, elapsed, verified,
+):
+    env = environment
+    env.set_state("switch.test", "off")
+    env.set_state("media_player.test", "off")
+    env.scheduled.extend([
+        (3, lambda: env.set_state("switch.test", "on")),
+        (post_at, lambda: env.set_state("media_player.test", "on")),
+    ])
+    result = await run_sequence(sequence={"steps": [service_step(
+        "switch.turn_on", "switch.test", post_condition={
+            "entity_id": "media_player.test", "state": "on", "timeout_ms": 30000,
+        },
+    )]}, hass=env.hass)
+    assert result["verification"] == ("verified" if verified else "failed")
+    assert result["steps"][0]["checks"][0]["verification"] == "verified"
+    assert env.clock.now == elapsed
+    assert env.clock.sleeps == [1] * elapsed
+    env.hass.services.async_call.assert_awaited_once()
+
+
+async def test_scene_post_condition_cannot_erase_automatic_mismatch(environment):
+    env = environment
+    env.set_state("switch.test", "off")
+    env.set_state("media_player.test", "on")
+    result = await run_sequence(sequence={"steps": [service_step(
+        "switch.turn_on", "switch.test", post_condition={"entity_id": "media_player.test", "state": "on"},
+    )]}, hass=env.hass)
+    assert result["verification"] == "failed"
+    assert result["steps"][0]["post_condition_verified"] is True
+    assert env.clock.now == 5
+    env.hass.services.async_call.assert_awaited_once()
+
+
+@pytest.mark.parametrize("update_at,verification", [(3, "verified"), (7, "unverified")])
+async def test_polling_returns_one_final_result_to_same_agent_model(environment, monkeypatch, update_at, verification):
+    from special_agent import agent_core
+    from special_agent.tool_specs.control_device import SPEC
+
+    env = environment
+    env.set_state("switch.test", "unavailable")
+    env.scheduled.append((update_at, lambda: env.set_state("switch.test", "off")))
+    messages = [{"role": "user", "content": "Turn it off"}]
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_core, "get_async_client", AsyncMock(return_value=object()))
+    monkeypatch.setattr(agent_core, "build_system_prompt", AsyncMock(return_value="test"))
+    monkeypatch.setattr(agent_core, "load_session", lambda *args: (messages, None, None, None))
+    monkeypatch.setattr(agent_core, "store_session", lambda *args: None)
+    call = SimpleNamespace(name=SPEC.name, call_id="control", arguments=json.dumps({
+        "service": "switch.turn_off", "entity_id": "switch.test",
+    }))
+    model_calls = AsyncMock(side_effect=[
+        SimpleNamespace(output=[], function_calls=[call], final_text=None),
+        SimpleNamespace(output=[], function_calls=[], final_text="Final response"),
+    ])
+    monkeypatch.setattr(agent_core, "call_llm", model_calls)
+
+    result = await agent_core.plan_execute("Turn it off", [SPEC], hass=env.hass, model="gpt-5.6-luna")
+
+    assert result == "Final response"
+    assert env.clock.now == min(update_at, 5)
+    env.hass.services.async_call.assert_awaited_once()
+    # One model call chooses the command; one receives the final observation.
+    assert model_calls.await_count == 2
+    assert [item.args[3] for item in model_calls.await_args_list] == ["gpt-5.6-luna"] * 2
+    outputs = [item for item in messages if item.get("type") == "function_call_output"]
+    assert len(outputs) == 1
+    assert json.loads(outputs[0]["output"])["verification"] == verification

@@ -14,6 +14,8 @@ from .data_sources import call_service_tracked
 
 UNAVAILABLE = {None, "unknown", "unavailable"}
 POWER_DOMAINS = {"light", "switch", "fan", "input_boolean", "humidifier"}
+VERIFICATION_SECONDS = 5
+POLL_SECONDS = 1
 
 
 async def wait_state(hass, entity_id, in_states=None, not_in=None, attr=None, equals=None, timeout=10):
@@ -177,14 +179,20 @@ def _observe(hass, entity, expected):
     return {**result, "verification": "verified"}
 
 
-async def call_service_verified(hass, service, data, *, verify_timeout=None, deadline=None):
-    """Submit once, then poll all explicit targets within one shared time budget."""
+async def call_service_verified(hass, service, data, *, verify_timeout=None, deadline=None, post_condition=None):
+    """Submit once, then verify locally for up to five seconds, with no LLM calls.
+
+    Legacy verify_timeout values are accepted but cannot change the fixed budget.
+    Explicit scene conditions share the same polling loop and deadline.
+    """
     started = time.monotonic()
     deadline = deadline if deadline is not None else started + 30
     if not _number(deadline):
         raise ValueError("Verification deadline must be a finite number")
     if verify_timeout is not None and (not _number(verify_timeout) or verify_timeout < 0):
         raise ValueError("Verification timeout must be a finite non-negative number")
+    if post_condition is not None:
+        validate_post_condition(post_condition)
     entities = _targets(data)
     before = {entity: hass.states.get(entity) for entity in entities}
     expectations = {entity: _expected(service, data, entity, before[entity]) for entity in entities}
@@ -202,23 +210,15 @@ async def call_service_verified(hass, service, data, *, verify_timeout=None, dea
     except Exception as error:
         return {**result, "accepted": False, "verification": "failed", "status": "error",
                 "error": f"Service call failed: {error}"}
-    if not entities:
+    if not entities and post_condition is None:
         return {**result, "status": "unverified", "reason": "no_explicit_entity_targets"}
-    # A zero/omitted optional wait can never disable verification. Poll only when
-    # immediate state has not yet reached the known target, never resend actions.
+    # The first read is immediate. Only unconfirmed results spend the fixed
+    # polling budget; model arguments and transitions cannot extend it.
     target_domains = {entity.split(".", 1)[0] for entity in entities} if domain == "homeassistant" else {domain}
-    default_wait = ((10 if action == "turn_on" else 5) if "media_player" in target_domains
-                    else 5 if "light" in target_domains else 2)
-    requested_wait = verify_timeout if _number(verify_timeout) and verify_timeout > 0 else default_wait
-    if "light" in target_domains:
-        # Short model-selected waits must not turn a normal light ramp into a
-        # reported failure. This is a budget: matching state still returns early.
-        requested_wait = max(requested_wait, 5)
     transition = data.get("transition", 0)
     transition = transition if "light" in target_domains and _number(transition) and transition > 0 else 0
-    requested_wait = max(requested_wait, transition + 1) if transition else requested_wait
     transition_end = time.monotonic() + transition
-    until = min(deadline, time.monotonic() + min(requested_wait, 30))
+    until = min(deadline, time.monotonic() + VERIFICATION_SECONDS)
     settling_targets = {entity for entity in entities
                         if entity.startswith("light.") and expectations[entity][1]}
     ramp_observed = False
@@ -226,10 +226,18 @@ async def call_service_verified(hass, service, data, *, verify_timeout=None, dea
     while True:
         checks = [_observe(hass, entity, expectations[entity]) for entity in entities]
         result["checks"] = checks
+        unsupported = all(check.get("reason") == "unsupported_service" for check in checks)
+        required_checks = checks
+        if post_condition is not None:
+            explicit = _observe(hass, post_condition["entity_id"], _post_condition_expected(post_condition))
+            result["post_condition_result"] = explicit
+            # A scene can define a target for a button or other unsupported
+            # action, but cannot erase an observable automatic requirement.
+            required_checks = ([explicit] if unsupported else [*checks, explicit])
         now = time.monotonic()
         if any(check["entity_id"] in settling_targets and check["verification"] == "failed" for check in checks):
             ramp_observed = True
-        all_verified = all(check["verification"] == "verified" for check in checks)
+        all_verified = all(check["verification"] == "verified" for check in required_checks)
         if all_verified:
             snapshot = [check["observed"] for check in checks if check["entity_id"] in settling_targets]
             if not ramp_observed:
@@ -243,7 +251,7 @@ async def call_service_verified(hass, service, data, *, verify_timeout=None, dea
         else:
             matching_since, matching_snapshot = None, None
         # Unsupported services cannot gain a verifiable target by waiting.
-        if all(check.get("reason") == "unsupported_service" for check in checks):
+        if unsupported and post_condition is None:
             result.update(status="unverified")
             break
         remaining = until - time.monotonic()
@@ -257,10 +265,16 @@ async def call_service_verified(hass, service, data, *, verify_timeout=None, dea
                 for check in checks:
                     if check["verification"] == "failed":
                         check.update(verification="unverified", reason="transition_in_progress")
-            failed = any(check["verification"] == "failed" for check in checks)
+            failed = any(check["verification"] == "failed" for check in required_checks)
             result.update(status="error" if failed else "unverified", verification="failed" if failed else "unverified")
             break
-        await asyncio.sleep(min(0.25, remaining))
+        await asyncio.sleep(min(POLL_SECONDS, remaining))
+    if post_condition is not None:
+        if result["post_condition_result"]["verification"] == "verified":
+            result["post_condition_verified"] = True
+        else:
+            result.update(status="error", post_condition_failed=True,
+                          error="Required post-condition was not verified")
     result["elapsed_ms"] = round((time.monotonic() - started) * 1000)
     return result
 
@@ -283,16 +297,6 @@ def validate_post_condition(condition):
         raise ValueError("post_condition timeout_ms must be between 0 and 30000")
 
 
-async def verify_post_condition(hass, condition, *, deadline):
-    """Check state and attribute together on each snapshot, within the scene budget."""
-    validate_post_condition(condition)
-    if not _number(deadline):
-        raise ValueError("Verification deadline must be a finite number")
-    expected = ([condition["state"]] if "state" in condition else None,
-                {condition["attribute"]: (condition["value"], 0)} if "attribute" in condition else {}, [])
-    until = min(deadline, time.monotonic() + condition.get("timeout_ms", 4000) / 1000)
-    while True:
-        result = _observe(hass, condition["entity_id"], expected)
-        if result["verification"] == "verified" or time.monotonic() >= until:
-            return result
-        await asyncio.sleep(min(0.25, until - time.monotonic()))
+def _post_condition_expected(condition):
+    return ([condition["state"]] if "state" in condition else None,
+            {condition["attribute"]: (condition["value"], 0)} if "attribute" in condition else {}, [])

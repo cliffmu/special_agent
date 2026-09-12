@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 from . import logging as log
 from .tool_registry import ToolSpec, get_sequence_safe_tool_specs
 from .service_verification import (
-    call_service_verified, validate_post_condition, verify_post_condition, wait_state as _wait_state,
+    call_service_verified, validate_post_condition, wait_state as _wait_state,
 )
 
 
@@ -239,23 +239,9 @@ async def run_sequence(
                 if "post_condition" in step:
                     validate_post_condition(post_condition)
                 check = await call_service_verified(
-                    hass, service, data, deadline=deadline,
-                    verify_timeout=post_condition.get("timeout_ms", 4000) / 1000 if post_condition else None,
+                    hass, service, data, deadline=deadline, post_condition=post_condition,
                 )
                 step_result.update(check)
-                if post_condition and check["accepted"] is True:
-                    observed = await verify_post_condition(hass, post_condition, deadline=deadline)
-                    step_result["post_condition_result"] = observed
-                    if observed["verification"] != "verified":
-                        step_result.update(status="error", verification=observed["verification"],
-                                           post_condition_failed=True, error="Required post-condition was not verified")
-                    else:
-                        step_result["post_condition_verified"] = True
-                        # An explicit condition can establish a result for an otherwise
-                        # unsupported command, but cannot erase a known mismatch.
-                        if check["verification"] != "failed" and (not check["checks"] or all(
-                                item.get("reason") == "unsupported_service" for item in check["checks"])):
-                            step_result.update(status="ok", verification="verified")
 
             elif step_type == "wait_state":
                 entity = _substitute_vars(step["entity_id"], vars)
