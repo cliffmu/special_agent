@@ -40,6 +40,8 @@ PLATFORMS = ["conversation"]
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up via configuration.yaml (unused)."""
+    from .live_api import register_views
+    register_views(hass)
 
     async def reload_service_handler(call: ServiceCall) -> None:
         for entry in hass.config_entries.async_entries(DOMAIN):
@@ -92,6 +94,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Special Agent from a config entry."""
+    from .live_api import register_views
+    register_views(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry.data
     mgr = SessionManager(hass)
     await mgr.load()
@@ -154,7 +158,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload the integration."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        hass.data.get(DOMAIN, {}).get("conversation_agents", {}).pop(entry.entry_id, None)
+    return unloaded
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

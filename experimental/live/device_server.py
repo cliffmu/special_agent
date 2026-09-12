@@ -368,8 +368,17 @@ def create_app(settings):
         async with aiohttp.ClientSession() as http:
             app[HTTP] = http
             app[BACKEND] = DemoBackend() if settings.backend == "demo" else HomeAssistantBackend(
-                http, settings.ha_url, settings.ha_token, settings.ha_agent_id, settings.room)
-            yield
+                http, settings.ha_url, settings.ha_token, settings.ha_agent_id, settings.room,
+                model=settings.agent_model, reasoning_effort=settings.reasoning_effort,
+                fast_mode=settings.fast_mode)
+            logs = (asyncio.create_task(app[BACKEND].poll_activity())
+                    if isinstance(app[BACKEND], HomeAssistantBackend) else None)
+            try:
+                yield
+            finally:
+                if logs is not None:
+                    logs.cancel()
+                    await asyncio.gather(logs, return_exceptions=True)
 
     async def shutdown(app):
         async def close(device):

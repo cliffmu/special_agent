@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from utils import logging as log
@@ -80,3 +81,53 @@ async def test_activity_context_is_isolated_across_parallel_requests_and_child_t
     assert len(first_ids) == len(second_ids) == 1 and first_ids != second_ids
     log.activity("outside")
     assert "request=-" in caplog.records[-1].getMessage()
+
+
+def test_activity_buffer_pagination_and_overflow():
+    buffer = log.ActivityBuffer(capacity=3)
+    for number in range(5):
+        buffer.append(f"event=event_{number}")
+    first = buffer.read(limit=2)
+    assert first["reset"] is True and first["has_more"] is True
+    assert [record["cursor"] for record in first["records"]] == [3, 4]
+    second = buffer.read(epoch=first["epoch"], cursor=first["cursor"], limit=2)
+    assert second["reset"] is False and second["has_more"] is False
+    assert second["records"] == [{"cursor": 5, "line": "event=event_4"}]
+    assert buffer.read(cursor=5, epoch=first["epoch"])["records"] == []
+
+
+def test_activity_restart_replays_retained_records_and_handles_empty_buffer():
+    before, after = log.ActivityBuffer(), log.ActivityBuffer()
+    before.append("event=before")
+    old = before.read()
+    empty = after.read(cursor=old["cursor"], epoch=old["epoch"])
+    assert empty["reset"] is True and empty["cursor"] == 0 and empty["records"] == []
+    after.append("event=after")
+    new = after.read(cursor=old["cursor"], epoch=old["epoch"])
+    assert new["reset"] is True and new["records"] == [{"cursor": 1, "line": "event=after"}]
+    assert new["epoch"] != old["epoch"]
+
+
+def test_activity_buffer_bounds_record_length_and_returns_copies():
+    buffer = log.ActivityBuffer()
+    buffer.append("x" * 5000)
+    first = buffer.read()
+    assert len(first["records"][0]["line"]) == 2048
+    first["records"][0]["line"] = "modified"
+    assert buffer.read()["records"][0]["line"] == "x" * 2048
+
+
+def test_activity_buffer_serializes_executor_threads():
+    buffer = log.ActivityBuffer()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda number: buffer.append(f"event=event_{number}"), range(100)))
+    records = buffer.read()["records"]
+    assert [record["cursor"] for record in records] == list(range(1, 101))
+    assert len({record["line"] for record in records}) == 100
+
+
+@pytest.mark.parametrize("values", [{"cursor": -1}, {"cursor": True}, {"cursor": 2**63},
+                                    {"limit": 0}, {"limit": 201}, {"limit": True}])
+def test_activity_buffer_rejects_invalid_cursors_and_page_limits(values):
+    with pytest.raises(ValueError):
+        log.ActivityBuffer().read(**values)

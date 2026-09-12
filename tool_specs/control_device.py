@@ -30,7 +30,7 @@ PARAMS = {
         },
         "verify_after_seconds": {
             "type": "integer",
-            "description": "Optional verification timeout (up to 30 seconds). Verification is mandatory even when omitted or zero. Defaults to 2 seconds, or 5-10 for media players; returns early when the desired state is reported. Light transitions are accounted for within the total deadline.",
+            "description": "Optional verification timeout (up to 30 seconds). Verification is mandatory even when omitted or zero. Lights have a minimum 5-second verification budget; media players default to 5-10 seconds, other devices to 2. Matching state returns early; observed light-setting ramps must settle briefly. Light transitions are accounted for, and the overall deadline still caps all waits.",
             "minimum": 0,
             "maximum": 30,
             "default": None

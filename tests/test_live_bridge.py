@@ -314,7 +314,7 @@ async def test_ha_adapter_preserves_conversation_and_reports_semantic_errors():
             "speech": {"plain": {"speech": "No matching device" if len(bodies) == 3 else "Done"}}}})
 
     app = web.Application()
-    app.router.add_post("/api/conversation/process", handle)
+    app.router.add_post("/api/special_agent/live/process", handle)
     async with TestServer(app) as server, aiohttp.ClientSession() as http:
         backend = HomeAssistantBackend(http, str(server.make_url("/")), "local-test-token", "conversation.special_agent")
         result = await backend.execute("Turn it on", [], None)

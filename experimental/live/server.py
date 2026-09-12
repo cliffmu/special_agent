@@ -16,6 +16,7 @@ from aiohttp import web
 
 from .backend import DemoBackend, HomeAssistantBackend
 from .session import LiveSession
+from utils.constants import AGENT_MODELS, REASONING_EFFORTS
 
 LOG = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
@@ -32,10 +33,19 @@ class Settings:
     ha_url: str = ""
     ha_token: str = field(default="", repr=False)
     ha_agent_id: str = "conversation.special_agent"
+    agent_model: str | None = None
+    reasoning_effort: str | None = None
+    fast_mode: bool | None = None
 
     def validate(self):
         if self.backend not in ("demo", "home-assistant"):
             raise ValueError("Unknown backend")
+        if self.agent_model is not None and self.agent_model not in AGENT_MODELS:
+            raise ValueError("Invalid agent_model option")
+        if self.reasoning_effort is not None and self.reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError("Invalid reasoning_effort option")
+        if self.fast_mode is not None and type(self.fast_mode) is not bool:
+            raise ValueError("Invalid fast_mode option")
         if not 1 <= self.port <= 65535 or not 10 <= self.idle_timeout <= 600 or not 0 <= self.max_duration <= 1800:
             raise ValueError("Invalid port or timeout limits")
         if self.backend == "home-assistant":
@@ -82,7 +92,9 @@ class Bridge:
         self.readers = {}
         self.create_lock = asyncio.Lock()
         self.backend = DemoBackend() if settings.backend == "demo" else HomeAssistantBackend(
-            http, settings.ha_url, settings.ha_token, settings.ha_agent_id)
+            http, settings.ha_url, settings.ha_token, settings.ha_agent_id,
+            model=settings.agent_model, reasoning_effort=settings.reasoning_effort,
+            fast_mode=settings.fast_mode)
 
     async def create(self, sdp):
         if not self.settings.api_key:
@@ -209,10 +221,17 @@ async def resources(app):
         bridge = Bridge(app[SETTINGS], http)
         app[BRIDGE] = bridge
         monitor = asyncio.create_task(bridge.monitor())
-        yield
-        monitor.cancel()
-        await asyncio.gather(monitor, return_exceptions=True)
-        await bridge.shutdown()
+        logs = (asyncio.create_task(bridge.backend.poll_activity())
+                if isinstance(bridge.backend, HomeAssistantBackend) else None)
+        try:
+            yield
+        finally:
+            monitor.cancel()
+            await asyncio.gather(monitor, return_exceptions=True)
+            await bridge.shutdown()
+            if logs is not None:
+                logs.cancel()
+                await asyncio.gather(logs, return_exceptions=True)
 
 
 def create_app(settings):

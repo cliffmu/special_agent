@@ -100,7 +100,7 @@ async def test_known_state_mismatch_aborts_before_next_action_without_resend(env
     assert result["result"] == "failed"
     assert len(result["steps"]) == 1 and result["steps"][0]["verification"] == "failed"
     env.hass.services.async_call.assert_awaited_once()
-    assert env.clock.now == pytest.approx(2)
+    assert env.clock.now == pytest.approx(5)
 
 
 async def test_unknown_command_can_continue_but_cannot_report_whole_sequence_verified(environment):

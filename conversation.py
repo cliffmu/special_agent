@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from homeassistant.components.conversation import (
     AbstractConversationAgent,
     ConversationEntity,
@@ -19,6 +21,17 @@ from .utils import logging as activity_log
 from .utils.constants import DEFAULT_AGENT_MODEL
 
 _LOGGER = logging.getLogger(__package__)
+_LIVE_MODEL_SETTINGS = ContextVar("special_agent_live_model_settings", default=None)
+
+
+@contextmanager
+def live_model_settings(settings):
+    """Scope validated Live settings to this request and its child tasks."""
+    token = _LIVE_MODEL_SETTINGS.set(dict(settings))
+    try:
+        yield
+    finally:
+        _LIVE_MODEL_SETTINGS.reset(token)
 
 
 class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
@@ -65,7 +78,8 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         error_type = None
         try:
             activity_log.activity("request", phase="received",
-                                  source="satellite" if getattr(conversation_input, "device_id", None) else "text")
+                                  source="live" if _LIVE_MODEL_SETTINGS.get() is not None else
+                                  "satellite" if getattr(conversation_input, "device_id", None) else "text")
             result = await self._async_process(conversation_input, context)
             status = "completed"
             return result
@@ -107,7 +121,10 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             "session",
             metadata={"prompt": user_text[:100]}  # First 100 chars
         ):
-            result = await agent.plan(user_text, hass=self.hass, session_key=sess_key)
+            result = await agent.plan(
+                user_text, hass=self.hass, session_key=sess_key,
+                **(_LIVE_MODEL_SETTINGS.get() or {}),
+            )
         
         # Write performance metrics after track_request completes (ensures session record is captured)
         if performance.is_enabled():
@@ -184,6 +201,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     from homeassistant.components.conversation import async_set_agent
 
     async_set_agent(hass, config_entry, agent)
+    hass.data[DOMAIN].setdefault("conversation_agents", {})[config_entry.entry_id] = agent
     
     # Log config for debugging
     config = dict(config_entry.data)

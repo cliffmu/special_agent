@@ -12,9 +12,16 @@ reload the integration after making changes.
 
 ## Agent model and activity logs
 
-Open **Settings → Devices & services → Special Agent → Configure** to select the
-Python agent model, reasoning effort, and **Fast mode**. Existing installations
-keep their saved model until changed. New setups default to **gpt-5.6-terra / low**.
+For Voice PE, open **Settings → Apps → Special Agent Live → Configuration** to
+select **Agent model**, **Thinking effort**, and **Fast mode**. Save and restart
+the app to apply changes. These controls require integration **0.3.2+** and Live
+app **0.1.5+**. They apply to this bridge's delegated requests; the integration's
+other conversations retain their own settings. New app setups default to
+**gpt-5.6-terra / low / Fast off**. Legacy options without these fields inherit
+the integration until the new controls are saved.
+
+The integration's defaults remain available at **Settings → Devices & services →
+Special Agent → Configure**. Existing installations keep their saved model.
 Terra is a balanced starting point for tool use; try Luna for lower cost and
 compare accuracy on your routines. Sol and Astra are options for harder requests.
 A newer small model is not automatically more reliable on every task.
@@ -27,17 +34,21 @@ cannot speed up an external device or service call. Logs show the requested and
 actual tier (5.6 may report `priority` for Fast, or `default` if downgraded).
 [Fast mode](https://developers.openai.com/api/docs/guides/fast-mode).
 This setting affects delegated Python-agent work; Live speech still uses
-`gpt-live-1` configured in the Live app. Unsupported reasoning choices are saved
-as `low` when switching models. Leave secret fields blank to keep existing keys.
+`gpt-live-1`. Unsupported reasoning choices use `low` for that model, and logs
+show the effective choice. In the integration's Configure dialog, leave secret
+fields blank to keep existing keys. Preserve the saved key/token in app options.
 
 Concise activity logs are on by default:
 
-- **Python agent:** Settings → System → Logs → Home Assistant Core → menu →
-  **Show raw logs**, then filter `special_agent.activity`. The default summary
-  mostly shows warnings/errors. Activity records show request IDs, model/tier,
-  token counts, tool names, durations, failures, and completion.
-- **Voice bridge:** Settings → Apps → Special Agent Live → **Log** shows voice
-  session start/end, queued/running/completed jobs, and HA request timing.
+- **Consolidated:** Settings → Apps → Special Agent Live → **Log** shows voice
+  sessions/jobs plus Python request IDs, model/tier, token counts, tool start/end,
+  verification, timing, failures and completion. Python activity arrives while
+  tools are running, usually within a second. This requires the home-assistant
+  backend. A bounded in-memory buffer recovers recent records after reconnect;
+  it is not a permanent log archive.
+- **Core copy:** Settings → System → Logs → Home Assistant Core → menu →
+  **Show raw logs**, then filter `special_agent.activity`. Core still retains
+  these records for troubleshooting when the bridge is unavailable.
 
 These activity records omit prompts, transcripts, raw tool arguments/results,
 and credentials. Optional detailed performance CSV and integration debug logging
@@ -46,8 +57,6 @@ from the Special Agent integration menu only when investigating a specific issue
 
 Special Agent's learned routines live in `scene_memory.json` under its
 `sa_vector_index` persistence directory, separate from Home Assistant `scenes.yaml`.
-On the current installation this is
-`/config/custom_components/sa_vector_index/scene_memory.json`.
 `.storage/.special_agent_sessions.json` contains conversation/tool history, not
 native HA scene definitions. A successful service-call result confirms the API
 call completed; Home Assistant state readback is a separate check and still
@@ -56,6 +65,13 @@ reflects integration telemetry rather than independent physical proof.
 Direct controls and scene service steps share mandatory verification in Python.
 They submit the command once, then compare supported state/settings against HA
 readback within a bounded deadline. Already-matching settings verify immediately.
+Lights get a minimum five-second verification budget, even if a model asks for a
+shorter wait (longer waits and transitions are respected). The overall scene
+deadline still caps that budget.
+After an observed light-setting mismatch, a matching readback must remain stable
+for half a second. A deadline reached during settling stays unverified. Results
+include both HA's raw 0–255 `brightness` and the derived `brightness_pct` with
+explicit units, so raw 40 cannot be mistaken for 40%.
 Results separate `accepted` from `verification: verified / failed / unverified`;
 unsupported commands or missing telemetry stay unverified. The agent cannot skip
 this check by omitting a tool argument. Saved explicit post-conditions are retained
@@ -105,6 +121,10 @@ target:
 data:
   version: codex/gpt-live-test
 ```
+
+If HACS says that branch version is already downloaded, use the full 40-character
+commit SHA shown on the GitHub test branch as `version` instead. This selects an
+exact build and avoids reinstalling a cached branch label.
 
 Restart Home Assistant after the download. This installs the integration changes;
 it does not flash the Voice device or launch the audio bridge. Use your actual
@@ -274,7 +294,7 @@ speech cannot falsely trigger its end-session command. Spoken corrections go
 directly to GPT-Live.
 
 For hands-free startup, use **“Okay Nabu”**, wait for the wake chime, then speak.
-Under **Settings → Devices & services → ESPHome → Office Home Assistant Voice →
+Under **Settings → Devices & services → ESPHome → your Voice PE →
 Configuration → Wake word**, choose the active dropdown. This firmware includes
 **Okay Nabu**, **Hey Jarvis**, and **Hey Leonard**; the selection is saved on the
 device and does not require rebuilding. An unavailable wake-word field left over
@@ -307,8 +327,11 @@ export HA_AGENT_ID="conversation.special_agent"
 .venv/bin/python -m experimental.live.device_server --backend home-assistant
 ```
 
-Use your actual Special Agent conversation entity ID. HA keeps its configured
-model, enabled tools and confirmation rules. The bridge passes `VOICE_ROOM` as
+Use your actual Special Agent conversation entity ID and integration 0.3.2+.
+The standalone bridge inherits HA's configured model; the app's model controls
+override it per request. HA retains enabled tools and confirmation rules. The
+authenticated `/api/special_agent/live/process` endpoint accepts only registered
+Special Agent entities. The bridge passes `VOICE_ROOM` as
 context and retains HA's conversation ID for follow-ups. It omits `device_id` so
 HA does not launch a second TTS response over the direct Live speaker stream.
 
@@ -367,22 +390,13 @@ Existing integration tests require a parent import alias named `special_agent`
 when the checkout directory is named `special-agent`. The original dev suite also
 contains stale tests importing removed APIs.
 
-The app was installed and started successfully on the HA host. The Office Voice
-PE's ESP32 firmware was flashed with hash verification, and HA API pairing
-succeeded; HA recognizes the device as `special-agent-live`.
-
-Authenticated GPT-Live speech input and speaker replies have been confirmed on
-the Office Voice PE. With app 0.1.1, a 116-second conversation included several
-successful spoken interruptions. Spoken “stop” silenced the response, and the
-center button then closed the session with confirmed final usage. With app 0.1.2,
-the owner also confirmed the Office light-status lookup and concurrent joke test
-worked. With app 0.1.3, the owner confirmed Okay Nabu wake and an initial idle-timeout
-test; broader timeout testing remains useful. App 0.1.4 is installed with the
-Office device reconnected and concise activity logging. A saved Office routine
-was found in real tool history with 16 accepted HA service calls; this does not
-independently verify physical device outcomes. Echo performance across rooms and
-volumes remains unverified. The earlier browser diagnostic remains in
-`experimental/live/server.py`; it is not used by this hardware setup.
+Hardware testing has covered GPT-Live microphone/speaker audio, interruptions,
+spoken stop, the center button, Okay Nabu wake, the idle countdown, and delegated
+tool work during conversation. Broader timeout and echo testing across rooms and
+volumes remains useful. Automated tests cover model overrides, activity-log
+forwarding and simulated light transitions; device telemetry still requires
+checking against the actual installation. The earlier browser diagnostic remains
+in `experimental/live/server.py`; it is not required for the Voice PE setup.
 
 The full Voice PE firmware compiled successfully with ESPHome 2026.8.2 and
 ESP-IDF 5.5.5. Rebuild with your own device settings before installing it.
