@@ -13,7 +13,16 @@ configuration:
     description: Start with demo for an audio test. Select home-assistant to delegate requests to your configured Special Agent.
   agent_id:
     name: Conversation agent entity
-    description: Your available conversation agent entity ID, for example conversation.special_agent_2. Used by the home-assistant backend.
+    description: Your available conversation agent entity ID, for example conversation.special_agent. Used by the home-assistant backend.
+  agent_model:
+    name: Agent model
+    description: Model used by your Python Special Agent for tools and delegated requests. Live speech continues to use gpt-live-1. Requires Special Agent 0.3.2 or newer. Save and restart to apply.
+  reasoning_effort:
+    name: Thinking effort
+    description: More thinking can improve difficult requests but take longer. Start with low. Unsupported model/effort combinations use low. Save and restart to apply.
+  fast_mode:
+    name: Fast mode
+    description: Request faster model processing for delegated work. Fast costs 2× standard token rates on GPT-5.6 and GPT-6; external tools take the same time. Off requests the standard tier. Save and restart to apply.
   idle_timeout:
     name: Keep listening after activity (seconds)
     description: Stay awake while speaking or working, then wait this long after the latest speech or completed task. New speech restarts the countdown. Default 30; range 10–600 seconds. Save and restart to apply.

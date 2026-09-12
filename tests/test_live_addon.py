@@ -18,22 +18,35 @@ def valid_options(**changes):
 
 def test_home_assistant_options_use_supervisor_proxy_and_preserve_agent_identity():
     settings = run.settings_from_options(valid_options(
-        backend="home-assistant", agent_id="conversation.special_agent_2", room="Office",
+        backend="home-assistant", agent_id="conversation.test_agent", room="Test room",
         idle_timeout=30, max_duration=300,
     ), {"SUPERVISOR_TOKEN": "supervisor-test-token", "HA_TOKEN": "must-not-use", "HA_URL": "https://wrong.invalid"})
-    assert settings.ha_url + "/api/conversation/process" == "http://supervisor/core/api/conversation/process"
+    assert settings.ha_url == "http://supervisor/core"
     assert settings.ha_token == "supervisor-test-token"
-    assert settings.ha_agent_id == "conversation.special_agent_2"
-    assert (settings.room, settings.bind, settings.port) == ("Office", "0.0.0.0", 8099)
+    assert settings.ha_agent_id == "conversation.test_agent"
+    assert (settings.room, settings.bind, settings.port) == ("Test room", "0.0.0.0", 8099)
     assert (settings.idle_timeout, settings.max_duration) == (30, 300)
     assert "supervisor-test-token" not in repr(settings)
     assert "test-openai-key" not in repr(settings)
     assert settings.device_token not in repr(settings)
+    assert (settings.agent_model, settings.reasoning_effort, settings.fast_mode) == (None, None, None)
+
+
+@pytest.mark.parametrize("fast", [True, False])
+def test_model_controls_preserve_explicit_fast_choice(fast):
+    settings = run.settings_from_options(valid_options(
+        backend="home-assistant", agent_id="conversation.test_agent",
+        agent_model="gpt-5.6-luna", reasoning_effort="high", fast_mode=fast,
+    ), {"SUPERVISOR_TOKEN": "supervisor-test-token"})
+    assert (settings.agent_model, settings.reasoning_effort, settings.fast_mode) == (
+        "gpt-5.6-luna", "high", fast)
+    assert settings.api_key == "test-openai-key"
+    assert settings.device_token == valid_options()["device_token"]
 
 
 def test_demo_defaults_do_not_use_supervisor_access():
     settings = run.settings_from_options(valid_options(), {"SUPERVISOR_TOKEN": "unused"})
-    assert (settings.backend, settings.room, settings.ha_token) == ("demo", "Office", "")
+    assert (settings.backend, settings.room, settings.ha_token) == ("demo", "", "")
     assert (settings.idle_timeout, settings.max_duration) == (30, 0)
 
 
@@ -52,6 +65,10 @@ def test_demo_defaults_do_not_use_supervisor_access():
     (valid_options(max_duration=-1), "max_duration"),
     (valid_options(max_duration=1801), "max_duration"),
     (valid_options(max_duration="600"), "max_duration"),
+    (valid_options(agent_model="private-unsupported-model"), "agent_model"),
+    (valid_options(reasoning_effort="private-unsupported-effort"), "reasoning_effort"),
+    (valid_options(fast_mode="false"), "fast_mode"),
+    (valid_options(fast_mode=1), "fast_mode"),
 ])
 def test_invalid_options_fail_before_server_start_without_echoing_values(options, field):
     with pytest.raises(ValueError, match=field) as error:

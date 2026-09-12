@@ -11,6 +11,7 @@ import re
 from aiohttp import web
 
 from experimental.live.device_server import DeviceSettings, create_app
+from utils.constants import AGENT_MODELS, REASONING_EFFORTS
 
 LOG = logging.getLogger("special_agent_live")
 OPTIONS_FILE = Path("/data/options.json")
@@ -35,10 +36,20 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
     backend = text_option(options, "backend", "demo")
     if backend not in ("demo", "home-assistant"):
         raise ValueError("backend must be demo or home-assistant")
-    room = text_option(options, "room", "Office", maximum=120)
+    room = text_option(options, "room", "", maximum=120)
     agent_id = text_option(options, "agent_id", "conversation.special_agent", maximum=255)
     if not agent_id.strip():
         raise ValueError("Set agent_id to your available conversation agent")
+    # Legacy options inherit the integration until these controls are saved.
+    agent_model = options.get("agent_model")
+    reasoning_effort = options.get("reasoning_effort")
+    fast_mode = options.get("fast_mode")
+    if agent_model is not None and agent_model not in AGENT_MODELS:
+        raise ValueError("Invalid agent_model option")
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise ValueError("Invalid reasoning_effort option")
+    if fast_mode is not None and type(fast_mode) is not bool:
+        raise ValueError("Invalid fast_mode option")
     limits = {}
     for name, default, low, high in (("idle_timeout", 30, 10, 600), ("max_duration", 0, 0, 1800)):
         value = options.get(name, default)
@@ -51,6 +62,7 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
     settings = DeviceSettings(
         api_key=api_key, device_token=token, backend=backend, room=room,
         ha_url="http://supervisor/core", ha_token=supervisor_token, ha_agent_id=agent_id,
+        agent_model=agent_model, reasoning_effort=reasoning_effort, fast_mode=fast_mode,
         bind="0.0.0.0", port=8099, **limits,
     )
     settings.validate()
