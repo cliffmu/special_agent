@@ -77,13 +77,17 @@ class Agent:
         hass: Any | None = None,
         session_key: tuple[str, str] | None = None,
         model: str | None = None,
+        *,
+        reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
     ) -> Any:
         # Ensure tools are loaded
         await self.load_tools(hass)
         
         # Get model and reasoning_effort from config
         model = model or self.config.get("agent_model", DEFAULT_AGENT_MODEL)
-        reasoning_effort = self.config.get("reasoning_effort", "low")
+        reasoning_effort = reasoning_effort if reasoning_effort is not None else self.config.get("reasoning_effort", "low")
+        fast_mode = fast_mode if fast_mode is not None else self.config.get("fast_mode", False)
         require_confirmation = self.config.get("require_confirmation", True)
         session_timeout_minutes = self.config.get("session_timeout_minutes", 5)
         
@@ -94,7 +98,7 @@ class Agent:
             session_key=session_key,
             model=model,
             reasoning_effort=reasoning_effort,
-            fast_mode=self.config.get("fast_mode", False),
+            fast_mode=fast_mode,
             require_confirmation=require_confirmation,
             session_timeout_minutes=session_timeout_minutes,
         )

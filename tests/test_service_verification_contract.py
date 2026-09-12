@@ -29,7 +29,8 @@ def test_dispatches_once_and_verifies_reported_requested_setting():
         hass.states["light.office"] = state("on", brightness=128)
 
     hass.services.async_call.side_effect = apply_service
-    result = asyncio.run(call_service_verified(hass, "light.turn_on", data, verify_timeout=0.01))
+    result = asyncio.run(call_service_verified(hass, "light.turn_on", data, verify_timeout=0.01,
+                                               deadline=time.monotonic() + 0.02))
 
     hass.services.async_call.assert_awaited_once_with("light", "turn_on", data, blocking=True)
     assert result["accepted"] is True
@@ -47,7 +48,8 @@ def test_one_matching_target_does_not_hide_another_targets_mismatch():
     })
     data = {"entity_id": ["light.office", "light.hall"], "brightness": 128}
 
-    result = asyncio.run(call_service_verified(hass, "light.turn_on", data, verify_timeout=0.01))
+    result = asyncio.run(call_service_verified(hass, "light.turn_on", data, verify_timeout=0.01,
+                                               deadline=time.monotonic() + 0.02))
 
     hass.services.async_call.assert_awaited_once_with("light", "turn_on", data, blocking=True)
     assert result["accepted"] is True
@@ -114,7 +116,8 @@ def test_missing_requested_attribute_is_unverified_despite_matching_power_state(
     hass = fake_hass({"light.office": state("on")})
 
     result = asyncio.run(call_service_verified(
-        hass, "light.turn_on", {"entity_id": "light.office", "brightness": 128}, verify_timeout=0.01
+        hass, "light.turn_on", {"entity_id": "light.office", "brightness": 128}, verify_timeout=0.01,
+        deadline=time.monotonic() + 0.02,
     ))
 
     hass.services.async_call.assert_awaited_once()

@@ -141,6 +141,11 @@ def _observe(hass, entity, expected):
     observed = {"state": state.state if state else None, "attributes": {}}
     result = {"entity_id": entity, "expected": {"states": states, "attributes": {
         name: value for name, (value, _) in attributes.items()}}, "observed": observed}
+    if "brightness" in attributes and _number(attributes["brightness"][0]):
+        # HA reports brightness on a 0-255 scale. Keep its native value for
+        # comparison and provide explicitly labelled percent for spoken results.
+        result["attribute_units"] = {"brightness": "0-255", "brightness_pct": "percent"}
+        result["expected"]["attributes"]["brightness_pct"] = round(attributes["brightness"][0] * 100 / 255, 1)
     if not state or state.state in UNAVAILABLE:
         return {**result, "verification": "unverified", "reason": "entity_unavailable"}
     if not states and not attributes:
@@ -154,6 +159,8 @@ def _observe(hass, entity, expected):
             continue
         actual = state.attributes[name]
         observed["attributes"][name] = actual
+        if name == "brightness" and _number(actual):
+            observed["attributes"]["brightness_pct"] = round(actual * 100 / 255, 1)
         if not _matches(actual, value, tolerance, name):
             step = state.attributes.get("percentage_step") if name == "percentage" else None
             if _number(step) and step > 1 and _number(actual) and _number(value) and abs(actual - value) <= step:
@@ -200,25 +207,52 @@ async def call_service_verified(hass, service, data, *, verify_timeout=None, dea
     # A zero/omitted optional wait can never disable verification. Poll only when
     # immediate state has not yet reached the known target, never resend actions.
     target_domains = {entity.split(".", 1)[0] for entity in entities} if domain == "homeassistant" else {domain}
-    default_wait = (10 if action == "turn_on" else 5) if "media_player" in target_domains else 2
+    default_wait = ((10 if action == "turn_on" else 5) if "media_player" in target_domains
+                    else 5 if "light" in target_domains else 2)
     requested_wait = verify_timeout if _number(verify_timeout) and verify_timeout > 0 else default_wait
+    if "light" in target_domains:
+        # Short model-selected waits must not turn a normal light ramp into a
+        # reported failure. This is a budget: matching state still returns early.
+        requested_wait = max(requested_wait, 5)
     transition = data.get("transition", 0)
     transition = transition if "light" in target_domains and _number(transition) and transition > 0 else 0
     requested_wait = max(requested_wait, transition + 1) if transition else requested_wait
     transition_end = time.monotonic() + transition
     until = min(deadline, time.monotonic() + min(requested_wait, 30))
+    settling_targets = {entity for entity in entities
+                        if entity.startswith("light.") and expectations[entity][1]}
+    ramp_observed = False
+    matching_since, matching_snapshot = None, None
     while True:
         checks = [_observe(hass, entity, expectations[entity]) for entity in entities]
         result["checks"] = checks
-        if all(check["verification"] == "verified" for check in checks):
-            result.update(status="ok", verification="verified")
-            break
+        now = time.monotonic()
+        if any(check["entity_id"] in settling_targets and check["verification"] == "failed" for check in checks):
+            ramp_observed = True
+        all_verified = all(check["verification"] == "verified" for check in checks)
+        if all_verified:
+            snapshot = [check["observed"] for check in checks if check["entity_id"] in settling_targets]
+            if not ramp_observed:
+                result.update(status="ok", verification="verified")
+                break
+            if snapshot != matching_snapshot:
+                matching_since, matching_snapshot = now, snapshot
+            if now - matching_since >= 0.5:
+                result.update(status="ok", verification="verified")
+                break
+        else:
+            matching_since, matching_snapshot = None, None
         # Unsupported services cannot gain a verifiable target by waiting.
         if all(check.get("reason") == "unsupported_service" for check in checks):
             result.update(status="unverified")
             break
         remaining = until - time.monotonic()
         if remaining <= 0:
+            if all_verified:
+                for check in checks:
+                    if check["entity_id"] in settling_targets:
+                        check.update(verification="unverified", reason="state_not_settled")
+                result["reason"] = "state_not_settled"
             if time.monotonic() < transition_end:
                 for check in checks:
                     if check["verification"] == "failed":

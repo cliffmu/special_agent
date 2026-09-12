@@ -2,7 +2,9 @@ import logging
 import math
 import re
 import uuid
+from collections import deque
 from contextvars import ContextVar
+from threading import Lock
 
 _LOGGER = logging.getLogger("custom_components.special_agent")
 _PLACEHOLDER_RE = re.compile(r"%\([^)]+\)|%[sdifr]")
@@ -19,6 +21,44 @@ _FIELD_NAMES = frozenset({
     "verification", "verified_steps", "completed_steps", "total_steps",
 })
 _ATOM = re.compile(r"[A-Za-z0-9_.:-]{1,100}\Z")
+
+
+class ActivityBuffer:
+    """Bounded, thread-safe replay of already-sanitized activity records."""
+
+    def __init__(self, capacity=512):
+        self.epoch = uuid.uuid4().hex
+        self._records = deque(maxlen=capacity)
+        self._cursor = 0
+        self._lock = Lock()
+
+    def append(self, line):
+        with self._lock:
+            self._cursor += 1
+            self._records.append({"cursor": self._cursor, "line": line[:2048]})
+
+    def read(self, *, cursor=0, epoch=None, limit=200):
+        if type(cursor) is not int or not 0 <= cursor <= 2**63 - 1:
+            raise ValueError("Invalid activity cursor")
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("Activity limit must be between 1 and 200")
+        with self._lock:
+            oldest = self._records[0]["cursor"] if self._records else self._cursor + 1
+            reset = (epoch is not None and epoch != self.epoch) or cursor < oldest - 1 or cursor > self._cursor
+            if reset:
+                cursor = oldest - 1
+            records = [dict(record) for record in self._records if record["cursor"] > cursor][:limit]
+            next_cursor = records[-1]["cursor"] if records else self._cursor
+            return {"epoch": self.epoch, "cursor": next_cursor, "reset": reset,
+                    "has_more": next_cursor < self._cursor, "records": records}
+
+
+_ACTIVITY_BUFFER = ActivityBuffer()
+
+
+def read_activity(*, cursor=0, epoch=None, limit=200):
+    """Read safe activity only; ordinary Core logs never enter this buffer."""
+    return _ACTIVITY_BUFFER.read(cursor=cursor, epoch=epoch, limit=limit)
 
 
 def begin_request():
@@ -70,7 +110,9 @@ def activity(event, *, logger=None, **safe_values):
         else:
             formatted = _activity_value(value)
         parts.append(f"{name}={formatted}")
-    (logger if logger is not None else _ACTIVITY_LOGGER).info("%s", " ".join(parts))
+    line = " ".join(parts)
+    _ACTIVITY_BUFFER.append(line)
+    (logger if logger is not None else _ACTIVITY_LOGGER).info("%s", line)
 
 
 def _safe(level, msg, *args, **kw):

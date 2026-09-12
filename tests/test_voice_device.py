@@ -355,7 +355,8 @@ async def test_missing_final_usage_prevents_queued_automatic_restart(monkeypatch
         await socket.close()
 
 
-async def test_hardware_room_reaches_ha_without_triggering_satellite_tts(monkeypatch):
+@pytest.mark.parametrize("fast_mode", [False, True])
+async def test_hardware_room_reaches_ha_without_triggering_satellite_tts(monkeypatch, fast_mode):
     requests = asyncio.Queue()
 
     async def converse(request):
@@ -365,20 +366,25 @@ async def test_hardware_room_reaches_ha_without_triggering_satellite_tts(monkeyp
             "response_type": "action_done", "speech": {"plain": {"speech": "The lights are on"}}}})
 
     ha = web.Application()
-    ha.router.add_post("/api/conversation/process", converse)
+    ha.router.add_post("/api/special_agent/live/process", converse)
     async with TestServer(ha) as server:
         settings = {"backend": "home-assistant", "ha_url": str(server.make_url("/")),
-                    "ha_token": "fake-ha-token", "room": "Kitchen"}
+                    "ha_token": "fake-ha-token", "room": "Kitchen", "agent_model": "gpt-5.6-terra",
+                    "reasoning_effort": "low", "fast_mode": fast_mode}
         async with harness(monkeypatch, settings_overrides=settings) as (client, cloud):
             socket, upstream, start = await ready_device(client, cloud)
             device = cloud.devices[-1]
             device.session.settle_seconds = 0
             assert "Kitchen" in start["session"]["instructions"]
+            assert start["session"]["model"] == "gpt-live-1"
             await upstream.send_json({"type": "session.input_transcript.delta", "delta": "Turn on the lights here"})
             await upstream.send_json({"type": "session.delegation.created",
                                       "delegation": {"id": "room-job", "target": "client"}})
             body = await asyncio.wait_for(requests.get(), 2)
             assert body["agent_id"] == "conversation.special_agent"
+            assert body["model"] == "gpt-5.6-terra"
+            assert body["reasoning_effort"] == "low"
+            assert body["fast_mode"] is fast_mode
             assert 'Voice device room (configured by owner): "Kitchen"' in body["text"]
             assert "Current request: Turn on the lights here" in body["text"]
             assert "device_id" not in body
@@ -402,7 +408,7 @@ async def test_live_job_and_ha_activity_share_safe_ids_and_report_outcomes(monke
             "speech": {"plain": {"speech": "PRIVATE_HA_RESULT"}}}})
 
     ha = web.Application()
-    ha.router.add_post("/api/conversation/process", converse)
+    ha.router.add_post("/api/special_agent/live/process", converse)
     async with TestServer(ha) as server:
         settings = {"backend": "home-assistant", "ha_url": str(server.make_url("/")),
                     "ha_token": "PRIVATE_HA_TOKEN", "room": "PRIVATE_ROOM"}

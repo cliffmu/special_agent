@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -80,7 +81,8 @@ async def test_setting_precision_and_missing_representation_are_honest(env, data
     entity = domain + ".first"
     env.states[entity] = SimpleNamespace(state=state, attributes=attributes)
     result = await service_verification.call_service_verified(
-        env.hass, domain + ".turn_on", {"entity_id": entity, **data}, verify_timeout=0.001)
+        env.hass, domain + ".turn_on", {"entity_id": entity, **data}, verify_timeout=0.001,
+        deadline=time.monotonic() + 0.02)
     assert result["verification"] == expected
     env.hass.services.async_call.assert_awaited_once()
 

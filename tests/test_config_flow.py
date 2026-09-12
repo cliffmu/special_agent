@@ -1,10 +1,19 @@
 import asyncio
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock
 
+import pytest
+
 from special_agent.__init__ import async_setup_entry
 from special_agent import session_store
+
+
+@pytest.fixture(autouse=True)
+def stub_http_registration(monkeypatch):
+    # HTTP endpoint behavior has its own tests; these isolate config-entry setup.
+    monkeypatch.setitem(sys.modules, "special_agent.live_api", SimpleNamespace(register_views=MagicMock()))
 
 
 class StubStore:
