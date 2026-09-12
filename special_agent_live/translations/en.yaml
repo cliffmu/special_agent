@@ -3,11 +3,33 @@ configuration:
     name: OpenAI API key
     description: An OpenAI API key with GPT-Live access. Demo mode also uses paid Live audio.
   device_token:
-    name: Voice device token
-    description: A random 32–256 character URL-safe token matching the token in your Voice PE WebSocket URL. Use letters, digits, underscores and hyphens only.
+    name: Primary Voice device token
+    description: Keep the existing token for your first Voice PE. Each additional device needs its own 32–256 character URL-safe token in its firmware URL and its registration below.
+  device_id:
+    name: Primary Voice device ID
+    description: A stable unique label for your first device, such as primary. Use letters, digits, underscores or hyphens. Keep it unchanged to preserve the device's identity.
   room:
-    name: Room
-    description: Room containing this Voice PE, used to interpret requests such as "turn on the lights here".
+    name: Primary Voice room
+    description: Room containing your first Voice PE, used to interpret requests such as "turn on the lights here".
+  ha_device_id:
+    name: Primary Home Assistant device ID (optional)
+    description: Optionally link the primary Voice to its actual HA device registry ID (the ID in its device-page URL). Leave blank to use its Live device ID for separate conversation history.
+  devices:
+    name: Additional Voice devices
+    description: Add up to 15 more devices. Each entry needs a unique id, its own token, and its room. Optional ha_device_id links the HA device registry. All devices can talk independently using the model settings below. Save and restart to apply. Each device needs the Live firmware with its matching token.
+    fields:
+      id:
+        name: Device ID
+        description: A stable unique label using letters, digits, underscores or hyphens.
+      token:
+        name: Voice device token
+        description: A unique URL-safe token matching this device's firmware URL.
+      room:
+        name: Room
+        description: The room used for requests such as "the lights here".
+      ha_device_id:
+        name: Home Assistant device ID (optional)
+        description: The registry ID in this device's HA device-page URL. Leave blank to use its Live identity.
   backend:
     name: Backend
     description: Start with demo for an audio test. Select home-assistant to delegate requests to your configured Special Agent.
@@ -16,7 +38,7 @@ configuration:
     description: Your available conversation agent entity ID, for example conversation.special_agent. Used by the home-assistant backend.
   agent_model:
     name: Agent model
-    description: Model used by your Python Special Agent for tools and delegated requests. Live speech continues to use gpt-live-1. Requires Special Agent 0.3.2 or newer. Save and restart to apply.
+    description: Model used by your Python Special Agent for tools and delegated requests from all registered devices. Live speech continues to use gpt-live-1. Requires Special Agent 0.3.3 or newer. Save and restart to apply.
   reasoning_effort:
     name: Thinking effort
     description: More thinking can improve difficult requests but take longer. Start with low. Unsupported model/effort combinations use low. Save and restart to apply.

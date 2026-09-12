@@ -11,6 +11,7 @@ import re
 from aiohttp import web
 
 from experimental.live.device_server import DeviceSettings, create_app
+from experimental.live.devices import VoiceRegistration
 from utils.constants import AGENT_MODELS, REASONING_EFFORTS
 
 LOG = logging.getLogger("special_agent_live")
@@ -37,6 +38,21 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
     if backend not in ("demo", "home-assistant"):
         raise ValueError("backend must be demo or home-assistant")
     room = text_option(options, "room", "", maximum=120)
+    device_id = text_option(options, "device_id", "primary", maximum=64)
+    ha_device_id = text_option(options, "ha_device_id", "", maximum=128)
+    additional = options.get("devices", [])
+    if not isinstance(additional, list) or len(additional) > 15:
+        raise ValueError("devices must be a list of at most 15 additional devices")
+    devices = []
+    for item in additional:
+        if not isinstance(item, dict) or set(item) - {"id", "token", "room", "ha_device_id"}:
+            raise ValueError("Invalid devices entry; use id, token, room and optional ha_device_id")
+        devices.append(VoiceRegistration(
+            id=text_option(item, "id", maximum=64),
+            token=text_option(item, "token", maximum=256),
+            room=text_option(item, "room", maximum=120),
+            ha_device_id=text_option(item, "ha_device_id", maximum=128),
+        ))
     agent_id = text_option(options, "agent_id", "conversation.special_agent", maximum=255)
     if not agent_id.strip():
         raise ValueError("Set agent_id to your available conversation agent")
@@ -61,6 +77,7 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
         raise ValueError("Home Assistant did not provide SUPERVISOR_TOKEN; check homeassistant_api permission")
     settings = DeviceSettings(
         api_key=api_key, device_token=token, backend=backend, room=room,
+        device_id=device_id, ha_device_id=ha_device_id, devices=tuple(devices),
         ha_url="http://supervisor/core", ha_token=supervisor_token, ha_agent_id=agent_id,
         agent_model=agent_model, reasoning_effort=reasoning_effort, fast_mode=fast_mode,
         bind="0.0.0.0", port=8099, **limits,
