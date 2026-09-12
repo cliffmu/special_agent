@@ -27,13 +27,6 @@ PARAMS = {
             "type": "object",
             "description": "Additional service data (brightness, color, volume, etc). Entity ID is passed separately.",
             "default": {}
-        },
-        "verify_after_seconds": {
-            "type": "integer",
-            "description": "Optional verification timeout (up to 30 seconds). Verification is mandatory even when omitted or zero. Lights have a minimum 5-second verification budget; media players default to 5-10 seconds, other devices to 2. Matching state returns early; observed light-setting ramps must settle briefly. Light transitions are accounted for, and the overall deadline still caps all waits.",
-            "minimum": 0,
-            "maximum": 30,
-            "default": None
         }
     },
     "required": ["service", "entity_id"]
@@ -47,7 +40,7 @@ async def control_device(
     verify_after_seconds: int | None = None,
     hass: Any | None = None
 ) -> dict:
-    """Invoke a Home Assistant service and return detailed status."""
+    """Invoke a service; legacy verify_after_seconds cannot change the fixed wait."""
     if hass is None:
         raise RuntimeError("hass required")
     if "." not in service:
@@ -94,7 +87,7 @@ async def control_device(
                     "then send media directly with play_media service."
                 )
             else:
-                result["note"] = "Entity unavailable - may need related device turned on first"
+                result["note"] = "Home Assistant has not reported a usable final state yet."
     
     log.debug("control_device result: %s", result)
     return result
@@ -104,10 +97,11 @@ SPEC = ToolSpec(
     name="control_device",
     description=(
         "Call a Home Assistant service once and always verify supported target states/settings. "
+        "Python checks immediately, then every second for up to five seconds, returning early on success. "
         "Returns command acceptance separately from verified, failed, or unverified outcomes. "
         "Verification compares HA-reported state, not independent physical proof. "
-        "Unsupported commands or missing telemetry remain unverified; do not claim success or blindly retry. "
-        "Use a longer verification timeout for slow media-device startup."
+        "Unsupported commands or missing telemetry remain unverified; report that the outcome is not yet confirmed. "
+        "The result already includes polling; do not add follow-up reads solely to repeat verification or resend the command."
     ),
     parameters=PARAMS,
     returns="dict(service_called, accepted, status, verification, verification_basis, checks, before_state, after_state, available, focus)",

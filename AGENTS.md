@@ -1,4 +1,4 @@
-Details for the migration from prototype to new AI agentic version are in migration_to_agent_plan.md. Look at that file first as it details the project, features and development roadmap.
+Details for the migration from prototype to new AI agentic version are in docs/migration_to_agent_plan.md. Look at that file first as it details the project, features and development roadmap.
 
 I have a prototype version of the project saved in REFERENCE folder. This folder is just for reference and should not be edited. Look at the REFERENCE folder for examples of how certain code worked but I'm working on migrating this project to an AI agent based tool. Do not use code in the REFERENCE folder to replicate it unless its needed, im trying to improve off the prototype so I dont want to carry issues over to new version. 
 
@@ -98,6 +98,16 @@ I have a prototype version of the project saved in REFERENCE folder. This folder
 - **DO NOT create new `.md` files** unless explicitly requested by user
 - Update existing docs: `README.md`, `AGENTS.md`, `docs/scene_plan_latest.md`
 - Keep docs synchronized with implementation changes
+
+### Manual test checklist for every development change
+
+- Maintain `docs/manual_test_checklist.csv` whenever development changes user-visible behavior. Add practical checks for new features and regressions alongside the implementation, before committing or installing it.
+- Each row needs a stable test ID, feature/version, scenario, exact question or voice command to ask, setup/additional actions, expected device result, expected Live/agent response, failure signs, and editable status, actual-result/notes, and test-date fields.
+- Include normal success and relevant failure cases. For device commands, check both the physical/HA result and the spoken confirmation; flag false "device status unavailable" reports and unsupported success claims.
+- Use friendly names or clearly marked placeholders such as `[room]`; do not assume a particular Home Assistant entity, device mapping, or Plex setup.
+- Start new rows at `Not run`. The user can set `Pass`, `Fail`, `Blocked`, or `Not applicable`. Automated tests do not count as the user's manual test results.
+- Preserve existing test IDs and the user's status, notes, and dates. If behavior changes enough to require a retest, add a new versioned row rather than clearing completed results.
+- Keep the CSV valid UTF-8 with one header row and consistently quoted fields. Link to the checklist in the completion message and explain which new checks are relevant. Do not create a new checklist file for each task.
 
 ---
 

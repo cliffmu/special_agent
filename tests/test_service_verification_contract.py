@@ -103,7 +103,7 @@ def test_absent_or_unavailable_telemetry_cannot_verify_success(reported):
     hass = fake_hass({} if reported is None else {"switch.office": reported})
 
     result = asyncio.run(call_service_verified(
-        hass, "switch.turn_on", {"entity_id": "switch.office"}, verify_timeout=0.01
+        hass, "switch.turn_on", {"entity_id": "switch.office"}, deadline=time.monotonic() + 0.02
     ))
 
     hass.services.async_call.assert_awaited_once()

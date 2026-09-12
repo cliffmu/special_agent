@@ -46,10 +46,12 @@ Three distinct timeout concepts:
    - Voice/chat conversation lifetime (existing system)
    - UX only, independent of episode learning
 
-**Post-conditions (`post_condition_timeout_ms: 4000`):**
-- Per-step verify window after each service call in `run_sequence`
-- Poll entity state/attr until success or timeout (4s default)
-- On timeout: mark step as fail, abort sequence, return outcome="fail"
+**Verification timing (current implementation):**
+- After each service completes, check immediately, then once per second for at most five seconds; return early on success.
+- Automatic state/settings checks and explicit post-conditions share this window, bounded by the overall sequence deadline.
+- Polling runs entirely in Python. Only the final tool result returns to the configured Agent model; there are no model calls per retry.
+- Legacy `post_condition_timeout_ms`, saved `timeout_ms`, and control timeout arguments do not change this fixed budget. Explicit workflow delays and state-wait steps retain their own timing.
+- An unverified required post-condition aborts dependent steps; command acceptance alone does not confirm the outcome.
 
 ### Vector Index Architecture (Issue 1)
 
@@ -466,23 +468,22 @@ SCENE MEMORY:
     "data": {"entity_id": "media_player.avr"},
     "post_condition": {
         "entity_id": "media_player.avr",
-        "state": "on",
-        "timeout_ms": 4000  # Override default
+        "state": "on"
     }
 }
 ```
 
 **Implementation:**
-- After service call, if `post_condition` present, poll entity state
-- Use `post_condition_timeout_ms` from SCENE_MEMORY_CONFIG
-- If timeout: mark step as fail, abort sequence, return outcome="fail"
+- Check automatic requirements and any `post_condition` together after the service call
+- Check immediately, then once per second for up to five seconds in `utils/service_verification.py`; share the scene deadline
+- If a required condition remains unconfirmed: abort dependent steps and return the final observed outcome
 - Track in step results
 
 **DoD**
 
-* [ ] Post-condition checks work with configurable timeout
-* [ ] Timeouts are logged and result in fail outcome
-* [ ] Step results include verification status
+* [x] Post-condition checks share the fixed five-second verification budget
+* [x] Unconfirmed required post-conditions abort dependent steps
+* [x] Step results include verification status
 
 ---
 
