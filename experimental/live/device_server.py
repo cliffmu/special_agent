@@ -7,23 +7,23 @@ import asyncio
 import audioop
 import base64
 import binascii
-import hmac
 import json
 import logging
 import os
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import aiohttp
 from aiohttp import web
 
 from .audio import AudioPacer, PCM16Resampler
 from .backend import DemoBackend, HomeAssistantBackend
+from .devices import VoiceRegistration, VoiceRegistry, validate_registrations
 from .server import Settings, voice_instructions
 from .session import LiveSession
-from utils.logging import activity
+from utils.logging import activity, begin_device, end_device
 
 LOG = logging.getLogger(__name__)
 LIVE_URL = "wss://api.openai.com/v1/live/sessions"
@@ -50,15 +50,22 @@ class DeviceSettings(Settings):
     device_token: str = field(default="", repr=False)
     room: str = ""
     bind: str = "0.0.0.0"
+    device_id: str = "primary"
+    ha_device_id: str = ""
+    devices: tuple[VoiceRegistration, ...] = ()
+
+    def registrations(self):
+        if not isinstance(self.devices, (tuple, list)):
+            raise ValueError("devices must be a list of Voice registrations")
+        return validate_registrations((VoiceRegistration(
+            self.device_id, self.device_token, self.room, self.ha_device_id,
+        ), *self.devices))
 
     def validate(self):
         super().validate()
-        if len(self.device_token) < 32 or not self.device_token.isascii():
-            raise ValueError("Set VOICE_DEVICE_TOKEN to a random ASCII token of at least 32 characters")
+        self.registrations()
         if not self.api_key:
             raise ValueError("Set OPENAI_API_KEY; demo mode still uses GPT-Live for voice")
-        if len(self.room) > 120:
-            raise ValueError("VOICE_ROOM must be a short room name")
 
 
 class VoiceDevice:
@@ -78,12 +85,16 @@ class VoiceDevice:
         self.closing = False
         self.stop_reason = None
         self.last_stop_reason = None
+        self.last_stop_at = 0
+        self.device_hash = VoiceRegistration(settings.device_id, settings.device_token,
+                                              settings.room, settings.ha_device_id).device_hash
 
     def record_stop(self, reason):
         """Keep the first fixed reason code; never include device or API payloads."""
         if self.stop_reason is None:
             self.stop_reason = self.last_stop_reason = reason
-            LOG.info("Voice session stopping: reason=%s", reason)
+            self.last_stop_at = time.monotonic()
+            LOG.info("Voice session stopping: device=%s reason=%s", self.device_hash, reason)
 
     def stop_for(self, reason):
         self.record_stop(reason)
@@ -335,8 +346,8 @@ class VoiceDevice:
             if cloud:
                 await cloud.close()
             if session:
-                LOG.info("Voice session ended: session=%s reason=%s finalized=%s seconds=%s tasks=%s",
-                         session.id[:10], self.stop_reason, session.finalized, session.usage.get("seconds", "unknown"),
+                LOG.info("Voice session ended: device=%s session=%s reason=%s finalized=%s seconds=%s tasks=%s",
+                         self.device_hash, session.id[:10], self.stop_reason, session.finalized, session.usage.get("seconds", "unknown"),
                          [j.status for j in session.jobs.values()])
                 # Audio closure does not cancel a home action already accepted by HA.
                 drain = asyncio.create_task(session.drain())
@@ -349,28 +360,46 @@ class VoiceDevice:
         self.accept_audio = False
         self.stop_for("device_connection_closed")
         if self.runner:
-            await asyncio.shield(self.runner)
-        await asyncio.gather(*self.completed, return_exceptions=True)
+            try:
+                await asyncio.shield(self.runner)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling() or not self.runner.cancelled():
+                    raise
+                LOG.warning("Voice runner stopped during close: device=%s exception_type=CancelledError",
+                            self.device_hash)
+            except Exception as error:
+                LOG.warning("Voice runner failed during close: device=%s exception_type=%s",
+                            self.device_hash, type(error).__name__)
+        drains = list(self.completed)
+        if self.session:
+            # A failed runner may not have reached its normal drain registration.
+            drains.append(self.session.drain())
+        await asyncio.shield(asyncio.gather(*drains, return_exceptions=True))
 
 
 HTTP = web.AppKey("http", aiohttp.ClientSession)
 BACKEND = web.AppKey("backend", object)
+REGISTRY = web.AppKey("registry", VoiceRegistry)
 
 
 def create_app(settings):
     settings.validate()
     app = web.Application(client_max_size=16384)
-    connections = set()
+    registry = app[REGISTRY] = VoiceRegistry(settings.registrations())
+    cleanups = set()
     connect_lock = asyncio.Lock()
-    last_stop_reason = None
 
     async def resources(app):
         async with aiohttp.ClientSession() as http:
             app[HTTP] = http
-            app[BACKEND] = DemoBackend() if settings.backend == "demo" else HomeAssistantBackend(
-                http, settings.ha_url, settings.ha_token, settings.ha_agent_id, settings.room,
-                model=settings.agent_model, reasoning_effort=settings.reasoning_effort,
-                fast_mode=settings.fast_mode)
+            for registration in registry.registrations:
+                registry.backends[registration.id] = (
+                    DemoBackend() if settings.backend == "demo" else HomeAssistantBackend(
+                        http, settings.ha_url, settings.ha_token, settings.ha_agent_id, registration.room,
+                        model=settings.agent_model, reasoning_effort=settings.reasoning_effort,
+                        fast_mode=settings.fast_mode, device_id=registration.effective_id))
+            # HA activity is one global stream; a single backend owns its poller.
+            app[BACKEND] = registry.backends[settings.device_id]
             logs = (asyncio.create_task(app[BACKEND].poll_activity())
                     if isinstance(app[BACKEND], HomeAssistantBackend) else None)
             try:
@@ -384,42 +413,53 @@ def create_app(settings):
         async def close(device):
             await device.socket.close()
             await device.close()
-        await asyncio.gather(*(close(device) for device in list(connections)), return_exceptions=True)
+        await asyncio.gather(*(close(device) for device in list(registry.claims.values())), return_exceptions=True)
+        await asyncio.gather(*cleanups, return_exceptions=True)
+
+    async def close_and_release(registration, device):
+        device.closing = True
+        device.restart = device.accept_audio = False
+        device.stop_for("device_connection_closed")
+        if device.socket.prepared:
+            await device.socket.close()
+        await device.close()
+        registry.release(registration, device)
 
     async def voice(request):
-        nonlocal last_stop_reason
-        supplied = request.query.get("token", "")
-        if request.headers.get("Origin") or not hmac.compare_digest(
-                supplied.encode("utf-8"), settings.device_token.encode("ascii")):
+        registration = registry.authenticate(request.query.get("token", ""))
+        if request.headers.get("Origin") or registration is None:
             raise web.HTTPUnauthorized(text="Device authentication required")
-        async with connect_lock:
-            if any(not device.socket.closed for device in connections):
-                raise web.HTTPConflict(text="A Voice device is already connected")
-            socket = web.WebSocketResponse(heartbeat=20, max_msg_size=16384)
-            await socket.prepare(request)
-            device = VoiceDevice(socket, app[HTTP], settings, app[BACKEND])
-            connections.add(device)
+        context_token = begin_device(registration.effective_id)
+        device = None
         try:
+            async with connect_lock:
+                if registration.id in registry.claims:
+                    raise web.HTTPConflict(text="This Voice device is connected or finishing accepted work")
+                socket = web.WebSocketResponse(heartbeat=20, max_msg_size=16384)
+                device_settings = replace(settings, device_id=registration.id, device_token=registration.token,
+                                          room=registration.room, ha_device_id=registration.ha_device_id, devices=())
+                device = VoiceDevice(socket, app[HTTP], device_settings, registry.backends[registration.id])
+                registry.claims[registration.id] = device
+            await socket.prepare(request)
             async for message in socket:
                 await device.receive(message)
         except (ValueError, aiohttp.ClientError, asyncio.TimeoutError):
             LOG.warning("Invalid or disconnected Voice device transport")
         finally:
-            device.closing = True
-            device.restart = device.accept_audio = False
-            device.stop_for("device_connection_closed")
-            await socket.close()
-            await device.close()
-            last_stop_reason = device.last_stop_reason
-            connections.discard(device)
+            try:
+                if device is not None:
+                    # A disconnected request task must not abandon accepted work
+                    # or release its identity to a replacement socket too early.
+                    cleanup = asyncio.create_task(close_and_release(registration, device))
+                    cleanups.add(cleanup)
+                    cleanup.add_done_callback(cleanups.discard)
+                    await asyncio.shield(cleanup)
+            finally:
+                end_device(context_token)
         return socket
 
     async def health(request):
-        device = next((d for d in connections if not d.socket.closed), None)
-        return web.json_response({"model": "gpt-live-1", "backend": settings.backend,
-                                  "device_connected": bool(device and not device.socket.closed),
-                                  "audio_active": bool(device and device.accept_audio),
-                                  "last_stop_reason": device.last_stop_reason if device else last_stop_reason})
+        return web.json_response({"model": "gpt-live-1", "backend": settings.backend, **registry.health()})
 
     app.cleanup_ctx.append(resources)
     app.on_shutdown.append(shutdown)
@@ -439,7 +479,9 @@ def main():
     settings = DeviceSettings(**vars(args), api_key=os.getenv("OPENAI_API_KEY", ""),
                               device_token=os.getenv("VOICE_DEVICE_TOKEN", ""), room=os.getenv("VOICE_ROOM", ""),
                               ha_url=os.getenv("HA_URL", ""), ha_token=os.getenv("HA_TOKEN", ""),
-                              ha_agent_id=os.getenv("HA_AGENT_ID", "conversation.special_agent"))
+                              ha_agent_id=os.getenv("HA_AGENT_ID", "conversation.special_agent"),
+                              device_id=os.getenv("VOICE_DEVICE_ID", "primary"),
+                              ha_device_id=os.getenv("HA_DEVICE_ID", ""))
     logging.basicConfig(level=logging.INFO)
     # Access logs include query strings, so disable them to keep the device token private.
     web.run_app(create_app(settings), host=settings.bind, port=settings.port, access_log=None)

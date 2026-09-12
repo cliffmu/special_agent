@@ -234,7 +234,7 @@ async def validate_and_execute_tools(
         # Manually track tool execution to include parallel_group
         import time
         from . import performance as perf
-        from .performance import TimingRecord, _timing_records, _current_request, _current_session, _operation_stack
+        from .performance import TimingRecord, append_record, _current_request, _current_session, _operation_stack
         
         start_mono = time.perf_counter()
         start_wall = time.time()
@@ -291,7 +291,7 @@ async def validate_and_execute_tools(
                 except Exception:
                     args_json = str(args)[:500]
                 
-                _timing_records.append(TimingRecord(
+                append_record(TimingRecord(
                     request_id=request_id,
                     session_id=session_id,
                     operation=f"tool_{call_name}",

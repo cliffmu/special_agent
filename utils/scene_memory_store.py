@@ -6,6 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
+import threading
+from functools import wraps
 from pathlib import Path
 from typing import Dict, Any, Iterator
 
@@ -31,6 +34,18 @@ DEFAULT_PERSIST_DIR = os.environ.get(
 )
 SCENE_MEMORY_FILE = os.path.join(DEFAULT_PERSIST_DIR, "scene_memory.json")
 
+# Shared by scene mutations and index snapshot loads, which run in executor
+# threads. A reentrant lock lets an upsert rebuild its index in one transaction.
+_SCENE_LOCK = threading.RLock()
+
+
+def scene_transaction(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _SCENE_LOCK:
+            return function(*args, **kwargs)
+    return locked
+
 
 class SceneMemoryStore:
     """
@@ -53,12 +68,12 @@ class SceneMemoryStore:
         self.file_path = file_path
         self._ensure_file()
     
+    @scene_transaction
     def _ensure_file(self) -> None:
         """Ensure storage file exists."""
         if not os.path.exists(self.file_path):
             os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump({"entries": {}}, f)
+            self._save({})
             log.debug("Created scene memory store at %s", self.file_path)
     
     def _load(self) -> Dict[str, Any]:
@@ -71,14 +86,27 @@ class SceneMemoryStore:
             log.error("Error loading scene memory store: %s", err, exc_info=True)
             return {}
     
+    @scene_transaction
     def _save(self, entries: Dict[str, Any]) -> None:
         """Save all entries to disk."""
+        temporary = None
         try:
-            with open(self.file_path, "w", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(self.file_path),
+                                             prefix=".scene-memory-", suffix=".tmp", delete=False) as f:
+                temporary = f.name
                 json.dump({"entries": entries}, f, indent=2)
+            os.replace(temporary, self.file_path)
+            temporary = None
             log.debug("Saved %d scene memory entries", len(entries))
         except Exception as err:
             log.error("Error saving scene memory store: %s", err, exc_info=True)
+            raise
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
     
     def get(self, entry_id: str) -> Dict[str, Any] | None:
         """
@@ -93,6 +121,7 @@ class SceneMemoryStore:
         entries = self._load()
         return entries.get(entry_id)
     
+    @scene_transaction
     def upsert(self, entry: Dict[str, Any]) -> None:
         """
         Insert or update an entry.
@@ -115,6 +144,7 @@ class SceneMemoryStore:
         entries[entry_id] = entry
         self._save(entries)
     
+    @scene_transaction
     def delete(self, entry_id: str) -> bool:
         """
         Delete an entry by ID.
@@ -172,7 +202,9 @@ def get_store() -> SceneMemoryStore:
     """Get singleton store instance."""
     global _store_instance
     if _store_instance is None:
-        _store_instance = SceneMemoryStore()
+        with _SCENE_LOCK:
+            if _store_instance is None:
+                _store_instance = SceneMemoryStore()
     return _store_instance
 
 
@@ -214,6 +246,7 @@ def count() -> int:
     return get_store().count()
 
 
+@scene_transaction
 def clear_all() -> int:
     """
     Delete all scene memory entries.

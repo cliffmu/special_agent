@@ -11,7 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
-from experimental.live.backend import ACTIVITY_PATH, PROCESS_PATH, BackendError, HomeAssistantBackend
+from experimental.live.backend import ACTIVITY_PATH, PROCESS_PATH, BackendError, HomeAssistantBackend, _safe_activity_line
 from experimental.live import device_server, server as browser_server
 from utils.logging import read_activity
 
@@ -19,6 +19,12 @@ from utils.logging import read_activity
 def reply(text="Done"):
     return {"conversation_id": "continued-conversation", "response": {
         "response_type": "action_done", "speech": {"plain": {"speech": text}}}}
+
+
+def test_activity_transport_accepts_only_hashed_device_labels():
+    assert _safe_activity_line("event=request request=test device=012345abcd")
+    assert not _safe_activity_line("event=request request=test device=live:primary")
+    assert not _safe_activity_line("event=request request=test device=room_name")
 
 
 @pytest.mark.parametrize("overrides", [
@@ -49,6 +55,89 @@ async def test_backend_forwards_only_explicit_overrides_and_retains_fast_off(ove
     assert result.text == "Done" and result.conversation_id == "continued-conversation"
 
 
+async def test_two_device_backends_run_independently_without_transport_leaks(caplog):
+    caplog.set_level(logging.INFO)
+    first_started, release_first = asyncio.Event(), asyncio.Event()
+    received = []
+
+    async def process(request):
+        body = await request.json()
+        assert request.path == PROCESS_PATH and not request.query
+        assert request.headers["Authorization"] == "Bearer PRIVATE_HA_TOKEN"
+        assert "PRIVATE_HA_TOKEN" not in str(body)
+        received.append(body)
+        if body["device_id"] == "device-a":
+            first_started.set()
+            await release_first.wait()
+        return web.json_response(reply(body["device_id"] + " finished"))
+
+    app = web.Application()
+    app.router.add_post(PROCESS_PATH, process)
+    async with TestServer(app) as server, aiohttp.ClientSession() as http:
+        backend_a = HomeAssistantBackend(http, str(server.make_url("/")), "PRIVATE_HA_TOKEN",
+                                         "conversation.agent", "Room A", device_id="device-a")
+        backend_b = HomeAssistantBackend(http, str(server.make_url("/")), "PRIVATE_HA_TOKEN",
+                                         "conversation.agent", "Room B", device_id="device-b")
+        task_a = asyncio.create_task(backend_a.execute("PRIVATE_REQUEST_A", [], "conversation-a"))
+        try:
+            await asyncio.wait_for(first_started.wait(), 1)
+            result_b = await asyncio.wait_for(backend_b.execute("PRIVATE_REQUEST_B", [], "conversation-b"), 1)
+            assert result_b.text == "device-b finished" and not task_a.done()
+            assert [body["device_id"] for body in received] == ["device-a", "device-b"]
+        finally:
+            release_first.set()
+            result_a = await asyncio.wait_for(task_a, 1)
+    assert result_a.text == "device-a finished"
+    for body, suffix in zip(received, ("a", "b")):
+        assert body["conversation_id"] == "conversation-" + suffix
+        assert "PRIVATE_REQUEST_" + suffix.upper() in body["text"]
+        other = "B" if suffix == "a" else "A"
+        assert "PRIVATE_REQUEST_" + other not in body["text"]
+        assert f'"Room {suffix.upper()}"' in body["text"]
+    assert "PRIVATE" not in caplog.text
+    assert "device-a" not in caplog.text and "device-b" not in caplog.text
+
+
+async def test_one_device_backend_serializes_successive_voice_sessions():
+    first_started, second_started, release_first = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    received, order = [], []
+
+    async def process(request):
+        body = await request.json()
+        assert not request.query and body["device_id"] == "device-a"
+        received.append(body["conversation_id"])
+        identity = body["conversation_id"]
+        order.append(identity + " started")
+        if identity == "first-voice-session":
+            first_started.set()
+            await release_first.wait()
+        else:
+            second_started.set()
+        order.append(identity + " finished")
+        return web.json_response(reply(identity))
+
+    app = web.Application()
+    app.router.add_post(PROCESS_PATH, process)
+    async with TestServer(app) as server, aiohttp.ClientSession() as http:
+        backend = HomeAssistantBackend(http, str(server.make_url("/")), "token", "agent", device_id="device-a")
+        first = asyncio.create_task(backend.execute("first", [], "first-voice-session"))
+        second = None
+        try:
+            await asyncio.wait_for(first_started.wait(), 1)
+            second = asyncio.create_task(backend.execute("second", [], "second-voice-session"))
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(second_started.wait(), 0.05)
+            assert not first.done() and not second.done()
+            assert received == ["first-voice-session"]
+        finally:
+            release_first.set()
+            tasks = [task for task in (first, second) if task is not None]
+            results = await asyncio.wait_for(asyncio.gather(*tasks), 1)
+    assert [result.text for result in results] == ["first-voice-session", "second-voice-session"]
+    assert order == ["first-voice-session started", "first-voice-session finished",
+                     "second-voice-session started", "second-voice-session finished"]
+
+
 @pytest.mark.parametrize("status", [404, 307])
 async def test_missing_or_redirected_endpoint_never_falls_back_or_replays(status, caplog):
     requested = []
@@ -71,7 +160,7 @@ async def test_missing_or_redirected_endpoint_never_falls_back_or_replays(status
     assert requested == [PROCESS_PATH]
     assert "not retried" in str(error.value)
     if status == 404:
-        assert "0.3.2" in str(error.value)
+        assert "0.3.3" in str(error.value)
     assert "PRIVATE" not in caplog.text and "PRIVATE" not in str(error.value)
 
 
