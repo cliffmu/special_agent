@@ -2,6 +2,7 @@ import logging
 import math
 import re
 import uuid
+from hashlib import sha256
 from collections import deque
 from contextvars import ContextVar
 from threading import Lock
@@ -13,12 +14,13 @@ _ACTIVITY_LOGGER = logging.getLogger("custom_components.special_agent.activity")
 _ACTIVITY_LOGGER.setLevel(logging.INFO)
 _REQUEST_ID = ContextVar("special_agent_activity_request", default="-")
 _JOB_CONTEXT = ContextVar("special_agent_activity_job", default=None)
+_DEVICE_CONTEXT = ContextVar("special_agent_activity_device", default=None)
 _FIELD_NAMES = frozenset({
     "phase", "status", "source", "model", "tool", "backend", "error_type",
     "elapsed_ms", "http_status", "iteration", "attempt", "tools", "tool_count",
     "input_tokens", "output_tokens", "cached_tokens", "total_tokens", "session", "job",
     "effort", "requested_tier", "effective_tier", "function_count", "function_names",
-    "verification", "verified_steps", "completed_steps", "total_steps",
+    "verification", "verified_steps", "completed_steps", "total_steps", "device",
 })
 _ATOM = re.compile(r"[A-Za-z0-9_.:-]{1,100}\Z")
 
@@ -70,6 +72,19 @@ def end_request(token):
     _REQUEST_ID.reset(token)
 
 
+def device_correlation(device_id):
+    """Stable correlation without exposing device IDs or room/device names."""
+    return sha256(device_id.encode()).hexdigest()[:10] if type(device_id) is str and device_id else None
+
+
+def begin_device(device_id):
+    return _DEVICE_CONTEXT.set(device_correlation(device_id))
+
+
+def end_device(token):
+    _DEVICE_CONTEXT.reset(token)
+
+
 def begin_job(session_id, job_id):
     """Bind already-safe local IDs for a Live job and its HA adapter calls."""
     return _JOB_CONTEXT.set((session_id, job_id))
@@ -98,6 +113,9 @@ def activity(event, *, logger=None, **safe_values):
     discarded. Live uses its own logger and hashed/local correlation IDs.
     """
     parts = ["event=" + _activity_value(event), "request=" + _REQUEST_ID.get()]
+    device = _DEVICE_CONTEXT.get()
+    if device is not None and "device" not in safe_values:
+        parts.append("device=" + device)
     job_context = _JOB_CONTEXT.get()
     if job_context is not None:
         parts.extend(f"{name}={_activity_value(value)}" for name, value in zip(("session", "job"), job_context)
@@ -105,7 +123,9 @@ def activity(event, *, logger=None, **safe_values):
     for name, value in safe_values.items():
         if name not in _FIELD_NAMES:
             continue
-        if name == "function_names" and type(value) in (list, tuple):
+        if name == "device":
+            formatted = value if type(value) is str and re.fullmatch(r"[0-9a-f]{10}", value) else "redacted"
+        elif name == "function_names" and type(value) in (list, tuple):
             formatted = ",".join(_activity_value(item) for item in value[:10]) or "none"
         else:
             formatted = _activity_value(value)

@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import os
+import shutil
+import tempfile
+import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,10 +31,18 @@ _operation_stack: ContextVar[list[str]] = ContextVar("operation_stack", default=
 
 # Global storage for all timing records
 _timing_records: list[TimingRecord] = []
+_records_lock = threading.Lock()
+_csv_write_lock = threading.Lock()
 
 # Configuration
 _enabled: bool = False
 _csv_path: Optional[Path] = None
+
+
+def append_record(record: TimingRecord) -> None:
+    """Append safely while an executor thread detaches a CSV batch."""
+    with _records_lock:
+        _timing_records.append(record)
 
 
 @dataclass
@@ -165,7 +177,7 @@ async def track_request(request_name: str = "session", metadata: Optional[dict[s
             elif "prompt" in metadata:
                 args = _truncate_json({"prompt": metadata["prompt"]}, 200)
         
-        _timing_records.append(TimingRecord(
+        append_record(TimingRecord(
             request_id=request_id,
             session_id=session_id,
             operation=request_name,
@@ -240,7 +252,7 @@ async def track_operation(
         if metadata and "args" in metadata:
             args = _truncate_json(metadata["args"], 500)
         
-        _timing_records.append(TimingRecord(
+        append_record(TimingRecord(
             request_id=request_id,
             session_id=session_id,
             operation=operation_name,
@@ -290,7 +302,7 @@ def track_sync_operation(
     # For sync operations, we just record a point-in-time marker (no duration)
     wall_time = time.time()
     
-    _timing_records.append(TimingRecord(
+    append_record(TimingRecord(
         request_id=request_id,
         session_id=session_id,
         operation=operation_name,
@@ -394,7 +406,7 @@ async def track_llm_call(
                 token_metadata["reasoning_count"] = getattr(tracker.response, 'reasoning_count', 0)
         
         # Record timing with token counts
-        _timing_records.append(TimingRecord(
+        append_record(TimingRecord(
             request_id=request_id,
             session_id=session_id,
             operation="llm_call",
@@ -466,7 +478,7 @@ async def track_parallel_operations(
             duration_s = end_mono - start_mono
             
             session_id = _current_session.get()
-            _timing_records.append(TimingRecord(
+            append_record(TimingRecord(
                 request_id=request_id,
                 session_id=session_id,
                 operation=op_name,
@@ -488,20 +500,49 @@ async def track_parallel_operations(
 
 
 def write_csv(path: Optional[Path] = None) -> None:
-    """Write all timing records to CSV file.
-    
-    Schema V2 format with stable column order for analysis.
-    Handles CSV escaping automatically via DictWriter.
-    
-    Args:
-        path: Optional path override. If None, uses configured path.
-    """
-    if not _timing_records:
-        return
-    
+    """Flush one snapshot while new requests continue collecting their own records."""
     output_path = path or _csv_path
     if not output_path:
         return
+    with _csv_write_lock:
+        with _records_lock:
+            records = _timing_records.copy()
+            _timing_records.clear()
+        if not records:
+            return
+        try:
+            _write_csv_records(records, output_path)
+        except BaseException:
+            # The atomic file transaction preserved the old CSV. Restore only
+            # this detached batch; records added during I/O are still queued.
+            with _records_lock:
+                _timing_records[:0] = records
+            raise
+
+
+@contextmanager
+def _csv_transaction(output_path):
+    """Append atomically so retrying a failed flush cannot duplicate partial rows."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8", dir=output_path.parent,
+                                         prefix=".performance-", suffix=".tmp", delete=False) as stream:
+            temporary = stream.name
+            if output_path.exists():
+                with open(output_path, "r", newline="", encoding="utf-8") as previous:
+                    shutil.copyfileobj(previous, stream)
+            yield stream
+        os.replace(temporary, output_path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def _write_csv_records(records, output_path):
     
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,13 +572,13 @@ def write_csv(path: Optional[Path] = None) -> None:
         "metadata",
     ]
     
-    with open(output_path, "a", newline="", encoding="utf-8") as f:
+    with _csv_transaction(output_path) as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
         
         if not file_exists:
             writer.writeheader()
         
-        for record in sorted(_timing_records, key=lambda r: r.start_time):
+        for record in sorted(records, key=lambda r: r.start_time):
             # Format datetime strings from timestamps
             start_dt = datetime.fromtimestamp(record.start_time)
             end_dt = datetime.fromtimestamp(record.end_time)
@@ -562,18 +603,18 @@ def write_csv(path: Optional[Path] = None) -> None:
                 "parallel_group": record.parallel_group or "",
                 "metadata": str(record.metadata) if record.metadata else "",
             })
-    
-    _timing_records.clear()
 
 
 def get_records() -> list[TimingRecord]:
     """Get all timing records (for testing/debugging)."""
-    return _timing_records.copy()
+    with _records_lock:
+        return _timing_records.copy()
 
 
 def clear_records() -> None:
     """Clear all timing records."""
-    _timing_records.clear()
+    with _records_lock:
+        _timing_records.clear()
 
 
 def get_summary(request_id: Optional[str] = None) -> dict[str, Any]:
@@ -585,7 +626,7 @@ def get_summary(request_id: Optional[str] = None) -> dict[str, Any]:
     Returns:
         Dictionary with summary statistics
     """
-    records = _timing_records
+    records = get_records()
     if request_id:
         records = [r for r in records if r.request_id == request_id]
     
@@ -614,4 +655,3 @@ def get_summary(request_id: Optional[str] = None) -> dict[str, Any]:
     }
     
     return summary
-

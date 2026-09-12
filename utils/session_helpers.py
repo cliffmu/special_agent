@@ -52,21 +52,23 @@ async def get_device_context(hass: Any | None, session_key: tuple[str, str] | No
         dev_reg = dr.async_get(hass)
         area_reg = ar.async_get(hass)
         
-        # Search devices by name match
-        for dev in dev_reg.devices.values():
-            dev_name = (dev.name_by_user or dev.name or "").lower()
-            if device_id.lower() in dev_name:
-                device_name = dev.name_by_user or dev.name
-                if dev.area_id:
-                    area = area_reg.async_get_area(dev.area_id)
-                    return {"device_name": device_name, "room": area.name if area else None}
-                return {"device_name": device_name, "room": None}
+        dev = dev_reg.devices.get(device_id)
+        if dev is None and not device_id.startswith("live:"):
+            # Legacy callers sometimes sent names. Accept only an unambiguous
+            # exact match; a substring could silently choose a different room.
+            matches = [item for item in dev_reg.devices.values()
+                       if (item.name_by_user or item.name or "").casefold() == device_id.casefold()]
+            dev = matches[0] if len(matches) == 1 else None
+        if dev is not None:
+            device_name = dev.name_by_user or dev.name
+            area = area_reg.async_get_area(dev.area_id) if dev.area_id else None
+            return {"device_name": device_name, "room": area.name if area else None}
         
         # Not found - return None (skip device context in prompt)
         return {"device_name": None, "room": None}
     
-    except Exception as e:
-        log.warning("Could not get device context: %s", e)
+    except Exception as error:
+        log.warning("Could not get device context (%s)", type(error).__name__)
         return {"device_name": None, "room": None}
 
 
@@ -189,4 +191,3 @@ def clear_session(mgr: Any | None, session_key: tuple[str, str] | None) -> None:
     """Remove a persisted session."""
     if mgr and session_key:
         mgr.pop(session_key)
-

@@ -20,7 +20,7 @@ HA_ACTIVITY_LOG.setLevel(logging.INFO)
 PROCESS_PATH = "/api/special_agent/live/process"
 ACTIVITY_PATH = "/api/special_agent/live/activity"
 _ACTIVITY_FIELDS = frozenset({
-    "event", "request", "phase", "status", "source", "model", "tool", "backend", "error_type",
+    "event", "request", "device", "phase", "status", "source", "model", "tool", "backend", "error_type",
     "elapsed_ms", "http_status", "iteration", "attempt", "tools", "tool_count",
     "input_tokens", "output_tokens", "cached_tokens", "total_tokens", "session", "job",
     "effort", "requested_tier", "effective_tier", "function_count", "function_names",
@@ -43,6 +43,8 @@ def _safe_activity_line(line):
         if not separator or name not in _ACTIVITY_FIELDS or name in names:
             return False
         names.add(name)
+        if name == "device" and not re.fullmatch(r"[0-9a-f]{10}", value):
+            return False
         values = value.split(",") if name == "function_names" else [value]
         if not 1 <= len(values) <= 10 or any(
             not _ACTIVITY_ATOM.fullmatch(atom) or atom.startswith(("sk-", "sk_")) for atom in values
@@ -75,14 +77,17 @@ class DemoBackend:
 
 class HomeAssistantBackend:
     def __init__(self, http: aiohttp.ClientSession, url: str, token: str, agent_id: str, room: str = "", *,
-                 model: str | None = None, reasoning_effort: str | None = None, fast_mode: bool | None = None):
+                 model: str | None = None, reasoning_effort: str | None = None, fast_mode: bool | None = None,
+                 device_id: str | None = None):
         self.http, self.url, self.token, self.agent_id = http, url.rstrip("/"), token, agent_id
         self.room = room
+        self.device_id = device_id
         self.model, self.reasoning_effort, self.fast_mode = model, reasoning_effort, fast_mode
         self.activity_cursor = 0
         self.activity_epoch = None
         self.activity_poll_interval = 1.0
-        # One dispatcher owns HA requests, including requests from successive voice sessions.
+        # One persistent dispatcher per device orders its successive voice sessions.
+        # Other devices have independent dispatchers and can work concurrently.
         self.lock = asyncio.Lock()
 
     async def execute(self, request: str, history: list[dict], conversation_id: str | None):
@@ -102,7 +107,10 @@ class HomeAssistantBackend:
         ) if value is not None})
         if conversation_id:
             body["conversation_id"] = conversation_id
-        # The bridge owns speaker audio. Omitting device_id avoids duplicate satellite TTS.
+        if self.device_id:
+            body["device_id"] = self.device_id
+        # The authenticated Live endpoint marks this as bridge-owned audio, even
+        # with a device identity, so HA cannot also send satellite TTS.
         async with self.lock:
             started = time.monotonic()
             http_status = None
@@ -117,7 +125,7 @@ class HomeAssistantBackend:
                 ) as response:
                     http_status = response.status
                     if response.status == 404:
-                        raise BackendError("Update the Special Agent Home Assistant integration to version 0.3.2 "
+                        raise BackendError("Update the Special Agent Home Assistant integration to version 0.3.3 "
                                            "or later and restart Home Assistant. The Live endpoint is unavailable; "
                                            "the request was not retried.")
                     if response.status != 200:

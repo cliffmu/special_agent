@@ -105,7 +105,8 @@ async def test_async_upsert_offloads_store_creation_write_and_index_rebuild(
     await vector_index.async_upsert_scene(entry, hass=home_assistant(use_hass))
 
     assert json.loads(path.read_text())["entries"][entry["id"]] == entry
-    assert operations == ["construct", "read", "write", "read"]
+    # Creation now uses the same atomic writer as updates, also off the loop.
+    assert operations == ["construct", "write", "read", "write", "read"]
     assert indexed[0]["metadata"]["steps"] == STEPS
 
 

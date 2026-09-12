@@ -15,6 +15,7 @@ from homeassistant.components.conversation import (
 from homeassistant.helpers import intent
 
 from .agent_core import Agent
+from .session_store import session_request_lock
 from . import DOMAIN
 from .utils import performance
 from .utils import logging as activity_log
@@ -69,10 +70,18 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
     async def async_handle(self, intent_obj, conversation_input, context):
         return await self.async_process(conversation_input, context)
 
+    def _session_key(self, conversation_input):
+        conversation_id = conversation_input.conversation_id
+        if _LIVE_MODEL_SETTINGS.get() is not None:
+            entry_id = getattr(self.config_entry, "entry_id", "special_agent")
+            conversation_id = f"live:{entry_id}:{conversation_id}"
+        return (conversation_id, getattr(conversation_input, "device_id", None) or "")
+
     async def async_process(
         self, conversation_input, context=None
     ) -> ConversationResult:
         token = activity_log.begin_request()
+        device_token = activity_log.begin_device(getattr(conversation_input, "device_id", None))
         started = time.perf_counter()
         status = "error"
         error_type = None
@@ -80,7 +89,9 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             activity_log.activity("request", phase="received",
                                   source="live" if _LIVE_MODEL_SETTINGS.get() is not None else
                                   "satellite" if getattr(conversation_input, "device_id", None) else "text")
-            result = await self._async_process(conversation_input, context)
+            entry_id = getattr(self.config_entry, "entry_id", "special_agent")
+            async with session_request_lock(self.hass, entry_id, self._session_key(conversation_input)):
+                result = await self._async_process(conversation_input, context)
             status = "completed"
             return result
         except asyncio.CancelledError:
@@ -98,6 +109,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
                 activity_log.activity("request", **fields)
             finally:
                 activity_log.end_request(token)
+                activity_log.end_device(device_token)
 
     async def _async_process(self, conversation_input, context=None) -> ConversationResult:
         # Reuse loaded tools until options change. Existing requests retain their
@@ -110,7 +122,7 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
         
         user_text = getattr(conversation_input, "text", "")
         device_id = conversation_input.device_id or ""
-        sess_key = (conversation_input.conversation_id, device_id)
+        sess_key = self._session_key(conversation_input)
         
         _LOGGER.debug("Agent config reload: model=%s, require_confirmation=%s", 
                      config.get("agent_model", DEFAULT_AGENT_MODEL),
@@ -151,7 +163,8 @@ class SpecialAgentConversation(ConversationEntity, AbstractConversationAgent):
             
             service_domain = "assist_pipeline"
             service_name = "run"
-            if device_id and self.hass.services.has_service(service_domain, service_name):
+            if (_LIVE_MODEL_SETTINGS.get() is None and device_id
+                    and self.hass.services.has_service(service_domain, service_name)):
                 await self.hass.services.async_call(
                     service_domain,
                     service_name,

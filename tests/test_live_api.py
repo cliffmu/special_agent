@@ -95,7 +95,8 @@ async def test_new_sessions_are_unique_and_returned_id_is_reused(bridge):
     assert continued == first
     assert first["response"]["speech"]["plain"]["speech"] == "Done"
     assert [call.kwargs["session_key"] for call in bridge.execute.await_args_list] == [
-        (first["conversation_id"], ""), (second["conversation_id"], ""), (first["conversation_id"], "")]
+        ("live:entry:" + first["conversation_id"], ""), ("live:entry:" + second["conversation_id"], ""),
+        ("live:entry:" + first["conversation_id"], "")]
     assert all(call.kwargs["device_id"] is None for call in bridge.conversation.async_converse.await_args_list)
 
 
@@ -139,7 +140,8 @@ async def test_request_scope_resets_on_error_or_cancellation(bridge, failure):
     {"agent_id": ""}, {"agent_id": "agent\nPRIVATE"}, {"conversation_id": None},
     {"conversation_id": "x" * 129}, {"language": "en\n"}, {"model": "other"},
     {"reasoning_effort": "ultra"}, {"fast_mode": "false"}, {"fast_mode": 0},
-    {"api_key": "PRIVATE"}, {"device_id": "satellite"},
+    {"api_key": "PRIVATE"}, {"device_id": ""}, {"device_id": "x" * 129}, {"device_id": "bad/id"},
+    {"device_id": None}, {"device_id": 1},
 ])
 async def test_invalid_request_is_rejected_before_dispatch(bridge, changes):
     with pytest.raises(web.HTTPBadRequest):
@@ -216,3 +218,119 @@ async def test_activity_endpoint_returns_only_sanitized_activity(bridge):
 async def test_activity_query_is_bounded(bridge, query):
     with pytest.raises(web.HTTPBadRequest):
         await bridge.api.LiveActivityView().get(request(bridge, query=query))
+
+
+async def test_live_device_ids_never_start_ha_tts_but_normal_satellites_do(bridge):
+    bridge.hass.services.async_call = AsyncMock()
+    bridge.execute.return_value = {"prompt_payload": {"speak": "Done"}}
+    for device_id in ("physical-device-uuid", "live:stable-bridge"):
+        await post(bridge, device_id=device_id)
+        assert bridge.conversation.async_converse.await_args.kwargs["device_id"] == device_id
+    bridge.hass.services.async_call.assert_not_awaited()
+    await bridge.entity.async_process(SimpleNamespace(text="Normal satellite", conversation_id="normal", device_id="physical-device-uuid", language="en"))
+    bridge.hass.services.async_call.assert_awaited_once()
+    assert bridge.hass.services.async_call.await_args.args[:2] == ("assist_pipeline", "run")
+
+
+async def test_two_devices_with_one_conversation_id_keep_independent_history_and_settings(bridge, monkeypatch):
+    from special_agent.session_store import SessionManager
+    from special_agent.utils.session_helpers import load_session, store_session
+
+    manager = SessionManager(bridge.hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    bridge.hass.data["special_agent"]["sessions"] = manager
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def execute(prompt, tools, *, hass, session_key, **settings):
+        messages, mgr, _, _ = load_session(hass, session_key, "system", prompt)
+        seen.append((session_key, settings["model"], settings["fast_mode"],
+                     [item["content"] for item in messages if item.get("role") == "user"]))
+        if prompt == "device A first":
+            entered.set()
+            await release.wait()
+        store_session(mgr, session_key, messages, None, None)
+        return "Done"
+
+    bridge.execute.side_effect = execute
+    a = asyncio.create_task(post(bridge, text="device A first", conversation_id="shared", device_id="device-a", model="gpt-5.6-luna", fast_mode=False))
+    await entered.wait()
+    await asyncio.wait_for(post(bridge, text="device B first", conversation_id="shared", device_id="device-b", model="gpt-6-astra", fast_mode=True), 1)
+    release.set()
+    await a
+    await post(bridge, text="device A next", conversation_id="shared", device_id="device-a")
+    assert seen[0][:3] == (("live:entry:shared", "device-a"), "gpt-5.6-luna", False)
+    assert seen[1][:3] == (("live:entry:shared", "device-b"), "gpt-6-astra", True)
+    assert seen[2][3] == ["device A first", "device A next"]
+    assert manager.get(("live:entry:shared", "device-b")).messages[-1]["content"] == "device B first"
+    assert bridge.hass.data["special_agent"]["session_request_locks"]._entries == {}
+
+
+async def test_same_device_overlapping_requests_see_preceding_committed_history(bridge):
+    from special_agent.session_store import SessionManager
+    from special_agent.utils.session_helpers import load_session, store_session
+
+    manager = SessionManager(bridge.hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    bridge.hass.data["special_agent"]["sessions"] = manager
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def execute(prompt, tools, *, hass, session_key, **settings):
+        messages, mgr, _, _ = load_session(hass, session_key, "system", prompt)
+        seen.append([item["content"] for item in messages if item.get("role") == "user"])
+        if prompt == "first":
+            entered.set()
+            await release.wait()
+        store_session(mgr, session_key, messages, None, None)
+        return "Done"
+
+    bridge.execute.side_effect = execute
+    first = asyncio.create_task(post(bridge, text="first", conversation_id="shared", device_id="device-a"))
+    await entered.wait()
+    second = asyncio.create_task(post(bridge, text="second", conversation_id="shared", device_id="device-a"))
+    await asyncio.sleep(0)
+    assert seen == [["first"]]
+    release.set()
+    await asyncio.gather(first, second)
+    assert seen == [["first"], ["first", "second"]]
+    assert bridge.hass.data["special_agent"]["session_request_locks"]._entries == {}
+
+
+async def test_live_history_is_namespaced_by_integration_entry(bridge):
+    await post(bridge, conversation_id="shared", device_id="same-device")
+    bridge.entity.config_entry.entry_id = "second-entry"
+    await post(bridge, conversation_id="shared", device_id="same-device")
+    assert [call.kwargs["session_key"] for call in bridge.execute.await_args_list] == [
+        ("live:entry:shared", "same-device"), ("live:second-entry:shared", "same-device")]
+
+
+async def test_live_queue_capacity_failure_is_429_before_model_dispatch(bridge):
+    from special_agent.session_store import SessionRequestLocks
+
+    bridge.hass.data["special_agent"]["session_request_locks"] = SessionRequestLocks(max_keys=0)
+    with pytest.raises(web.HTTPTooManyRequests):
+        await post(bridge, device_id="device")
+    bridge.execute.assert_not_awaited()
+    assert bridge.adapter._LIVE_MODEL_SETTINGS.get() is None
+    assert activity_log._DEVICE_CONTEXT.get() is None
+
+
+async def test_live_device_activity_is_hashed_and_inherited_by_tool_tasks(bridge):
+    async def child():
+        await asyncio.sleep(0)
+        activity_log.activity("tool", tool="get_entity_state", phase="finished")
+
+    async def execute(*args, **kwargs):
+        await asyncio.create_task(child())
+        return "Done"
+
+    bridge.execute.side_effect = execute
+    await post(bridge, device_id="private-physical-device-id")
+    lines = [record["line"] for record in activity_log.read_activity()["records"]]
+    hashed = activity_log.device_correlation("private-physical-device-id")
+    assert len(lines) == 3 and len(hashed) == 10
+    assert all(f"device={hashed}" in line for line in lines)
+    assert all("private-physical-device-id" not in line for line in lines)
+    activity_log.activity("outside")
+    assert "device=" not in activity_log.read_activity()["records"][-1]["line"]

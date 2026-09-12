@@ -14,8 +14,7 @@ reload the integration after making changes.
 
 For Voice PE, open **Settings → Apps → Special Agent Live → Configuration** to
 select **Agent model**, **Thinking effort**, and **Fast mode**. Save and restart
-the app to apply changes. These controls require integration **0.3.2+** and Live
-app **0.1.5+**. They apply to this bridge's delegated requests; the integration's
+the app to apply changes. Use integration **0.3.3+** and Live app **0.1.6+** together. They apply to this bridge's delegated requests; the integration's
 other conversations retain their own settings. New app setups default to
 **gpt-5.6-terra / low / Fast off**. Legacy options without these fields inherit
 the integration until the new controls are saved.
@@ -146,12 +145,13 @@ first installation builds a container from a pinned, hash-verified bridge source
 revision. The app repository and the HACS integration use the same GitHub project,
 but are installed and updated independently.
 
-In the app's Configuration tab, set `api_key` to the OpenAI API key, `device_token`
-to a random URL-safe token of at least 32 characters, `room` to the room name,
-and `agent_id` to your active Special Agent conversation entity ID.
+In the app's Configuration tab, set `api_key` to the OpenAI API key, **Primary Voice
+device token** (`device_token`) to a random URL-safe token of at least 32 characters,
+**Primary Voice room** (`room`) to the room name, and `agent_id` to your active
+Special Agent conversation entity ID.
 Check **Tools → States** for the entity: an older restored
 `conversation.special_agent` can be unavailable while the active entity has a
-suffix such as `conversation.special_agent_2`.
+suffix. Use the available entity, for example `conversation.my_agent`.
 
 Start with the demo backend. Keep the network mapping **8099/tcp → 8099** and start
 the app. Enable **Start on boot** after the first successful test. The firmware
@@ -176,6 +176,39 @@ saved values, so change them to `30` and `0` when updating.
 Continue with the firmware preparation below. HACS installation and app
 installation do not change the Voice PE firmware automatically.
 
+### Multiple Voice devices
+
+Integration **0.3.3+** and Live app **0.1.6+** support up to 16 registered devices.
+An existing single-device installation keeps its saved token and room and gets
+the stable ID `primary`; its existing Live firmware can connect unchanged.
+
+In **Special Agent Live → Configuration → Additional Voice devices**, add one
+entry per extra satellite with a unique `id`, its own random `token`, and `room`.
+IDs use letters, digits, underscores or hyphens. Save and restart the app. Each
+satellite needs the Live firmware below, configured with the same bridge host
+and port but its own token in `ws://HA_HOST:8099/voice?token=DEVICE_TOKEN`.
+Use a new ID/token pair for each physical device; copying the primary token will
+be rejected while that device is connected or finishing accepted work.
+
+The optional **Home Assistant device ID** links a registration to its HA device
+registry entry and area. Otherwise its stable identity is `live:<id>` and its
+configured room supplies location context. Without a linked HA device ID,
+changing the registration ID changes its history identity. Set a room for every
+satellite; a physical device registry ID is optional.
+
+Each device has independent microphone/speaker streams, follow-up history and
+background work. Different devices can run requests concurrently; requests from
+the same device remain ordered. Follow-ups during one wake session retain context;
+a new wake session starts a new conversation. There is no speaker recognition or
+automatic conversation handoff between rooms. Devices share the selected agent,
+model settings, enabled tools and saved routines.
+
+The app Logs page includes short hashed device labels for correlating events.
+`/health` shows configured, connected and active counts plus per-device status
+without exposing device tokens or room names. Concurrent satellite behavior is
+covered by simulated transport tests; practical capacity depends on HA resources
+and API limits.
+
 ### 1. Run the LAN bridge
 
 Skip this section when using the Home Assistant app above. For a separate LAN
@@ -196,8 +229,9 @@ Use that same token in the firmware's bridge URL. OpenAI and HA access keys stay
 on the bridge; the device only receives its own bridge token.
 
 The server listens on port **8099** on the LAN. `http://BRIDGE_IP:8099/health`
-reports whether the device is connected and capturing audio. It accepts one
-Voice device at a time. This transport is intended for a trusted LAN: device
+reports connected devices and active audio streams. The standalone command above
+configures one device; use the app's device list for multiple satellites.
+This transport is intended for a trusted LAN: device
 WebSocket traffic is unencrypted, so do not expose the port to the internet.
 Access logs are disabled because the firmware authenticates using a URL token.
 
@@ -327,13 +361,13 @@ export HA_AGENT_ID="conversation.special_agent"
 .venv/bin/python -m experimental.live.device_server --backend home-assistant
 ```
 
-Use your actual Special Agent conversation entity ID and integration 0.3.2+.
+Use your actual Special Agent conversation entity ID and integration 0.3.3+.
 The standalone bridge inherits HA's configured model; the app's model controls
 override it per request. HA retains enabled tools and confirmation rules. The
 authenticated `/api/special_agent/live/process` endpoint accepts only registered
-Special Agent entities. The bridge passes `VOICE_ROOM` as
-context and retains HA's conversation ID for follow-ups. It omits `device_id` so
-HA does not launch a second TTS response over the direct Live speaker stream.
+Special Agent entities. The bridge passes each device's room and stable
+`device_id`, and retains HA's conversation ID for follow-ups. The Live endpoint
+suppresses HA pipeline TTS so replies use the direct Live speaker stream once.
 
 Try a state lookup, an action requiring confirmation, and a longer media request
 followed by a joke. Greetings and simple jokes can stay with Live. Requests for
@@ -342,7 +376,7 @@ Special Agent. A separate lightweight information backend is not implemented.
 
 ### Session behavior and limits
 
-- Home Assistant requests run in the background and are serialized. A new home
+- Home Assistant requests run in the background and are serialized per device. A new home
   request or correction waits for the action already running; ordinary voice
   conversation can continue. Stopping audio does not cancel or undo an accepted
   HA action. Queued actions are skipped when the session closes.
@@ -375,17 +409,22 @@ Special Agent. A separate lightweight information backend is not implemented.
   requests. Options changes replace the agent without mutating an active request.
 - Cap context-overflow recovery at two retries. Trim whole older user turns,
   preserving function calls with their results.
-- Skip satellite-pipeline continuation when a text/bridge request has no device.
+- Skip satellite-pipeline TTS for Live requests while retaining their device identity.
+- Protect concurrent session and routine saves from overwriting newer data; scene
+  index readers load a consistent snapshot. Optional CSV traces preserve records
+  when requests finish during a flush.
 
 ### Verification
 
 ```sh
 .venv/bin/python -m pip install pytest pytest-asyncio numpy
-.venv/bin/python -m pytest tests/test_voice_device.py tests/test_live_audio.py tests/test_live_bridge.py tests/test_voice_firmware.py -q
+.venv/bin/python -m pytest tests/test_voice_device.py tests/test_multi_voice_device.py tests/test_live_audio.py tests/test_live_bridge.py tests/test_voice_firmware.py -q
 ```
 
 These tests use fake Live and device sockets and make no paid API requests or
-home actions. Agent regressions are in `tests/test_agent_request_lifecycle.py`.
+home actions. Agent regressions are in `tests/test_agent_request_lifecycle.py`;
+session and storage concurrency checks are in `tests/test_session_isolation.py`,
+`tests/test_scene_concurrency.py`, and `tests/test_performance_concurrency.py`.
 Existing integration tests require a parent import alias named `special_agent`
 when the checkout directory is named `special-agent`. The original dev suite also
 contains stale tests importing removed APIs.

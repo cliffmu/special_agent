@@ -11,12 +11,13 @@ from homeassistant.components import conversation, http
 
 from . import DOMAIN
 from .conversation import SpecialAgentConversation, live_model_settings
+from .session_store import SessionBusyError
 from .utils.constants import AGENT_MODELS, REASONING_EFFORTS
 from .utils.logging import read_activity
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _LANGUAGE = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
-_FIELDS = {"agent_id", "text", "language", "conversation_id", "model", "reasoning_effort", "fast_mode"}
+_FIELDS = {"agent_id", "text", "language", "conversation_id", "device_id", "model", "reasoning_effort", "fast_mode"}
 _MAX_BODY = 1024 * 1024
 
 
@@ -45,8 +46,8 @@ async def _request_data(request):
         raise web.HTTPBadRequest(text="Unsupported request fields")
     if not isinstance(data.get("text"), str) or not data["text"].strip() or len(data["text"]) > 65536:
         raise web.HTTPBadRequest(text="Text must contain between 1 and 65536 characters")
-    for field in ("agent_id", "conversation_id"):
-        if field == "conversation_id" and field not in data:
+    for field in ("agent_id", "conversation_id", "device_id"):
+        if field != "agent_id" and field not in data:
             continue
         if not isinstance(data.get(field), str) or not _IDENTIFIER.fullmatch(data[field]):
             raise web.HTTPBadRequest(text=f"Invalid {field}")
@@ -76,12 +77,15 @@ class LiveProcessView(http.HomeAssistantView):
         settings = {key: data[key] for key in ("model", "reasoning_effort", "fast_mode") if key in data}
         # Supplying a real ID before dispatch avoids the integration's None session key.
         conversation_id = data.get("conversation_id") or str(uuid.uuid4())
-        with live_model_settings(settings):
-            result = await conversation.async_converse(
-                hass, text=data["text"], conversation_id=conversation_id,
-                context=self.context(request), language=data.get("language", "en"),
-                agent_id=data["agent_id"], device_id=None,
-            )
+        try:
+            with live_model_settings(settings):
+                result = await conversation.async_converse(
+                    hass, text=data["text"], conversation_id=conversation_id,
+                    context=self.context(request), language=data.get("language", "en"),
+                    agent_id=data["agent_id"], device_id=data.get("device_id"),
+                )
+        except SessionBusyError as error:
+            raise web.HTTPTooManyRequests(text="Too many active conversations; try again shortly") from error
         return self.json(result.as_dict())
 
 

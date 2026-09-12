@@ -14,6 +14,7 @@ from collections import defaultdict
 import numpy as np
 
 from . import logging as log
+from .scene_memory_store import scene_transaction
 from .constants import (
     EXCLUDED_DOMAINS,
     EXCLUDED_SUFFIXES,
@@ -461,6 +462,7 @@ async def async_query_vector_index(
 # ---------- Scene Memory Index Functions ----------
 
 
+@scene_transaction
 def build_scene_index(
     docs: List[Dict],
     persist_dir: str = DEFAULT_SCENE_PERSIST_DIR,
@@ -557,6 +559,7 @@ def build_scene_index(
     return matrix, docs
 
 
+@scene_transaction
 def load_scene_index(
     persist_dir: str = DEFAULT_SCENE_PERSIST_DIR,
 ) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
@@ -583,37 +586,12 @@ async def async_load_scene_index(
     hass: Any | None = None,
 ) -> Tuple[np.ndarray, List[Dict]] | Tuple[None, None]:
     """Asynchronously load a previously built scene index if available."""
-    index_file = os.path.join(persist_dir, "matrix.npy")
-    mapping_file = os.path.join(persist_dir, "mapping.json")
-    log.debug("async_load_scene_index from %s", persist_dir)
-    if os.path.exists(index_file) and os.path.exists(mapping_file):
-        try:
-            add_job = getattr(hass, "async_add_executor_job", None) if hass else None
-            if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
-                matrix = await add_job(np.load, index_file)
-
-                def _load_json(path: str) -> Any:
-                    with open(path, "r", encoding="utf-8") as f:
-                        return json.load(f)
-
-                mapping = await add_job(_load_json, mapping_file)
-            else:
-                matrix = await asyncio.to_thread(np.load, index_file)
-
-                def _load_json() -> Any:
-                    with open(mapping_file, "r", encoding="utf-8") as f:
-                        return json.load(f)
-
-                mapping = await asyncio.to_thread(_load_json)
-            log.debug(
-                "Loaded scene index shape=%s docs=%d", matrix.shape, len(mapping)
-            )
-            return matrix, mapping
-        except Exception as err:
-            log.debug("Error loading scene index: %s", err, exc_info=True)
-            return None, None
-    log.debug("No scene index found in %s", persist_dir)
-    return None, None
+    # Load matrix and mapping under one lock in one executor call, so a rebuild
+    # cannot replace one file between the two reads.
+    add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+    if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+        return await add_job(load_scene_index, persist_dir)
+    return await asyncio.to_thread(load_scene_index, persist_dir)
 
 
 # ---------- Scene Memory Operations (uses scene_memory_store.py) ----------
@@ -663,6 +641,7 @@ def _scene_entry_to_doc(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+@scene_transaction
 def rebuild_scene_index(hass: Any | None = None) -> None:
     """
     Rebuild the entire scene index from scene_memory_store.
@@ -713,6 +692,7 @@ async def async_rebuild_scene_index(hass: Any | None = None) -> None:
             await asyncio.to_thread(rebuild_scene_index, hass)
 
 
+@scene_transaction
 def upsert_scene(entry: Dict[str, Any], hass: Any | None = None) -> None:
     """
     Insert or update a scene memory entry and rebuild index.
@@ -739,20 +719,11 @@ async def async_upsert_scene(entry: Dict[str, Any], hass: Any | None = None) -> 
     """Async version of upsert_scene."""
     log.debug("Async upserting scene: %s", entry.get("id"))
     
-    try:
-        from . import scene_memory_store
-        
-        # Update store
-        add_job = getattr(hass, "async_add_executor_job", None) if hass else None
-        if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
-            await add_job(scene_memory_store.upsert, entry)
-        else:
-            await asyncio.to_thread(scene_memory_store.upsert, entry)
-        
-        # Rebuild index
-        await async_rebuild_scene_index(hass)
-    except ImportError:
-        log.error("scene_memory_store not available for async upsert")
+    add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+    if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+        await add_job(upsert_scene, entry, hass)
+    else:
+        await asyncio.to_thread(upsert_scene, entry, hass)
 
 
 def search_scenes(
@@ -847,6 +818,7 @@ async def async_search_scenes(
     return entries
 
 
+@scene_transaction
 def remove_scene(entry_id: str, hass: Any | None = None) -> bool:
     """
     Remove a scene memory entry and rebuild index.
@@ -881,22 +853,7 @@ async def async_remove_scene(entry_id: str, hass: Any | None = None) -> bool:
     """Async version of remove_scene."""
     log.debug("Async removing scene: %s", entry_id)
     
-    try:
-        from . import scene_memory_store
-        
-        # Delete from store
-        add_job = getattr(hass, "async_add_executor_job", None) if hass else None
-        if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
-            deleted = await add_job(scene_memory_store.delete, entry_id)
-        else:
-            deleted = await asyncio.to_thread(scene_memory_store.delete, entry_id)
-        
-        if deleted:
-            # Rebuild index
-            await async_rebuild_scene_index(hass)
-            log.info("Scene removed and index rebuilt: %s", entry_id)
-        
-        return deleted
-    except ImportError:
-        log.error("scene_memory_store not available for async remove")
-        return False
+    add_job = getattr(hass, "async_add_executor_job", None) if hass else None
+    if callable(add_job) and add_job.__class__.__name__ != "MagicMock":
+        return await add_job(remove_scene, entry_id, hass)
+    return await asyncio.to_thread(remove_scene, entry_id, hass)

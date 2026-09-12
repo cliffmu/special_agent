@@ -387,7 +387,7 @@ async def test_hardware_room_reaches_ha_without_triggering_satellite_tts(monkeyp
             assert body["fast_mode"] is fast_mode
             assert 'Voice device room (configured by owner): "Kitchen"' in body["text"]
             assert "Current request: Turn on the lights here" in body["text"]
-            assert "device_id" not in body
+            assert body["device_id"] == "live:primary"
             await asyncio.wait_for(device.session.drain(), 2)
             assert device.session.conversation_id == "ha-room-1"
             await socket.close()

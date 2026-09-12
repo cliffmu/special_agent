@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict
+import asyncio
+from contextlib import asynccontextmanager
 import time
 
 try:
@@ -34,6 +36,49 @@ class Session:
     updated: float
 
 
+class SessionBusyError(RuntimeError):
+    """The bounded registry has no room for another active conversation."""
+
+
+@dataclass
+class _RequestLock:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
+class SessionRequestLocks:
+    """Serialize one history's readers/writers; release keys after all waiters leave."""
+
+    def __init__(self, max_keys=256):
+        self._entries = {}
+        self._max_keys = max_keys
+
+    @asynccontextmanager
+    async def hold(self, key):
+        # HA calls this on its event loop; count waiters before the first await.
+        entry = self._entries.get(key)
+        if entry is None:
+            if len(self._entries) >= self._max_keys:
+                raise SessionBusyError("Too many concurrent conversations")
+            entry = self._entries[key] = _RequestLock()
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0:
+                del self._entries[key]
+
+
+def session_request_lock(hass, entry_id, session_key):
+    """Share locks across entity reloads without serializing unrelated devices."""
+    state = hass.data.setdefault("special_agent", {})
+    if "session_request_locks" not in state:
+        state["session_request_locks"] = SessionRequestLocks()
+    return state["session_request_locks"].hold((entry_id, *session_key))
+
+
 class SessionManager:
     """Manage persisted sessions for multiple devices."""
 
@@ -41,6 +86,7 @@ class SessionManager:
         self._hass = hass
         self._store = Store(hass, 1, ".special_agent_sessions.json")
         self._data: Dict[str, Session] = {}
+        self._save_lock = asyncio.Lock()
 
     async def load(self) -> None:
         data = await self._store.async_load() or {}
@@ -48,7 +94,10 @@ class SessionManager:
         log.debug("SessionManager loaded %s sessions", len(self._data))
 
     async def save(self) -> None:
-        await self._store.async_save({k: asdict(v) for k, v in self._data.items()})
+        # Different conversations may finish together. Snapshot inside the write
+        # lock so a slower old snapshot can never replace newer device history.
+        async with self._save_lock:
+            await self._store.async_save({k: asdict(v) for k, v in self._data.items()})
         log.debug("SessionManager saved %s sessions", len(self._data))
 
     @staticmethod
