@@ -30,6 +30,37 @@ def test_home_assistant_options_use_supervisor_proxy_and_preserve_agent_identity
     assert "test-openai-key" not in repr(settings)
     assert settings.device_token not in repr(settings)
     assert (settings.agent_model, settings.reasoning_effort, settings.fast_mode) == (None, None, None)
+    assert settings.device_id == "primary" and settings.ha_device_id == ""
+    assert settings.devices == ()
+
+
+def test_additional_devices_keep_distinct_identity_room_and_private_tokens():
+    first_token, second_token = "first_test_token_" * 3, "second_test_token_" * 3
+    settings = run.settings_from_options(valid_options(
+        room="First test room", device_id="first", ha_device_id="a" * 32,
+        devices=[{"id": "second", "token": second_token, "room": "Second test room"}],
+        device_token=first_token,
+    ), {})
+    assert (settings.device_id, settings.room, settings.ha_device_id) == ("first", "First test room", "a" * 32)
+    assert len(settings.devices) == 1
+    extra = settings.devices[0]
+    assert (extra.id, extra.room, extra.ha_device_id, extra.token) == (
+        "second", "Second test room", "", second_token)
+    assert first_token not in repr(settings) and second_token not in repr(settings)
+
+
+@pytest.mark.parametrize("devices", [None, {}, [{}] * 16,
+    [{"id": "second", "token": "short", "room": "Test room"}],
+    [{"id": "primary", "token": "valid_second_test_token_" * 2}],
+    [{"id": "second", "token": valid_options()["device_token"]}],
+    [{"id": "second", "token": "valid_second_test_token_" * 2, "unexpected": "PRIVATE"}],
+    [{"id": "second", "token": "valid_second_test_token_" * 2, "room": "bad\nPRIVATE"}],
+])
+def test_invalid_or_ambiguous_registrations_fail_without_exposing_credentials(devices):
+    with pytest.raises(ValueError) as error:
+        run.settings_from_options(valid_options(devices=devices), {})
+    assert valid_options()["device_token"] not in str(error.value)
+    assert "PRIVATE" not in str(error.value) and "valid_second_test_token_" not in str(error.value)
 
 
 @pytest.mark.parametrize("fast", [True, False])
@@ -114,6 +145,10 @@ async def test_addon_settings_start_shared_app_with_health_endpoint_without_clou
         assert await response.json() == {
             "model": "gpt-live-1", "backend": "demo", "device_connected": False, "audio_active": False,
             "last_stop_reason": None,
+            "configured_devices": 1, "connected_devices": 0, "active_devices": 0,
+            "devices": [{"device": hashlib.sha256(b"live:primary").hexdigest()[:10],
+                         "connected": False, "audio_active": False, "draining": False,
+                         "last_stop_reason": None}],
         }
 
 
