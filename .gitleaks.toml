@@ -1,0 +1,19 @@
+title = "Special Agent secret and privacy checks"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "personal-email"
+description = "Personal email address; use a synthetic example or GitHub noreply identity"
+regex = '''(?i)[a-z0-9._%+-]+@(?:gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com|protonmail\.com|proton\.me)\b'''
+
+[[rules]]
+id = "private-user-directory"
+description = "Local user directory; remove paths from exported diagnostics"
+regex = '''(?:/Users/|/home/)[A-Za-z0-9_.@+-]+/'''
+
+[[rules]]
+id = "home-assistant-session-export"
+description = "Home Assistant conversation export; use synthetic examples"
+regex = '''"key"\s*:\s*"\.?special_agent_sessions\.json"'''
