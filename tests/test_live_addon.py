@@ -1,5 +1,6 @@
 """App packaging and startup checks; no paid API calls or Home Assistant actions."""
 
+import gzip
 import hashlib
 from io import BytesIO
 import json
@@ -170,7 +171,7 @@ def source_archive(*, linked_file=None):
 
 def test_source_integrity_is_checked_before_any_files_are_written(tmp_path):
     assert len(install_source.REVISION) == 40
-    assert len(install_source.ARCHIVE_SHA256) == 64
+    assert len(install_source.SOURCE_TAR_SHA256) == 64
     with pytest.raises(ValueError, match="SHA-256"):
         install_source.install_archive(source_archive(), tmp_path)
     assert not list(tmp_path.rglob("*"))
@@ -178,7 +179,7 @@ def test_source_integrity_is_checked_before_any_files_are_written(tmp_path):
 
 def test_verified_source_installs_only_allowlisted_runtime_files(monkeypatch, tmp_path):
     archive = source_archive()
-    monkeypatch.setattr(install_source, "ARCHIVE_SHA256", hashlib.sha256(archive).hexdigest())
+    monkeypatch.setattr(install_source, "SOURCE_TAR_SHA256", hashlib.sha256(gzip.decompress(archive)).hexdigest())
     install_source.install_archive(archive, tmp_path)
     installed = {str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.is_file()}
     assert installed == set(install_source.RUNTIME_FILES)
@@ -188,7 +189,30 @@ def test_verified_source_installs_only_allowlisted_runtime_files(monkeypatch, tm
 
 def test_source_links_cannot_be_followed_even_in_verified_archive(monkeypatch, tmp_path):
     archive = source_archive(linked_file=install_source.RUNTIME_FILES[-1])
-    monkeypatch.setattr(install_source, "ARCHIVE_SHA256", hashlib.sha256(archive).hexdigest())
+    monkeypatch.setattr(install_source, "SOURCE_TAR_SHA256", hashlib.sha256(gzip.decompress(archive)).hexdigest())
     with pytest.raises(ValueError, match="archive member"):
+        install_source.install_archive(archive, tmp_path)
+    assert not list(tmp_path.rglob("*"))
+
+
+def test_source_hash_accepts_different_gzip_encodings_of_identical_tar(monkeypatch, tmp_path):
+    source_tar = gzip.decompress(source_archive())
+    monkeypatch.setattr(install_source, "SOURCE_TAR_SHA256", hashlib.sha256(source_tar).hexdigest())
+    for level in (1, 9):
+        destination = tmp_path / str(level)
+        install_source.install_archive(gzip.compress(source_tar, compresslevel=level, mtime=level), destination)
+        assert (destination / install_source.RUNTIME_FILES[0]).exists()
+
+
+def test_expanded_source_size_is_bounded_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setattr(install_source, "MAX_SOURCE_TAR_BYTES", 100)
+    with pytest.raises(ValueError, match="size limit"):
+        install_source.install_archive(gzip.compress(b"x" * 1000), tmp_path)
+    assert not list(tmp_path.rglob("*"))
+
+
+@pytest.mark.parametrize("archive", [b"invalid gzip", gzip.compress(b"content")[:-5]])
+def test_invalid_source_compression_does_not_write_files(archive, tmp_path):
+    with pytest.raises(ValueError, match="valid gzip"):
         install_source.install_archive(archive, tmp_path)
     assert not list(tmp_path.rglob("*"))

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 from io import BytesIO
 from pathlib import Path
 import tarfile
 from urllib.request import urlopen
 
-REVISION = "7e2b15693eed8f3fb4237388a92dcc37777040ff"
-ARCHIVE_SHA256 = "9b2f1842d7e83f7624dd89b336dc3798cd439406ed4cec948796c46521143a00"
+REVISION = "fe9060c2e664edc2bfcca357dc6731c79269b1db"
+# Verify the immutable tar bytes; gzip encoding can vary across archive servers.
+SOURCE_TAR_SHA256 = "8a43951088cd95c4421958827c6afba68f98120646709d963a912b586aec076d"
 SOURCE_URL = f"https://codeload.github.com/cliffmu/special_agent/tar.gz/{REVISION}"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+MAX_SOURCE_TAR_BYTES = 32 * 1024 * 1024
 RUNTIME_FILES = (
     "experimental/__init__.py",
     "experimental/live/__init__.py",
@@ -31,10 +34,19 @@ RUNTIME_FILES = (
 
 def install_archive(archive: bytes, destination: Path) -> None:
     """Verify everything before writing; never extract archive paths or links."""
-    if len(archive) > MAX_ARCHIVE_BYTES or hashlib.sha256(archive).hexdigest() != ARCHIVE_SHA256:
+    if len(archive) > MAX_ARCHIVE_BYTES:
+        raise ValueError("Bridge source archive exceeds size limit")
+    try:
+        with gzip.GzipFile(fileobj=BytesIO(archive)) as compressed:
+            source_tar = compressed.read(MAX_SOURCE_TAR_BYTES + 1)
+    except (OSError, EOFError) as error:
+        raise ValueError("Bridge source archive is not valid gzip") from error
+    if len(source_tar) > MAX_SOURCE_TAR_BYTES:
+        raise ValueError("Bridge source tar exceeds size limit")
+    if hashlib.sha256(source_tar).hexdigest() != SOURCE_TAR_SHA256:
         raise ValueError("Bridge source archive failed SHA-256 verification")
     files = {}
-    with tarfile.open(fileobj=BytesIO(archive), mode="r:gz") as source:
+    with tarfile.open(fileobj=BytesIO(source_tar), mode="r:") as source:
         for relative_path in RUNTIME_FILES:
             member = source.getmember(f"special_agent-{REVISION}/{relative_path}")
             if not member.isfile() or member.size > 1024 * 1024:
