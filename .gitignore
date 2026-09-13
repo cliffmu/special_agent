@@ -42,4 +42,49 @@ desktop.ini
 # Jupyter
 .ipynb_checkpoints/
 
+# Private credentials and local Home Assistant data
+.env
+.env.*
+secrets.yaml
+secrets.yml
+credentials.json
+options.json
+.storage/
+.special_agent*.json
+special_agent_performance*.csv
+*.log
+*.log.*
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
 
+# Private exports, backups, and recordings
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.wav
+*.pcm
+*.mp3
+*.m4a
+docs/agent_session_play_plex.json
+docs/scene_memory_example.json
+
+# Local environments, generated firmware, and Python bytecode
+.venv/
+.venv-firmware/
+venv/
+env/
+.esphome/
+.generated/
+__pycache__/
+*.py[cod]
