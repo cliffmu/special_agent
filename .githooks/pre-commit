@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+python3 scripts/check_private_files.py --staged
+local_gitleaks=$(git rev-parse --git-common-dir)/hooks/bin/gitleaks
+if command -v gitleaks >/dev/null 2>&1; then
+    scanner=gitleaks
+elif [ -x "$local_gitleaks" ]; then
+    scanner=$local_gitleaks
+else
+    echo "Gitleaks is required before committing. Install it from https://github.com/gitleaks/gitleaks#installing" >&2
+    exit 1
+fi
+exec "$scanner" git --staged --redact=100 --no-banner --ignore-gitleaks-allow --config .gitleaks.toml
