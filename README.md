@@ -461,3 +461,26 @@ References: [Live WebSocket audio](https://developers.openai.com/api/docs/guides
 [client delegation](https://developers.openai.com/api/docs/guides/live-delegation),
 [Home Assistant Conversation API](https://developers.home-assistant.io/docs/intent_conversation_api/),
 [pinned Voice PE firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware/tree/cf73d8dcee605a774229554e946f1fc51e515b2e).
+
+## Privacy and safe contributions
+
+Keep real Home Assistant configuration, conversation/session exports, device
+inventories, logs, recordings, and credentials outside this repository. Use
+synthetic data in examples and documentation. Ignore rules also protect common
+private exports, but they do not remove data that has already been committed.
+
+Before committing from a new clone, install [Gitleaks](https://github.com/gitleaks/gitleaks#installing)
+and enable the repository hook:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The hook checks staged files for ignored/private exports, credentials, personal
+email addresses, and local user paths. GitHub Actions repeats these checks on
+pushes and pull requests, including fetched history. Use your GitHub noreply email
+for commits; configure it using [GitHub's instructions](https://docs.github.com/en/account-and-profile/how-tos/email-preferences/setting-your-commit-email-address).
+
+After a privacy-related history rewrite, use a fresh clone or carefully reset
+local branches to the rewritten remote branches. Do not merge or push old history
+back into this repository. Keep any recovery copy private and outside Git remotes.
