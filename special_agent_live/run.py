@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import fields
 from pathlib import Path
 import re
 
@@ -66,6 +67,16 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
         raise ValueError("Invalid reasoning_effort option")
     if fast_mode is not None and type(fast_mode) is not bool:
         raise ValueError("Invalid fast_mode option")
+    trace_logging = options.get("trace_logging", False)
+    if type(trace_logging) is not bool:
+        raise ValueError("Invalid trace_logging option")
+    # The app launcher can be newer than the immutable bridge source it installs.
+    trace_options = {}
+    if any(field.name == "trace_logging" for field in fields(DeviceSettings)):
+        trace_options["trace_logging"] = trace_logging
+    elif trace_logging:
+        raise ValueError("Detailed trace logging requires an updated bridge runtime; "
+                         "update the app source revision before building")
     limits = {}
     for name, default, low, high in (("idle_timeout", 30, 10, 600), ("max_duration", 0, 0, 1800)):
         value = options.get(name, default)
@@ -80,7 +91,7 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
         device_id=device_id, ha_device_id=ha_device_id, devices=tuple(devices),
         ha_url="http://supervisor/core", ha_token=supervisor_token, ha_agent_id=agent_id,
         agent_model=agent_model, reasoning_effort=reasoning_effort, fast_mode=fast_mode,
-        bind="0.0.0.0", port=8099, **limits,
+        bind="0.0.0.0", port=8099, **limits, **trace_options,
     )
     settings.validate()
     return settings

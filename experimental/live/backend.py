@@ -7,10 +7,11 @@ import json
 import logging
 import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import aiohttp
-from utils.logging import activity
+from utils.logging import activity, is_trace_line, job_correlation, trace_detail
 
 LOG = logging.getLogger(__name__ + ".activity")
 LOG.setLevel(logging.INFO)
@@ -25,6 +26,8 @@ _ACTIVITY_FIELDS = frozenset({
     "input_tokens", "output_tokens", "cached_tokens", "total_tokens", "session", "job",
     "effort", "requested_tier", "effective_tier", "function_count", "function_names",
     "verification", "verified_steps", "completed_steps", "total_steps",
+    "route", "call_id", "response_id", "batch", "mode", "message_count", "decision",
+    "reasoning_count", "web_search_count", "reason", "remaining", "prompt_kind", "detail", "captured_at_ms",
 })
 _ACTIVITY_ATOM = re.compile(r"[A-Za-z0-9_.:-]{1,100}\Z")
 _EPOCH = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -78,17 +81,40 @@ class DemoBackend:
 class HomeAssistantBackend:
     def __init__(self, http: aiohttp.ClientSession, url: str, token: str, agent_id: str, room: str = "", *,
                  model: str | None = None, reasoning_effort: str | None = None, fast_mode: bool | None = None,
-                 device_id: str | None = None):
+                 device_id: str | None = None, trace_logging: bool = False):
         self.http, self.url, self.token, self.agent_id = http, url.rstrip("/"), token, agent_id
         self.room = room
         self.device_id = device_id
         self.model, self.reasoning_effort, self.fast_mode = model, reasoning_effort, fast_mode
+        self.trace_logging = trace_logging
         self.activity_cursor = 0
         self.activity_epoch = None
         self.activity_poll_interval = 1.0
         # One persistent dispatcher per device orders its successive voice sessions.
         # Other devices have independent dispatchers and can work concurrently.
         self.lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _dispatch_slot(self):
+        """Make serialization across successive voice sessions visible."""
+        waiting = self.lock.locked()
+        started = time.monotonic()
+        if waiting:
+            activity("ha_request", logger=LOG, phase="queue_wait", route="agent_loop",
+                     reason="previous_request_running")
+        try:
+            await self.lock.acquire()
+        except asyncio.CancelledError:
+            activity("ha_request", logger=LOG, phase="queue_cancelled", status="not_sent",
+                     route="agent_loop", elapsed_ms=round((time.monotonic() - started) * 1000))
+            raise
+        try:
+            if waiting:
+                activity("ha_request", logger=LOG, phase="queue_resumed", route="agent_loop",
+                         elapsed_ms=round((time.monotonic() - started) * 1000))
+            yield
+        finally:
+            self.lock.release()
 
     async def execute(self, request: str, history: list[dict], conversation_id: str | None):
         context = json.dumps(history, ensure_ascii=False)
@@ -109,14 +135,20 @@ class HomeAssistantBackend:
             body["conversation_id"] = conversation_id
         if self.device_id:
             body["device_id"] = self.device_id
+        correlation = job_correlation()
+        if correlation is not None:
+            body["trace_context"] = dict(zip(("session", "job"), correlation))
         # The authenticated Live endpoint marks this as bridge-owned audio, even
         # with a device identity, so HA cannot also send satellite TTS.
-        async with self.lock:
+        async with self._dispatch_slot():
             started = time.monotonic()
             http_status = None
             status = "error"
             error_type = None
-            activity("ha_request", logger=LOG, phase="sent", backend="home-assistant")
+            activity("ha_request", logger=LOG, phase="sent", backend="home-assistant",
+                     source="gpt_live", route="agent_loop")
+            trace_detail("ha_request", payload={"text": text}, phase="sent",
+                         source="gpt_live", route="agent_loop")
             try:
                 async with self.http.post(
                     self.url + PROCESS_PATH,
@@ -139,6 +171,8 @@ class HomeAssistantBackend:
                 if not isinstance(speech, str) or not speech.strip():
                     raise BackendError("Home Assistant returned no spoken result; check its conversation logs.", uncertain=True)
                 status = "completed"
+                trace_detail("ha_result", payload={"speech": speech}, status=status,
+                             source="agent_loop", route="delegation")
                 return BackendResult(speech, data.get("conversation_id"))
             except asyncio.CancelledError:
                 status = "cancelled"
@@ -152,7 +186,10 @@ class HomeAssistantBackend:
                 raise
             finally:
                 fields = {"phase": "received" if http_status is not None else "failed", "status": status,
+                          "source": "gpt_live", "route": "agent_loop",
                           "elapsed_ms": round((time.monotonic() - started) * 1000)}
+                if status == "cancelled":
+                    fields["reason"] = "action_outcome_unconfirmed"
                 if http_status is not None:
                     fields["http_status"] = http_status
                 if error_type:
@@ -183,6 +220,8 @@ class HomeAssistantBackend:
 
     async def _poll_activity_page(self):
         params = {"cursor": str(self.activity_cursor), "limit": "200"}
+        if self.trace_logging:
+            params["detail"] = "true"
         if self.activity_epoch is not None:
             params["epoch"] = self.activity_epoch
         async with self.http.get(
@@ -206,7 +245,8 @@ class HomeAssistantBackend:
         for record in records:
             if (not isinstance(record, dict) or type(record.get("cursor")) is not int
                     or not 1 <= record["cursor"] <= cursor or record["cursor"] < previous
-                    or not _safe_activity_line(record.get("line"))):
+                    or not (_safe_activity_line(record.get("line"))
+                            or self.trace_logging and is_trace_line(record.get("line")))):
                 raise ValueError("Invalid activity record")
             previous = record["cursor"]
         changed_epoch = epoch != self.activity_epoch

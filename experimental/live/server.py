@@ -16,7 +16,8 @@ from aiohttp import web
 
 from .backend import DemoBackend, HomeAssistantBackend
 from .session import LiveSession
-from utils.constants import AGENT_MODELS, REASONING_EFFORTS
+from utils.constants import AGENT_MODELS, DEFAULT_TRACE_LOGGING, REASONING_EFFORTS
+from utils.logging import configure_trace
 
 LOG = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
@@ -36,6 +37,7 @@ class Settings:
     agent_model: str | None = None
     reasoning_effort: str | None = None
     fast_mode: bool | None = None
+    trace_logging: bool = DEFAULT_TRACE_LOGGING
 
     def validate(self):
         if self.backend not in ("demo", "home-assistant"):
@@ -46,6 +48,8 @@ class Settings:
             raise ValueError("Invalid reasoning_effort option")
         if self.fast_mode is not None and type(self.fast_mode) is not bool:
             raise ValueError("Invalid fast_mode option")
+        if type(self.trace_logging) is not bool:
+            raise ValueError("Invalid trace_logging option")
         if not 1 <= self.port <= 65535 or not 10 <= self.idle_timeout <= 600 or not 0 <= self.max_duration <= 1800:
             raise ValueError("Invalid port or timeout limits")
         if self.backend == "home-assistant":
@@ -94,7 +98,7 @@ class Bridge:
         self.backend = DemoBackend() if settings.backend == "demo" else HomeAssistantBackend(
             http, settings.ha_url, settings.ha_token, settings.ha_agent_id,
             model=settings.agent_model, reasoning_effort=settings.reasoning_effort,
-            fast_mode=settings.fast_mode)
+            fast_mode=settings.fast_mode, trace_logging=settings.trace_logging)
 
     async def create(self, sdp):
         if not self.settings.api_key:
@@ -236,6 +240,7 @@ async def resources(app):
 
 def create_app(settings):
     settings.validate()
+    configure_trace(enabled=settings.trace_logging)
     app = web.Application(middlewares=[local_requests], client_max_size=65536)
     app[SETTINGS] = settings
     app.cleanup_ctx.append(resources)
@@ -289,6 +294,7 @@ def main():
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--idle-timeout", type=int, default=30)
     parser.add_argument("--max-duration", type=int, default=0, help="Optional session length cap in seconds; 0 disables it")
+    parser.add_argument("--trace-logging", action="store_true", help="Include detailed, redacted request and tool traces in logs")
     args = parser.parse_args()
     settings = Settings(**vars(args), api_key=os.getenv("OPENAI_API_KEY", ""),
                         ha_url=os.getenv("HA_URL", ""), ha_token=os.getenv("HA_TOKEN", ""),

@@ -49,10 +49,112 @@ Concise activity logs are on by default:
   **Show raw logs**, then filter `special_agent.activity`. Core still retains
   these records for troubleshooting when the bridge is unavailable.
 
-These activity records omit prompts, transcripts, raw tool arguments/results,
-and credentials. Optional detailed performance CSV and integration debug logging
-are separate diagnostics and may contain request content. Enable debug logging
-from the Special Agent integration menu only when investigating a specific issue.
+### Follow a request through the code
+
+**GPT Live currently delegates home/tool work to the Python agent loop.** The Live
+session has no Home Assistant function tools registered directly. It can speak
+and handle conversation without delegation; home actions and lookups follow this path:
+
+```text
+Voice / browser → GPT Live
+  → session.delegation.created
+  → LiveSession: wait for the transcript to settle; queue the job
+  → HomeAssistantBackend: POST /api/special_agent/live/process
+  → SpecialAgentConversation: scope the settings and serialize this conversation
+  → plan_execute: load history → call the Agent model (Responses API)
+      → validate and execute requested tools (parallel when allowed)
+      → return observations to the model → repeat as needed
+      → final answer or confirmation/clarification question
+  → backend result → Live commentary → spoken response
+```
+
+The worker awaits the backend result while the Live connection stays open. Live
+can continue conversing during that wait. Interrupting speech does not cancel a
+device command already running. If an older result arrives after a newer request,
+the bridge can provide it as background context rather than interrupting with
+stale commentary. The protocol name `session.thinking.append` means **context we
+send to Live**; it is not a feed of Live's private reasoning.
+
+| File | Responsibility |
+| --- | --- |
+| `experimental/live/server.py`, `device_server.py` | Connect browser/hardware audio to Live; configure the voice session and backend. |
+| `experimental/live/session.py` | Handle Live events, assemble transcript context, queue delegations, and deliver results. |
+| `experimental/live/backend.py` | Call HA and relay its activity into the app Log. |
+| `live_api.py`, `conversation.py` | Authenticate the handoff, bind Live job IDs, apply per-request model settings, and manage conversation isolation. |
+| `agent_core.py` | Coordinate history, model calls, tools, and the final response. |
+| `utils/llm_client.py` | Send Responses API requests; record model decisions, usage, and available summaries. |
+| `utils/response_utils.py` | Validate and execute tool batches; send observations back to the model. |
+| `tool_specs/`, `utils/service_verification.py` | Perform individual tasks and verify device commands against HA state. |
+| `utils/logging.py` | Correlation IDs, concise activity, optional redacted payloads, and bounded replay buffers. |
+
+### Read the activity timeline
+
+Every delegated request carries the same `session=` and `job=` from Live into
+HA. HA adds `request=` for its request; `iteration=` identifies a model loop,
+`batch=` groups tool calls, and `call_id=` joins a model's selected tool to its
+execution. Provider IDs are hashed; session/job IDs contain no room names.
+The Live side can have `request=-`; use `session` and `job` to join both sides.
+`captured_at_ms` preserves the original UTC Unix time in milliseconds when HA
+records arrive later through polling or reconnect replay; the app's displayed
+log timestamp can instead be the relay time.
+
+Look for these events in order (some requests need several model/tool rounds):
+
+| Event / phase | What it tells you |
+| --- | --- |
+| `live_session`, `route=delegation_only` | This voice session delegates work; it does not run HA tools directly. |
+| `delegation` with `context_wait` / `context_ready` | Live requested help; the bridge is collecting the spoken request. |
+| `ha_request` with `queue_wait` / `sent` | Waiting for an earlier request, then handing work to the agent loop. |
+| `agent_loop`, `session_loaded` | The loop loaded a new or continuing conversation, possibly a pending question. |
+| `model`, `sent` / `received` | Waiting for the model, then its status, token counts, timing, and selected functions. |
+| `model` with `decision=`, `model_tool_call`, `model_builtin_tool` | Whether it returned text, requested functions, or used built-in web search. |
+| `tool_batch`, `tool` | Parallel/single execution, arguments rejected or calls skipped, starts, results, verification, and elapsed time. |
+| `agent_loop`, `finished` | The loop's final answer, pending question, or failure. |
+| `live_delivery`, `sent` / `skipped` / `failed` | Whether the backend result was sent to Live as commentary/background context. This confirms transport, not physical speaker playback. |
+
+### Enable arguments, results, and model summaries
+
+Concise activity stays on by default. For a diagnostic session:
+
+1. **Settings → Devices & services → Special Agent → Configure → Detailed trace
+   logging**: enable and save. This records the delegated request, tool inputs,
+   raw results and model observations, final response, and any model-provided
+   reasoning summaries in Core under `custom_components.special_agent.trace`.
+2. For the combined view, also enable **Settings → Apps → Special Agent Live →
+   Configuration → Detailed trace logging**, save, and restart the app. Its **Log**
+   then includes Live handoff/delivery details plus HA's detailed trace. Both
+   switches are needed for agent payloads in the combined Log.
+3. Run a request and filter by its `job=` or `request=`. Disable the switches when
+   finished. This clears the in-memory detail replay; existing HA/app log entries
+   follow their normal retention.
+
+Standalone bridge commands accept `--trace-logging`. The integration switch is
+still needed for HA tool/model payloads. Full trace support requires integration
+**0.3.5+** and Live app **0.1.7+** together. Update each separately, restart Home
+Assistant after updating the integration, and restart the Live app after saving
+its trace setting. The app release includes an immutable, hash-verified bridge
+runtime with matching trace support.
+
+Example **illustrative** tool pair (actual IDs, tool order and values vary):
+
+```text
+event=tool_input request=5af31b42ce session=7d9002a14b job=921c39da80 tool=control_device call_id=1f382ceb03 iteration=1 payload={"entity_id":"light.example","service":"turn_on","data":{"brightness_pct":40}}
+event=tool_output request=5af31b42ce session=7d9002a14b job=921c39da80 tool=control_device call_id=1f382ceb03 iteration=1 payload={"accepted":true,"verification":"verified"}
+```
+
+Detailed payloads use single-line JSON, redact recognized credentials/URLs and
+media fields, and mark size/depth truncation. They can contain spoken requests,
+device names, entity IDs, and personal home information; inspect before sharing.
+They never enter the default summary-only activity endpoint. Each replay buffer
+holds at most 512 records, so it is a recent window rather than a permanent archive.
+Ordinary debug logging and the performance CSV remain separate diagnostics.
+
+With detailed tracing enabled, the Agent model request asks for
+`reasoning.summary="auto"`. Logs show returned summary text when available, plus
+observable tool choices and outcomes. These are summaries, not hidden internal
+reasoning. GPT Live does not provide its private thought stream through this bridge.
+See [OpenAI reasoning summaries](https://developers.openai.com/api/docs/guides/reasoning)
+and [GPT Live delegation](https://developers.openai.com/api/docs/guides/live-delegation).
 
 Special Agent's learned routines live in `scene_memory.json` under its
 `sa_vector_index` persistence directory, separate from Home Assistant `scenes.yaml`.

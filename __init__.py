@@ -18,11 +18,13 @@ except Exception:  # pragma: no cover - during unit tests
 try:
     from .session_store import SessionManager
     from .utils import performance
-    from .utils.constants import DEFAULT_AGENT_MODEL
+    from .utils.constants import DEFAULT_AGENT_MODEL, DEFAULT_TRACE_LOGGING
+    from .utils.logging import configure_trace
 except Exception:  # pragma: no cover
     from session_store import SessionManager
     from utils import performance
-    from utils.constants import DEFAULT_AGENT_MODEL
+    from utils.constants import DEFAULT_AGENT_MODEL, DEFAULT_TRACE_LOGGING
+    from utils.logging import configure_trace
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -97,6 +99,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .live_api import register_views
     register_views(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry.data
+    configure_trace(enabled=entry.options.get(
+        "trace_logging", entry.data.get("trace_logging", DEFAULT_TRACE_LOGGING)))
     mgr = SessionManager(hass)
     await mgr.load()
     hass.data[DOMAIN]["sessions"] = mgr

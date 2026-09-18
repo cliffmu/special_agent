@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import uuid
 from dataclasses import dataclass
 from typing import Any, List, Dict
 
@@ -112,6 +113,20 @@ class ToolExecutionResult:
     error_message: str | None  # Error to return to user
 
 
+def trace_agent_response(result: Any, *, reason: str, status: str = "completed", iteration: int = 0) -> Any:
+    """Record the loop's terminal outcome and return its response unchanged."""
+    fields = {"source": "agent_loop", "phase": "finished", "status": status,
+              "reason": reason, "iteration": iteration}
+    payload = result.get("prompt_payload", result) if isinstance(result, dict) else result
+    kind = payload.get("kind") if isinstance(payload, dict) else None
+    if isinstance(kind, str) and kind in {"confirm", "clarify", "response"}:
+        fields["prompt_kind"] = kind
+        fields["decision"] = "await_user" if kind in {"confirm", "clarify"} else "respond_to_user"
+    log.activity("agent_loop", **fields)
+    log.trace_detail("agent_response", payload=payload, **fields)
+    return result
+
+
 def _tool_activity_status(result):
     """Report explicit failure signals without copying result text to logs."""
     if isinstance(result, dict):
@@ -137,7 +152,9 @@ async def validate_and_execute_tools(
     function_calls: List[Any],
     spec_map: Dict[str, Any],
     tried_calls: set,
-    hass: Any
+    hass: Any,
+    *,
+    iteration: int = 0,
 ) -> ToolExecutionResult:
     """Validate, execute tools in parallel, return structured results.
     
@@ -155,6 +172,16 @@ async def validate_and_execute_tools(
     validation_errors = []  # Track validation errors
     messages_to_add = []
     focus = None
+    batch_id = uuid.uuid4().hex[:8]
+    batch_fields = {"source": "agent_loop", "iteration": iteration, "batch": batch_id}
+    requested_count = len(function_calls)
+
+    def call_fields(call):
+        return {"tool": spec_map[call.name].name if call.name in spec_map else "unknown",
+                "call_id": log.device_correlation(getattr(call, "call_id", None)), **batch_fields}
+
+    log.activity("tool_batch", phase="planned", function_count=requested_count,
+                 function_names=[call_fields(call)["tool"] for call in function_calls], **batch_fields)
     
     # Check if any tool cannot run in parallel
     non_parallel_tools = []
@@ -177,8 +204,7 @@ async def validate_and_execute_tools(
 
         # Add error messages for dropped non-parallel tools
         for dropped_call in dropped_calls:
-            log.activity("tool", tool=spec_map[dropped_call.name].name,
-                         phase="skipped", status="not_parallel")
+            log.activity("tool", phase="skipped", status="not_parallel", **call_fields(dropped_call))
             parallel_tools = [fc.name for fc in function_calls]
             validation_errors.append((
                 dropped_call,
@@ -197,7 +223,7 @@ async def validate_and_execute_tools(
                 raise ValueError("Tool arguments must be an object")
             canonical = (call_name, json.dumps(args, sort_keys=True))
             if canonical in tried_calls:
-                log.activity("tool", tool=spec.name, phase="skipped", status="duplicate")
+                log.activity("tool", phase="skipped", status="duplicate", **call_fields(call))
                 validation_errors.append((call, "Error: Duplicate call. Already tried this exact query."))
                 continue
             tried_calls.add(canonical)
@@ -206,14 +232,20 @@ async def validate_and_execute_tools(
                 args = spec.validate(args)
             tasks_to_run.append((call, spec, args))
         except Exception as err:
-            log.debug("Validation error: %s", err)
-            log.activity("tool", tool=spec_map[call_name].name if call_name in spec_map else "unknown",
-                         phase="skipped", status="invalid_arguments", error_type=type(err).__name__)
+            log.activity("tool", phase="skipped", status="invalid_arguments",
+                         error_type=type(err).__name__, **call_fields(call))
             validation_errors.append((call, f"Error: Tool arguments were invalid: {err}"))
             continue
 
     # Add validation errors to messages immediately
     for call, error_msg in validation_errors:
+        if log.trace_enabled():
+            try:
+                requested_args = json.loads(call.arguments or "{}")
+            except (TypeError, ValueError, RecursionError):
+                requested_args = {"invalid_json": True}
+            log.trace_detail("tool_skipped", payload={"arguments": requested_args, "output": error_msg},
+                             phase="skipped", **call_fields(call))
         messages_to_add.append({
             "type": "function_call_output",
             "call_id": call.call_id,
@@ -223,13 +255,14 @@ async def validate_and_execute_tools(
 
     # Phase 2: Execute all valid calls in parallel
     # Generate parallel group ID if multiple tools
-    import uuid
-    parallel_group_id = str(uuid.uuid4())[:8] if len(tasks_to_run) > 1 else None
+    parallel_group_id = batch_id if len(tasks_to_run) > 1 else None
+    mode = "parallel" if len(tasks_to_run) > 1 else "single" if tasks_to_run else "none"
+    log.activity("tool_batch", phase="started", mode=mode,
+                 function_count=requested_count, tool_count=len(tasks_to_run), **batch_fields)
     
     async def execute_tool(call, spec, args, parallel_group=None):
         """Execute a single tool and return (call, spec, args, result, is_error)"""
         call_name = spec.name
-        log.debug("Action: %s %s", call_name, args)
         
         # Manually track tool execution to include parallel_group
         import time
@@ -241,18 +274,17 @@ async def validate_and_execute_tools(
         status = "ok"
         error_type = None
         verification = None
-        log.activity("tool", tool=call_name, phase="started")
+        log.activity("tool", phase="started", mode=mode, **call_fields(call))
+        log.trace_detail("tool_input", payload=args, phase="started", **call_fields(call))
         
         try:
             if hass and "hass" in inspect.signature(spec.func).parameters:
                 call_args = {"hass": hass, **args}
-                log.debug("Tool_Input[%s]: %s", call_name, call_args)
                 result = await spec.func(**call_args)
             else:
                 call_args = args
-                log.debug("Tool_Input[%s]: %s", call_name, call_args)
                 result = await spec.func(**call_args)
-            log.debug("Tool_Result[%s]: %s", call_name, result)
+            log.trace_detail("tool_result", payload=result, phase="returned", **call_fields(call))
             status = _tool_activity_status(result)
             if isinstance(result, dict) and isinstance(result.get("verification"), str) and result["verification"] in {"verified", "failed", "unverified", "not_applicable"}:
                 verification = result["verification"]
@@ -265,7 +297,7 @@ async def validate_and_execute_tools(
             error_type = type(err).__name__
             return (call, spec, args, f"Error: Tool failed: {err}", True)
         finally:
-            fields = {"tool": call_name, "phase": "finished", "status": status,
+            fields = {**call_fields(call), "phase": "finished", "status": status, "mode": mode,
                       "elapsed_ms": round((time.perf_counter() - start_mono) * 1000)}
             if error_type:
                 fields["error_type"] = error_type
@@ -306,25 +338,31 @@ async def validate_and_execute_tools(
                 ))
 
     # Run all tools in parallel
-    if tasks_to_run:
-        if len(tasks_to_run) > 1:
-            # Track parallel execution group
-            async with performance.track_operation(
-                f"parallel_tools_{len(tasks_to_run)}",
-                metadata={"tools": [spec.name for _, spec, _ in tasks_to_run], "parallel_group": parallel_group_id}
-            ):
+    try:
+        if tasks_to_run:
+            if len(tasks_to_run) > 1:
+                # Track parallel execution group
+                async with performance.track_operation(
+                    f"parallel_tools_{len(tasks_to_run)}",
+                    metadata={"tools": [spec.name for _, spec, _ in tasks_to_run], "parallel_group": parallel_group_id}
+                ):
+                    results = await asyncio.gather(
+                        *[execute_tool(call, spec, args, parallel_group_id) for call, spec, args in tasks_to_run],
+                        return_exceptions=False
+                    )
+            else:
+                # Single tool, no parallel tracking needed
                 results = await asyncio.gather(
-                    *[execute_tool(call, spec, args, parallel_group_id) for call, spec, args in tasks_to_run],
+                    *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
                     return_exceptions=False
                 )
         else:
-            # Single tool, no parallel tracking needed
-            results = await asyncio.gather(
-                *[execute_tool(call, spec, args) for call, spec, args in tasks_to_run],
-                return_exceptions=False
-            )
-    else:
-        results = []
+            results = []
+    except (Exception, asyncio.CancelledError) as error:
+        log.activity("tool_batch", phase="finished", mode=mode, **batch_fields,
+                     status="cancelled" if isinstance(error, asyncio.CancelledError) else "error",
+                     error_type=type(error).__name__)
+        raise
 
     # Phase 3: Process results
     all_results_success = len(validation_errors) == 0
@@ -339,6 +377,7 @@ async def validate_and_execute_tools(
             all_results_success = False
             error_text = result if isinstance(result, str) else str(result)
             errors_encountered.append(error_text)
+            log.trace_detail("tool_output", payload=result, phase="returned", **call_fields(call))
             messages_to_add.append({
                 "type": "function_call_output",
                 "call_id": call.call_id,
@@ -358,6 +397,7 @@ async def validate_and_execute_tools(
 
         # Append function call result in Responses API format
         result_str = summarize_result(result)
+        log.trace_detail("tool_output", payload=result_str, phase="returned", **call_fields(call))
         messages_to_add.append({
             "type": "function_call_output",
             "call_id": call.call_id,
@@ -386,6 +426,13 @@ async def validate_and_execute_tools(
     
     if all_failed:
         log.warning("All %d executed tool calls failed in this iteration", len(results))
+
+    outcomes = [_tool_activity_status(result) for _, _, _, result, _ in results]
+    batch_status = ("error" if (outcomes or validation_errors) and all(outcome == "error" for outcome in outcomes)
+                    else "partial" if validation_errors or any(outcome != "ok" for outcome in outcomes)
+                    else "completed")
+    log.activity("tool_batch", phase="finished", mode=mode, tool_count=len(results), status=batch_status,
+                 decision="respond_to_user" if has_prompt_response else "return_to_model", **batch_fields)
 
     return ToolExecutionResult(
         messages=messages_to_add,

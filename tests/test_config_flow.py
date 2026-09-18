@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import os
 import sys
 from types import SimpleNamespace
@@ -57,3 +58,21 @@ def test_setup_entry_without_spotify(monkeypatch):
     assert os.environ.get("OPENAI_API_KEY") == "key"
     assert os.environ.get("SPOTIFY_CLIENT_ID") is None
     assert os.environ.get("SPOTIFY_CLIENT_SECRET") is None
+
+
+@pytest.mark.parametrize("data, options, enabled", [
+    ({}, {}, False),
+    ({"trace_logging": True}, {}, True),
+    ({"trace_logging": True}, {"trace_logging": False}, False),
+    ({"trace_logging": False}, {"trace_logging": True}, True),
+])
+def test_setup_entry_applies_trace_setting_and_explicit_option_override(monkeypatch, data, options, enabled):
+    integration = importlib.import_module(async_setup_entry.__module__)
+    configure = MagicMock()
+    monkeypatch.setattr(integration, "configure_trace", configure)
+    monkeypatch.setattr(session_store, "Store", StubStore)
+    hass = MagicMock()
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+    entry = SimpleNamespace(entry_id="trace-test", data=data, options=options)
+    asyncio.run(async_setup_entry(hass, entry))
+    configure.assert_called_once_with(enabled=enabled)

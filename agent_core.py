@@ -18,7 +18,7 @@ try:
     from .utils.constants import DEFAULT_AGENT_MODEL, normalize_reasoning_effort
     from . import DOMAIN
     from .utils.session_helpers import load_session, store_session, clear_session, generate_message_id
-    from .utils.response_utils import validate_and_execute_tools
+    from .utils.response_utils import validate_and_execute_tools, trace_agent_response
     from .utils.llm_client import get_async_client, call_llm, handle_llm_error
     from .utils.prompt_builder import build_system_prompt
     from .utils import performance
@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - support direct execution
     from utils import logging as log
     from utils.constants import DEFAULT_AGENT_MODEL, normalize_reasoning_effort
     from utils.session_helpers import load_session, store_session, clear_session, generate_message_id
-    from utils.response_utils import validate_and_execute_tools
+    from utils.response_utils import validate_and_execute_tools, trace_agent_response
     from utils.llm_client import get_async_client, call_llm, handle_llm_error
     from utils.prompt_builder import build_system_prompt
     from utils import performance
@@ -123,10 +123,15 @@ async def plan_execute(
 ) -> Any:
     """Execute ReAct agent loop with clean orchestration."""
     reasoning_effort = normalize_reasoning_effort(model, reasoning_effort)
+    log.activity("agent_loop", phase="started", source="agent_loop", model=model,
+                 effort=reasoning_effort, tool_count=len(tools))
+    log.trace_detail("agent_request", payload={"text": prompt}, source="agent_loop")
     
     # Validate API key
     if not os.environ.get("OPENAI_API_KEY"):
-        return "Sorry, I'm not ready to help yet. Please add Open AI API key to the integration configuration."
+        return trace_agent_response(
+            "Sorry, I'm not ready to help yet. Please add Open AI API key to the integration configuration.",
+            status="error", reason="missing_api_key")
 
     # Setup: Get client and build system prompt
     try:
@@ -134,9 +139,12 @@ async def plan_execute(
         system_prompt = await build_system_prompt(
             tools, hass, session_key, model, reasoning_effort, require_confirmation, goals
         )
+    except asyncio.CancelledError:
+        log.activity("agent_loop", phase="finished", source="agent_loop", status="cancelled", reason="setup_cancelled")
+        raise
     except Exception as err:
         log.error("Setup failed: %s", type(err).__name__)
-        return "Error initializing agent"
+        return trace_agent_response("Error initializing agent", status="error", reason="setup_failed")
 
     # Load session (tracks internally)
     messages, mgr, focus, pending = load_session(
@@ -158,9 +166,8 @@ async def plan_execute(
                     record.metadata["session_msg_count"] = len(messages)
                     break
     
-    log.debug("Session loaded: messages=%d, focus=%s, pending=%s", len(messages), focus, pending)
-    if pending:
-        log.debug("Pending confirmation exists: %s", pending)
+    log.activity("agent_loop", phase="session_loaded", source="agent_loop", message_count=len(messages),
+                 decision="resume_pending" if pending else "continue_session" if len(messages) > 2 else "new_request")
     
     # Initialize loop state
     tried_calls: set[tuple[str, str]] = set()
@@ -177,24 +184,26 @@ async def plan_execute(
             async with performance.track_llm_call(model, reasoning_effort, depth, len(messages)) as tracker:
                 response = await call_llm(client, messages, tool_json, model, reasoning_effort, depth, fast_mode=fast_mode)
                 tracker.set_response(response)
+        except asyncio.CancelledError:
+            log.activity("agent_loop", phase="finished", source="agent_loop", status="cancelled",
+                         reason="model_cancelled", iteration=depth + 1)
+            raise
         except Exception as err:
             # Handle LLM errors
             error_msg, messages = handle_llm_error(err, messages)
             if error_msg:  # Unrecoverable error
                 store_session(mgr, session_key, messages, pending, focus)
-                return error_msg
+                return trace_agent_response(error_msg, status="error", reason="model_failed", iteration=depth + 1)
             if error_retries_remaining == 0:
                 log.warning("LLM error retry limit reached")
                 store_session(mgr, session_key, messages, pending, focus)
-                return "I'm having trouble with this conversation. Please start a new request."
+                return trace_agent_response(
+                    "I'm having trouble with this conversation. Please start a new request.",
+                    status="error", reason="model_retries_exhausted", iteration=depth + 1)
             error_retries_remaining -= 1
+            log.activity("agent_loop", phase="retrying", source="agent_loop", iteration=depth + 1,
+                         remaining=error_retries_remaining, reason="model_error", message_count=len(messages))
             continue  # Retry with updated messages
-        
-        # Log response
-        log.debug("AI_Response_Text: %s", response.final_text)
-        if response.function_calls:
-            log.debug("AI_Response_Function_Calls: %s",
-                     [(fc.name, fc.arguments) for fc in response.function_calls])
         
         # Add response to history
         messages.extend(response.output)
@@ -207,13 +216,19 @@ async def plan_execute(
             if not intermediate_ack:
                 async with performance.track_operation("store_session"):
                     store_session(mgr, session_key, messages, pending, focus)
-                return response.final_text or "OK"
+                return trace_agent_response(response.final_text or "OK", reason="final_text", iteration=depth + 1)
         
         # Execute tools if present
         if response.function_calls:
-            tool_results = await validate_and_execute_tools(
-                response.function_calls, spec_map, tried_calls, hass
-            )
+            try:
+                tool_results = await validate_and_execute_tools(
+                    response.function_calls, spec_map, tried_calls, hass, iteration=depth + 1
+                )
+            except (Exception, asyncio.CancelledError) as error:
+                log.activity("agent_loop", phase="finished", source="agent_loop", iteration=depth + 1,
+                             status="cancelled" if isinstance(error, asyncio.CancelledError) else "error",
+                             reason="tool_execution_aborted", error_type=type(error).__name__)
+                raise
             
             # Add tool results to message history
             messages.extend(tool_results.messages)
@@ -222,12 +237,19 @@ async def plan_execute(
             # Check for prompt response (confirm/ask)
             if tool_results.prompt_response:
                 store_session(mgr, session_key, messages, tool_results.prompt_response, focus)
-                return {"prompt_payload": tool_results.prompt_response, "messages": messages}
+                return trace_agent_response(
+                    {"prompt_payload": tool_results.prompt_response, "messages": messages},
+                    reason="tool_response", iteration=depth + 1)
             
             # Check if all tools failed
             if tool_results.all_failed:
                 store_session(mgr, session_key, messages, pending, focus)
-                return tool_results.error_message
+                return trace_agent_response(tool_results.error_message, status="error",
+                                            reason="all_tools_failed", iteration=depth + 1)
+
+        log.activity("agent_loop", phase="continuing", source="agent_loop", iteration=depth + 1,
+                     reason="tool_results_ready" if response.function_calls else "no_final_answer",
+                     message_count=len(messages))
         
         # Continue loop
         depth += 1
@@ -247,8 +269,10 @@ async def plan_execute(
         if depth >= max_depth:
             log.warning("Depth limit reached")
             store_session(mgr, session_key, messages, pending, focus)
-            return "Depth limit reached. Please try again."
+            return trace_agent_response("Depth limit reached. Please try again.", status="error",
+                                        reason="depth_limit", iteration=depth)
     
     # Fallback if loop exits without returning
     log.error("Agent loop exited without response")
-    return "I apologize, but I wasn't able to complete your request."
+    return trace_agent_response("I apologize, but I wasn't able to complete your request.",
+                                status="error", reason="no_response", iteration=depth)

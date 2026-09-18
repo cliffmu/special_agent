@@ -426,9 +426,13 @@ async def test_live_job_and_ha_activity_share_safe_ids_and_report_outcomes(monke
                       and record.name.endswith(".activity")]
             delegation = [event for event in events if event["event"] == "delegation"]
             ha_events = [event for event in events if event["event"] == "ha_request"]
-            assert [event["phase"] for event in delegation] == ["queued", "started", "finished"]
+            assert [event["phase"] for event in delegation] == [
+                "queued", "context_ready", "started", "result_received", "finished",
+            ]
             assert [event["phase"] for event in ha_events] == ["sent", "received"]
-            assert len({(event["session"], event["job"]) for event in events}) == 1
+            # Session lifecycle records precede delegation and have no job yet.
+            job_events = [event for event in events if "job" in event]
+            assert len({(event["session"], event["job"]) for event in job_events}) == 1
             assert ha_events[-1]["status"] == ("completed" if outcome == "success" else "error")
             assert ha_events[-1]["http_status"] == ("503" if outcome == "http_error" else "200")
             assert delegation[-1]["status"] == ("completed" if outcome == "success" else "failed")

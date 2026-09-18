@@ -23,7 +23,7 @@ from .backend import DemoBackend, HomeAssistantBackend
 from .devices import VoiceRegistration, VoiceRegistry, validate_registrations
 from .server import Settings, voice_instructions
 from .session import LiveSession
-from utils.logging import activity, begin_device, end_device
+from utils.logging import activity, begin_device, configure_trace, end_device
 
 LOG = logging.getLogger(__name__)
 LIVE_URL = "wss://api.openai.com/v1/live/sessions"
@@ -384,6 +384,7 @@ REGISTRY = web.AppKey("registry", VoiceRegistry)
 
 def create_app(settings):
     settings.validate()
+    configure_trace(enabled=settings.trace_logging)
     app = web.Application(client_max_size=16384)
     registry = app[REGISTRY] = VoiceRegistry(settings.registrations())
     cleanups = set()
@@ -397,7 +398,8 @@ def create_app(settings):
                     DemoBackend() if settings.backend == "demo" else HomeAssistantBackend(
                         http, settings.ha_url, settings.ha_token, settings.ha_agent_id, registration.room,
                         model=settings.agent_model, reasoning_effort=settings.reasoning_effort,
-                        fast_mode=settings.fast_mode, device_id=registration.effective_id))
+                        fast_mode=settings.fast_mode, device_id=registration.effective_id,
+                        trace_logging=settings.trace_logging))
             # HA activity is one global stream; a single backend owns its poller.
             app[BACKEND] = registry.backends[settings.device_id]
             logs = (asyncio.create_task(app[BACKEND].poll_activity())
@@ -475,6 +477,7 @@ def main():
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--idle-timeout", type=int, default=30)
     parser.add_argument("--max-duration", type=int, default=0)
+    parser.add_argument("--trace-logging", action="store_true", help="Include detailed, redacted request and tool traces in logs")
     args = parser.parse_args()
     settings = DeviceSettings(**vars(args), api_key=os.getenv("OPENAI_API_KEY", ""),
                               device_token=os.getenv("VOICE_DEVICE_TOKEN", ""), room=os.getenv("VOICE_ROOM", ""),

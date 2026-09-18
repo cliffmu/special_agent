@@ -84,6 +84,7 @@ async def test_new_setup_has_all_models_and_standard_terra_defaults(config_flow)
     created = await flow.async_step_user(data)
     assert created["type"] == "create_entry"
     assert created["data"]["fast_mode"] is False
+    assert created["data"]["trace_logging"] is False
     missing_key = await flow.async_step_user({"openai_api_key": " "})
     assert missing_key["errors"] == {"openai_api_key": "required_key"}
 
@@ -122,6 +123,17 @@ async def test_options_use_read_only_ha_entry_and_preserve_hidden_credentials(co
     assert updated["openai_api_key"] == "replacement-key"
     assert updated["spotify_client_secret"] == "SPOTIFY_SECRET"
     assert entry.options == {"openai_api_key": "CURRENT_KEY", "fast_mode": True}
+
+
+async def test_trace_option_preserves_saved_value_and_can_be_switched_off(config_flow):
+    entry = SimpleNamespace(data={"trace_logging": False}, options={"trace_logging": True})
+    flow = config_flow.SpecialAgentConfigFlow.async_get_options_flow(entry)
+    flow._managed_entry = entry
+    form = await flow.async_step_init()
+    schema = form["data_schema"]
+    assert schema({})["trace_logging"] is True
+    saved = (await flow.async_step_init(schema({"trace_logging": False})))["data"]
+    assert saved["trace_logging"] is False
 
 
 @pytest.mark.parametrize("model", AGENT_MODELS)

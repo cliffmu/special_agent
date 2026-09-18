@@ -2,6 +2,7 @@
 
 import gzip
 import hashlib
+from dataclasses import dataclass
 from io import BytesIO
 import json
 from pathlib import Path
@@ -33,6 +34,7 @@ def test_home_assistant_options_use_supervisor_proxy_and_preserve_agent_identity
     assert (settings.agent_model, settings.reasoning_effort, settings.fast_mode) == (None, None, None)
     assert settings.device_id == "primary" and settings.ha_device_id == ""
     assert settings.devices == ()
+    assert settings.trace_logging is False
 
 
 def test_additional_devices_keep_distinct_identity_room_and_private_tokens():
@@ -80,6 +82,39 @@ def test_demo_defaults_do_not_use_supervisor_access():
     settings = run.settings_from_options(valid_options(), {"SUPERVISOR_TOKEN": "unused"})
     assert (settings.backend, settings.room, settings.ha_token) == ("demo", "", "")
     assert (settings.idle_timeout, settings.max_duration) == (30, 0)
+    assert settings.trace_logging is False
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_trace_setting_reaches_the_shared_app_and_configures_logging(monkeypatch, enabled):
+    from experimental.live import device_server
+
+    calls = []
+    monkeypatch.setattr(device_server, "configure_trace", lambda **kwargs: calls.append(kwargs))
+    settings = run.settings_from_options(valid_options(trace_logging=enabled), {})
+    run.create_app(settings)
+    assert settings.trace_logging is enabled
+    assert calls == [{"enabled": enabled}]
+
+
+@pytest.mark.parametrize("trace_options", [{}, {"trace_logging": False}, {"trace_logging": True}])
+def test_launcher_handles_pinned_runtime_without_trace_setting(monkeypatch, trace_options):
+    @dataclass(init=False)
+    class LegacySettings:
+        def __init__(self, **kwargs):
+            assert "trace_logging" not in kwargs
+            self.values = kwargs
+
+        def validate(self):
+            pass
+
+    monkeypatch.setattr(run, "DeviceSettings", LegacySettings)
+    if trace_options.get("trace_logging"):
+        with pytest.raises(ValueError, match="updated bridge runtime"):
+            run.settings_from_options(valid_options(**trace_options), {})
+    else:
+        settings = run.settings_from_options(valid_options(**trace_options), {})
+        assert settings.values["backend"] == "demo"
 
 
 @pytest.mark.parametrize("options, field", [
@@ -101,6 +136,9 @@ def test_demo_defaults_do_not_use_supervisor_access():
     (valid_options(reasoning_effort="private-unsupported-effort"), "reasoning_effort"),
     (valid_options(fast_mode="false"), "fast_mode"),
     (valid_options(fast_mode=1), "fast_mode"),
+    (valid_options(trace_logging="false"), "trace_logging"),
+    (valid_options(trace_logging=1), "trace_logging"),
+    (valid_options(trace_logging=None), "trace_logging"),
 ])
 def test_invalid_options_fail_before_server_start_without_echoing_values(options, field):
     with pytest.raises(ValueError, match=field) as error:

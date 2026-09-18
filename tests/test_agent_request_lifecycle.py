@@ -213,6 +213,73 @@ async def test_recoverable_api_errors_have_finite_retry_budget(monkeypatch, prep
     save.assert_called_once()
 
 
+@pytest.mark.parametrize("tool_speaks", [False, True])
+async def test_loop_trace_covers_tool_round_and_final_response_without_session_history(
+    monkeypatch, prepared_loop, caplog, tool_speaks,
+):
+    from special_agent.utils import logging as activity_log
+
+    monkeypatch.setattr(activity_log, "_TRACE_ENABLED", True)
+    history, save = prepared_loop
+    history[0]["content"] = "PRIVATE_SYSTEM_HISTORY"
+    tool_result = {"kind": "clarify", "speak": "Which room?"} if tool_speaks else {"matched": 1}
+    tool = agent_core.ToolSpec(
+        name="lookup", description="Look up a room", parameters={"type": "object"},
+        returns=None, func=AsyncMock(return_value=tool_result),
+    )
+    function_call = SimpleNamespace(name="lookup", call_id="call_round", arguments="{}")
+    call = AsyncMock(side_effect=[
+        SimpleNamespace(output=[], function_calls=[function_call], final_text=None),
+        SimpleNamespace(output=[], function_calls=[], final_text="The room is ready."),
+    ])
+    monkeypatch.setattr(agent_core, "call_llm", call)
+
+    result = await agent_core.plan_execute("Check my room", [tool])
+
+    if tool_speaks:
+        assert result["prompt_payload"] == tool_result
+        assert call.await_count == 1
+    else:
+        assert result == "The room is ready." and call.await_count == 2
+    save.assert_called_once()
+    lines = [record.getMessage() for record in caplog.records
+             if record.name == "custom_components.special_agent.activity"
+             and record.getMessage().startswith("event=agent_loop ")]
+    assert "phase=started" in lines[0] and "phase=session_loaded" in lines[1]
+    assert "phase=finished" in lines[-1] and "status=completed" in lines[-1]
+    if tool_speaks:
+        assert "prompt_kind=clarify" in lines[-1] and "decision=await_user" in lines[-1]
+    else:
+        assert "reason=tool_results_ready" in lines[-2] and "iteration=2" in lines[-1]
+    assert "Check my room" in caplog.text
+    assert "Which room?" in caplog.text if tool_speaks else "The room is ready." in caplog.text
+    assert "PRIVATE_SYSTEM_HISTORY" not in caplog.text
+    assert '"messages"' not in caplog.text
+
+
+@pytest.mark.parametrize("stage", ["setup", "model", "tools"])
+async def test_cancelled_loop_logs_terminal_phase_and_preserves_cancellation(
+    monkeypatch, prepared_loop, caplog, stage,
+):
+    cancelled = AsyncMock(side_effect=asyncio.CancelledError())
+    if stage == "setup":
+        monkeypatch.setattr(agent_core, "get_async_client", cancelled)
+    elif stage == "model":
+        monkeypatch.setattr(agent_core, "call_llm", cancelled)
+    else:
+        monkeypatch.setattr(agent_core, "call_llm", AsyncMock(return_value=SimpleNamespace(
+            output=[], function_calls=[SimpleNamespace(name="lookup")], final_text=None,
+        )))
+        monkeypatch.setattr(agent_core, "validate_and_execute_tools", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await agent_core.plan_execute("Check my room", [])
+    lines = [record.getMessage() for record in caplog.records
+             if record.name == "custom_components.special_agent.activity"
+             and record.getMessage().startswith("event=agent_loop ")]
+    assert "phase=finished" in lines[-1] and "status=cancelled" in lines[-1]
+    assert prepared_loop[1].call_count == 0
+
+
 @pytest.mark.parametrize("error_code", ["context_overflow", "context_length_exceeded"])
 def test_context_recovery_preserves_complete_current_tool_exchange(error_code):
     old = [{"role": "system", "content": "system"}, {"role": "user", "content": "old"}]

@@ -9,7 +9,8 @@ import voluptuous as vol
 
 from . import DOMAIN
 from .utils.constants import (
-    AGENT_MODELS, DEFAULT_AGENT_MODEL, REASONING_EFFORTS, normalize_reasoning_effort,
+    AGENT_MODELS, DEFAULT_AGENT_MODEL, DEFAULT_TRACE_LOGGING, REASONING_EFFORTS,
+    normalize_reasoning_effort,
 )
 
 _SECRET_FIELDS = ("openai_api_key", "spotify_client_secret")
@@ -34,6 +35,7 @@ def _schema(current: dict[str, Any], *, setup: bool = False):
         vol.Optional("session_timeout_minutes", default=current.get("session_timeout_minutes", 5)):
             vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
         vol.Optional("enable_performance_tracking", default=current.get("enable_performance_tracking", False)): bool,
+        vol.Optional("trace_logging", default=current.get("trace_logging", DEFAULT_TRACE_LOGGING)): bool,
         vol.Optional("scene_memory_enabled", default=current.get("scene_memory_enabled", False)): bool,
     })
 

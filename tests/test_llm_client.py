@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from special_agent.utils.llm_client import call_llm, handle_llm_error
+from special_agent.utils import logging as activity_log
+from special_agent.utils.response_utils import validate_and_execute_tools
 
 
 @pytest.fixture
@@ -77,12 +79,14 @@ async def test_sdk_sends_explicit_tier_preserves_strict_and_reports_responses_us
     }
     assert result.reasoning_count == 1 and result.final_text == "PRIVATE_RESPONSE"
     lines = [record.getMessage() for record in caplog.records
-             if record.name == "custom_components.special_agent.activity"]
+             if record.name == "custom_components.special_agent.activity"
+             and record.getMessage().startswith("event=model ")]
     assert len(lines) == 2
     assert "phase=sent" in lines[0] and "phase=received" in lines[1]
     assert f"effective_tier={effective_tier}" in lines[1]
     assert "function_count=2" in lines[1]
     assert "function_names=registered_tool,unknown" in lines[1]
+    assert "decision=call_tools" in lines[1] and "iteration=3" in lines[1]
     assert "input_tokens=120" in lines[1] and "output_tokens=30" in lines[1]
     assert "PRIVATE" not in caplog.text
 
@@ -115,3 +119,67 @@ async def test_cancelled_llm_request_logs_completion_without_retry(caplog):
         await call_llm(SimpleNamespace(responses=SimpleNamespace(create=create)), [], [], "gpt-5", "low", 0)
     create.assert_awaited_once()
     assert "phase=failed" in caplog.text and "status=cancelled" in caplog.text
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_model_trace_explains_provider_tools_and_summaries_with_call_correlation(
+    sdk_transport, monkeypatch, caplog, enabled,
+):
+    openai, httpx = sdk_transport
+    monkeypatch.setattr(activity_log, "_TRACE_ENABLED", enabled)
+    payloads = []
+
+    def respond(request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "id": "resp_trace", "object": "response", "created_at": 1,
+            "model": "gpt-5.6-terra", "status": "completed",
+            "output": [
+                {"type": "reasoning", "id": "reasoning_trace", "encrypted_content": "PRIVATE_ENCRYPTED",
+                 "summary": [{"type": "summary_text", "text": "I checked the forecast."}],
+                 "content": [{"type": "reasoning_text", "text": "PRIVATE_RAW_REASONING"}]},
+                {"type": "web_search_call", "id": "search_trace", "status": "completed",
+                 "action": {"type": "search", "query": "forecast tomorrow"}},
+                {"type": "function_call", "id": "fn_trace", "call_id": "call_trace",
+                 "name": "lookup", "arguments": '{"query":"local weather"}'},
+            ],
+        })
+
+    tools = [{"type": "function", "function": {
+        "name": "lookup", "description": "Lookup data", "parameters": {"type": "object"},
+    }}]
+    token = activity_log.begin_request()
+    try:
+        async with openai.AsyncOpenAI(
+            api_key="test-only", max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        ) as client:
+            response = await call_llm(client, [
+                {"role": "system", "content": "PRIVATE_SYSTEM_PROMPT"},
+                {"role": "user", "content": "PRIVATE_HISTORY"},
+            ], tools, "gpt-5.6-terra", "low", 0)
+        spec = SimpleNamespace(name="lookup", func=AsyncMock(return_value={"forecast": "sunny"}),
+                               validate=None, can_run_parallel=True)
+        await validate_and_execute_tools(response.function_calls, {"lookup": spec}, set(), None, iteration=1)
+    finally:
+        activity_log.end_request(token)
+
+    assert payloads[0]["reasoning"] == ({"effort": "low", "summary": "auto"} if enabled else {"effort": "low"})
+    summaries = [record.getMessage() for record in caplog.records
+                 if record.name == "custom_components.special_agent.activity"]
+    assert any("event=model_builtin_tool" in line and "tool=web_search" in line for line in summaries)
+    assert any("reasoning_count=1" in line and "web_search_count=1" in line for line in summaries)
+    correlated = [line for line in summaries if "tool=lookup " in line]
+    fields = [dict(field.split("=", 1) for field in line.split()) for line in correlated]
+    assert len(fields) == 3  # Requested by model, execution started, execution finished.
+    assert {field["call_id"] for field in fields} == {activity_log.device_correlation("call_trace")}
+    assert len({field["request"] for field in fields}) == 1 and fields[0]["request"] != "-"
+    assert {field["iteration"] for field in fields} == {"1"}
+    details = "\n".join(record.getMessage() for record in caplog.records
+                        if record.name == "custom_components.special_agent.trace")
+    assert bool(details) is enabled
+    if enabled:
+        assert "I checked the forecast." in details and "forecast tomorrow" in details
+        assert "local weather" in details and "sunny" in details
+    assert "PRIVATE" not in caplog.text
+    assert "call_trace" not in caplog.text and "resp_trace" not in caplog.text

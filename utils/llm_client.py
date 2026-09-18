@@ -110,8 +110,13 @@ async def call_llm(
     tier = "fast" if fast_mode else "default"
     effort = normalize_reasoning_effort(model, reasoning_effort)
     started = time.perf_counter()
-    fields = {"model": model, "effort": effort, "requested_tier": tier, "iteration": depth}
-    log.activity("model", phase="sent", **fields)
+    fields = {"model": model, "effort": effort, "requested_tier": tier,
+              "iteration": depth + 1, "source": "agent_loop", "backend": "responses_api"}
+    reasoning = {"effort": effort}
+    if log.trace_enabled():
+        reasoning["summary"] = "auto"
+    log.activity("model", phase="sent", message_count=len(input_messages),
+                 tool_count=len(tools_with_search), **fields)
     try:
         resp = await client.responses.create(
             model=model,
@@ -119,7 +124,7 @@ async def call_llm(
             input=input_messages,
             tools=tools_with_search,
             tool_choice="auto",
-            reasoning={"effort": effort},
+            reasoning=reasoning,
             service_tier=tier,
         )
     except (Exception, asyncio.CancelledError) as error:
@@ -138,6 +143,8 @@ async def call_llm(
     
     # Extract metrics
     reasoning_count = sum(1 for msg in response_output if getattr(msg, "type", None) == "reasoning")
+    web_searches = [item for item in response_output if getattr(item, "type", None) == "web_search_call"]
+    response_id = log.device_correlation(getattr(resp, "id", None))
     
     usage_dict = {}
     if hasattr(resp, 'usage') and resp.usage:
@@ -158,13 +165,36 @@ async def call_llm(
     
     registered_names = {tool.get("name") for tool in flattened_tools if tool.get("type") == "function"}
     log.activity("model", phase="received", **fields,
+                 response_id=response_id,
                  status=getattr(resp, "status", None) or "returned",
                  effective_tier=getattr(resp, "service_tier", None) or "unknown",
                  elapsed_ms=round((time.perf_counter() - started) * 1000),
                  function_count=len(function_calls),
                  function_names=[call.name if call.name in registered_names else "unknown" for call in function_calls],
+                 decision="call_tools" if function_calls else "text_response" if final_text else "no_action",
+                 reasoning_count=reasoning_count, web_search_count=len(web_searches),
                  **{key: value for key, value in usage_dict.items()
                     if key in {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"} and value is not None})
+    for call in function_calls:
+        log.activity("model_tool_call", phase="requested", response_id=response_id,
+                     call_id=log.device_correlation(getattr(call, "call_id", None)),
+                     tool=call.name if call.name in registered_names else "unknown", **fields)
+    for search in web_searches:
+        search_fields = {"call_id": log.device_correlation(getattr(search, "id", None)),
+                         "response_id": response_id, "tool": "web_search", **fields}
+        log.activity("model_builtin_tool", phase="returned",
+                     status=getattr(search, "status", None) or "returned", **search_fields)
+        action = getattr(search, "action", None)
+        log.trace_detail("web_search", payload={
+            key: getattr(action, key, None) for key in ("type", "query", "queries", "url", "pattern")
+        }, **search_fields)
+    # Summaries are provider-authored explanations, never raw/encrypted reasoning.
+    summaries = [getattr(summary, "text", "") for item in response_output
+                 if getattr(item, "type", None) == "reasoning"
+                 for summary in (getattr(item, "summary", None) or [])
+                 if getattr(summary, "type", None) == "summary_text"]
+    log.trace_detail("model_output", payload={"text": final_text, "reasoning_summaries": summaries},
+                     response_id=response_id, **fields)
     return LLMResponse(
         output=response_output,
         function_calls=function_calls,

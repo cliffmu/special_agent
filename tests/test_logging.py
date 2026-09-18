@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -131,3 +132,121 @@ def test_activity_buffer_serializes_executor_threads():
 def test_activity_buffer_rejects_invalid_cursors_and_page_limits(values):
     with pytest.raises(ValueError):
         log.ActivityBuffer().read(**values)
+
+
+@pytest.fixture
+def detailed_trace(monkeypatch):
+    monkeypatch.setattr(log, "_TRACE_ENABLED", False)
+    monkeypatch.setattr(log, "_TRACE_BUFFER", log.ActivityBuffer(line_limit=8192))
+    monkeypatch.setattr(log, "_ACTIVITY_BUFFER", log.ActivityBuffer())
+    log.configure_trace(enabled=True)
+
+
+def test_trace_is_opt_in_and_never_enters_default_activity(monkeypatch, caplog):
+    monkeypatch.setattr(log, "_TRACE_ENABLED", False)
+    monkeypatch.setattr(log, "_ACTIVITY_BUFFER", log.ActivityBuffer())
+    caplog.set_level(logging.INFO)
+    log.trace_detail("tool_input", payload={"entity_id": "light.example"})
+    assert not caplog.records
+    log.configure_trace(enabled=True)
+    try:
+        log.activity("tool", phase="started")
+        log.trace_detail("tool_input", payload={"entity_id": "light.example"})
+        assert len(log.read_activity()["records"]) == 1
+        records = log.read_activity(detail=True)["records"]
+        assert len(records) == 2 and "light.example" in records[1]["line"]
+        assert log.is_trace_line(records[1]["line"])
+        log.configure_trace(enabled=False)
+        assert "light.example" not in str(log.read_activity(detail=True))
+        log.configure_trace(enabled=True)
+        assert log.read_activity(detail=True)["records"] == []
+    finally:
+        log.configure_trace(enabled=False)
+
+
+def test_trace_redacts_nested_credentials_encoded_json_and_media(detailed_trace, caplog):
+    caplog.set_level(logging.INFO)
+    payload = {"entity_id": "light.example", "brightness_pct": 40,
+               "nested": {"client_secret": "SECRET_1", "Authorization": "SECRET_2",
+                          "X-Plex-Token": "SECRET_3", "audio": "SECRET_4"},
+               "encoded": json.dumps({"api_key": "SECRET_5", "token": "SECRET_6"}),
+               "text": "password=SECRET_7 Bearer SECRET_8 sk-private-token https://host/?token=SECRET_9",
+               "jwt": "eyJheader.payload.signature", "instructions": "SECRET_10"}
+    log.trace_detail("tool_output", payload=payload)
+    line = caplog.records[-1].getMessage()
+    assert "light.example" in line and '"brightness_pct":40' in line
+    assert "SECRET_" not in line and "eyJheader" not in line
+    assert log.is_trace_line(line)
+    assert payload["nested"]["client_secret"] == "SECRET_1"
+
+
+@pytest.mark.parametrize("payload", [
+    "multiline\nvalue\rwith\tcontrol", "x" * 100000,
+    {"items": [{"entity_id": "light.example", "value": "x" * 2048}] * 30},
+    {"field_" + str(i): "quote\"\\" * 900 for i in range(100)},
+    float("nan"), 10**1000,
+])
+def test_trace_bounds_payloads_and_relays_its_own_output(detailed_trace, payload):
+    log.trace_detail("tool_output", payload=payload)
+    line = log.read_activity(detail=True)["records"][-1]["line"]
+    assert len(line) <= 8192 and "\n" not in line and "\r" not in line
+    assert log.is_trace_line(line)
+    json.loads(line.partition(" payload=")[2])
+
+
+def test_trace_handles_cycles_and_private_objects_without_repr(detailed_trace):
+    class PrivateObject:
+        def __repr__(self):
+            raise AssertionError("Do not inspect object representations")
+
+    payload = {"opaque": PrivateObject()}
+    payload["cycle"] = payload
+    log.trace_detail("tool_output", payload=payload)
+    line = log.read_activity(detail=True)["records"][-1]["line"]
+    assert "[unsupported]" in line and "[truncated]" in line
+    assert log.is_trace_line(line)
+
+
+def test_large_metadata_keeps_detail_replay_valid_and_capture_time_trusted(detailed_trace, monkeypatch):
+    monkeypatch.setattr(log.time, "time", lambda: 1234.5)
+    fields = {name: "x" * 100 for name in log._FIELD_NAMES if name not in {"device", "function_names"}}
+    fields["captured_at_ms"] = 9999
+    log.trace_detail("tool_output", payload={"result": "available"}, **fields)
+    line = log.read_activity(detail=True)["records"][-1]["line"]
+    assert "captured_at_ms=1234500" in line and "captured_at_ms=9999" not in line
+    assert log.is_trace_line(line)
+
+
+@pytest.mark.parametrize("line", [
+    'event=tool request=- payload={"api_key":"PRIVATE"}',
+    'event=tool request=- payload={"text":"Bearer PRIVATE"}',
+    'event=tool request=- payload={"text":"https://host/?token=PRIVATE"}',
+    'event=tool request=- payload={"value":NaN}',
+    'event=tool request=- payload={"value":1}\nforged=true',
+    'event=tool request=- unknown=field payload={}',
+    'event=tool request=- device=room_name payload={}',
+])
+def test_trace_relay_rejects_unsanitized_or_forged_payloads(line):
+    assert not log.is_trace_line(line)
+
+
+async def test_detail_context_matches_activity_and_isolates_parallel_jobs(detailed_trace):
+    async def work(session, job):
+        request = log.begin_request()
+        context = log.begin_job(session, job)
+        try:
+            await asyncio.sleep(0)
+            log.activity("tool", phase="started")
+            log.trace_detail("tool_input", payload={"query": "test"})
+            assert log.job_correlation() == (session, job)
+        finally:
+            log.end_job(context)
+            log.end_request(request)
+
+    await asyncio.gather(work("a" * 10, "b" * 10), work("c" * 10, "d" * 10))
+    records = log.read_activity(detail=True)["records"]
+    for session in ("a" * 10, "c" * 10):
+        matching = [record["line"] for record in records if f"session={session}" in record["line"]]
+        assert len(matching) == 2
+        assert len({line.split("request=")[1].split()[0] for line in matching}) == 1
+    assert log.job_correlation() is None

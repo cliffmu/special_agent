@@ -213,8 +213,57 @@ async def test_activity_endpoint_returns_only_sanitized_activity(bridge):
     assert "PRIVATE" not in response.text
 
 
+async def test_detail_stream_requires_capture_and_reader_opt_in(bridge, monkeypatch):
+    monkeypatch.setattr(activity_log, "_TRACE_ENABLED", False)
+    monkeypatch.setattr(activity_log, "_TRACE_BUFFER", activity_log.ActivityBuffer(line_limit=8192))
+    activity_log.configure_trace(enabled=True)
+    activity_log.activity("tool", phase="started")
+    activity_log.trace_detail("tool_input", payload={"entity_id": "light.example", "api_key": "PRIVATE"})
+    view = bridge.api.LiveActivityView()
+    default = await view.get(request(bridge))
+    detailed = await view.get(request(bridge, query={"detail": "true"}))
+    assert "light.example" not in default.text
+    assert "light.example" in detailed.text and "PRIVATE" not in detailed.text
+    assert len(json.loads(detailed.body)["records"]) == 2
+    activity_log.configure_trace(enabled=False)
+    disabled = await view.get(request(bridge, query={"detail": "true"}))
+    assert "light.example" not in disabled.text
+
+
+@pytest.mark.parametrize("context", [None, {}, {"session": "a" * 10},
+    {"session": "a" * 10, "job": "b" * 10, "prompt": "PRIVATE"},
+    {"session": "sk-private", "job": "b" * 10},
+    {"session": "a" * 10, "job": "room_name"},
+    {"session": "a" * 10, "job": 1}])
+async def test_invalid_trace_context_rejected_before_dispatch(bridge, context):
+    with pytest.raises(web.HTTPBadRequest):
+        await post(bridge, trace_context=context)
+    bridge.conversation.async_converse.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError("PRIVATE"), asyncio.CancelledError()])
+async def test_live_job_correlation_is_bound_and_always_reset(bridge, failure):
+    async def execute(*args, **kwargs):
+        assert activity_log.job_correlation() == ("a" * 10, "b" * 10)
+        activity_log.activity("tool", phase="started")
+        if failure:
+            raise failure
+        return "Done"
+
+    bridge.execute.side_effect = execute
+    data = {"trace_context": {"session": "a" * 10, "job": "b" * 10}}
+    if failure:
+        with pytest.raises(type(failure)):
+            await post(bridge, **data)
+    else:
+        await post(bridge, **data)
+    assert activity_log.job_correlation() is None
+    assert all("session=" + "a" * 10 in record["line"] and "job=" + "b" * 10 in record["line"]
+               for record in activity_log.read_activity()["records"])
+
+
 @pytest.mark.parametrize("query", [{"cursor": "-1"}, {"cursor": "bad"}, {"cursor": str(2**63)},
-                                     {"limit": "201"}, {"limit": "0"}, {"epoch": "bad\nepoch"}, {"source": "all"}])
+                                     {"limit": "201"}, {"limit": "0"}, {"epoch": "bad\nepoch"}, {"source": "all"}, {"detail": "yes"}])
 async def test_activity_query_is_bounded(bridge, query):
     with pytest.raises(web.HTTPBadRequest):
         await bridge.api.LiveActivityView().get(request(bridge, query=query))

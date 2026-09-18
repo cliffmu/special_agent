@@ -14,6 +14,7 @@
           "require_confirmation": "Require confirmation",
           "session_timeout_minutes": "Agent conversation history timeout (minutes)",
           "enable_performance_tracking": "Save detailed performance CSV",
+          "trace_logging": "Detailed trace logging",
           "scene_memory_enabled": "Enable learned routine memory"
         },
         "data_description": {
@@ -24,6 +25,7 @@
           "fast_mode": "Requests OpenAI Fast processing at higher token rates (currently 2x for the new models). Off explicitly requests standard processing. This cannot speed up external tools.",
           "session_timeout_minutes": "Controls stored Python-agent conversation context. The Voice listening idle timeout is set separately in the Special Agent Live app.",
           "enable_performance_tracking": "Optional detailed diagnostics. Concise activity logs are available in Home Assistant Core without this setting.",
+          "trace_logging": "Include agent steps, tool inputs/results and model output in Home Assistant logs. Enable this in the Live app too to view the full path in its Log tab. Recognized credentials are redacted, but traces can contain conversation and home details. Off by default.",
           "scene_memory_enabled": "Learn and reuse routines in Special Agent scene_memory.json. These are separate from Home Assistant scenes.yaml."
         }
       }
@@ -46,6 +48,7 @@
           "require_confirmation": "Require confirmation",
           "session_timeout_minutes": "Agent conversation history timeout (minutes)",
           "enable_performance_tracking": "Save detailed performance CSV",
+          "trace_logging": "Detailed trace logging",
           "scene_memory_enabled": "Enable learned routine memory"
         },
         "data_description": {
@@ -56,6 +59,7 @@
           "fast_mode": "Requests OpenAI Fast processing at higher token rates (currently 2x for the new models). Off explicitly requests standard processing. This cannot speed up external tools.",
           "session_timeout_minutes": "Controls stored Python-agent conversation context. The Voice listening idle timeout is set separately in the Special Agent Live app.",
           "enable_performance_tracking": "Optional detailed diagnostics. Concise activity logs are available in Home Assistant Core without this setting.",
+          "trace_logging": "Include agent steps, tool inputs/results and model output in Home Assistant logs. Enable this in the Live app too to view the full path in its Log tab. Recognized credentials are redacted, but traces can contain conversation and home details. Off by default.",
           "scene_memory_enabled": "Learn and reuse routines in Special Agent scene_memory.json. These are separate from Home Assistant scenes.yaml."
         }
       }

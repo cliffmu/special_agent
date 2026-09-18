@@ -13,11 +13,11 @@ from . import DOMAIN
 from .conversation import SpecialAgentConversation, live_model_settings
 from .session_store import SessionBusyError
 from .utils.constants import AGENT_MODELS, REASONING_EFFORTS
-from .utils.logging import read_activity
+from .utils.logging import read_activity, begin_job, end_job
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _LANGUAGE = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
-_FIELDS = {"agent_id", "text", "language", "conversation_id", "device_id", "model", "reasoning_effort", "fast_mode"}
+_FIELDS = {"agent_id", "text", "language", "conversation_id", "device_id", "model", "reasoning_effort", "fast_mode", "trace_context"}
 _MAX_BODY = 1024 * 1024
 
 
@@ -59,6 +59,12 @@ async def _request_data(request):
         raise web.HTTPBadRequest(text="Unsupported reasoning effort")
     if "fast_mode" in data and type(data["fast_mode"]) is not bool:
         raise web.HTTPBadRequest(text="fast_mode must be a boolean")
+    if "trace_context" in data:
+        context = data["trace_context"]
+        if (type(context) is not dict or set(context) != {"session", "job"}
+                or any(type(value) is not str or not re.fullmatch(r"[0-9a-f]{10}", value)
+                       for value in context.values())):
+            raise web.HTTPBadRequest(text="Invalid trace context")
     return data
 
 
@@ -77,6 +83,8 @@ class LiveProcessView(http.HomeAssistantView):
         settings = {key: data[key] for key in ("model", "reasoning_effort", "fast_mode") if key in data}
         # Supplying a real ID before dispatch avoids the integration's None session key.
         conversation_id = data.get("conversation_id") or str(uuid.uuid4())
+        trace = data.get("trace_context")
+        token = begin_job(trace["session"], trace["job"]) if trace else None
         try:
             with live_model_settings(settings):
                 result = await conversation.async_converse(
@@ -86,6 +94,9 @@ class LiveProcessView(http.HomeAssistantView):
                 )
         except SessionBusyError as error:
             raise web.HTTPTooManyRequests(text="Too many active conversations; try again shortly") from error
+        finally:
+            if token is not None:
+                end_job(token)
         return self.json(result.as_dict())
 
 
@@ -96,14 +107,17 @@ class LiveActivityView(http.HomeAssistantView):
 
     async def get(self, request):
         try:
-            if set(request.query) - {"cursor", "epoch", "limit"}:
+            if set(request.query) - {"cursor", "epoch", "limit", "detail"}:
                 raise ValueError("Unsupported activity query")
             cursor = int(request.query.get("cursor", "0"))
             limit = int(request.query.get("limit", "200"))
             epoch = request.query.get("epoch")
             if epoch is not None and (len(epoch) > 128 or not _IDENTIFIER.fullmatch(epoch)):
                 raise ValueError("Invalid activity epoch")
-            data = read_activity(cursor=cursor, epoch=epoch, limit=limit)
+            detail = request.query.get("detail", "false")
+            if detail not in {"true", "false"}:
+                raise ValueError("Invalid detail option")
+            data = read_activity(cursor=cursor, epoch=epoch, limit=limit, detail=detail == "true")
         except ValueError as error:
             raise web.HTTPBadRequest(text="Invalid activity cursor, epoch, or limit") from error
         return self.json(data)

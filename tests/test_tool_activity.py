@@ -1,5 +1,7 @@
 """Tool activity reports outcomes and timing without exposing arguments/results."""
 
+import asyncio
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -31,7 +33,8 @@ async def test_explicit_tool_outcomes_are_logged_without_changing_results(monkey
     finally:
         activity_log.end_request(token)
     lines = [record.getMessage() for record in caplog.records
-             if record.name == "custom_components.special_agent.activity"]
+             if record.name == "custom_components.special_agent.activity"
+             and record.getMessage().startswith("event=tool ")]
     assert len(lines) == 2 and "phase=started" in lines[0]
     assert "phase=finished" in lines[1] and "status=" + status in lines[1]
     fields = [dict(field.split("=", 1) for field in line.split()) for line in lines]
@@ -40,6 +43,10 @@ async def test_explicit_tool_outcomes_are_logged_without_changing_results(monkey
     assert "PRIVATE" not in caplog.text and "private-call-id" not in caplog.text
     assert not output.all_failed, "activity classification must not change existing result handling"
     assert "PRIVATE_RESULT" in output.messages[0]["output"]
+    batch_line = next(record.getMessage() for record in caplog.records
+                      if record.getMessage().startswith("event=tool_batch ")
+                      and "phase=finished" in record.getMessage())
+    assert "status=" + ("completed" if status == "ok" else status) in batch_line
 
 
 async def test_tool_exception_is_logged_without_its_private_message(monkeypatch, caplog):
@@ -95,3 +102,89 @@ def test_oversized_observation_keeps_outcome_and_never_supplies_partial_commands
     assert observation["reported_outcome"]["accepted"] is True
     assert "steps" not in observation
     assert "Do not repeat a modifying action" in observation["message"]
+
+
+async def test_parallel_batch_traces_actual_validated_inputs_and_model_outputs(monkeypatch, caplog):
+    monkeypatch.setattr(performance, "_enabled", False)
+    monkeypatch.setattr(activity_log, "_TRACE_ENABLED", True)
+    entered = [asyncio.Event(), asyncio.Event()]
+
+    async def lookup(index, query, password):
+        entered[index].set()
+        await asyncio.wait_for(entered[1 - index].wait(), timeout=1)
+        return {"index": index, "query": query, "token": "PRIVATE_RESULT_TOKEN"}
+
+    spec = SimpleNamespace(name="lookup", func=lookup, can_run_parallel=True,
+                           validate=lambda args: {**args, "query": args["query"].strip()})
+    calls = [SimpleNamespace(name="lookup", call_id=f"call_{index}", arguments=json.dumps({
+        "index": index, "query": f" room {index} ", "password": "PRIVATE_PASSWORD",
+    })) for index in range(2)]
+    result = await validate_and_execute_tools(calls, {"lookup": spec}, set(), None, iteration=2)
+
+    summaries = [record.getMessage() for record in caplog.records
+                 if record.name == "custom_components.special_agent.activity"]
+    batches = [dict(field.split("=", 1) for field in line.split()) for line in summaries
+               if line.startswith("event=tool_batch ")]
+    assert [batch["phase"] for batch in batches] == ["planned", "started", "finished"]
+    assert batches[1]["mode"] == "parallel" and batches[1]["tool_count"] == "2"
+    assert len({batch["batch"] for batch in batches}) == 1
+    tool_events = [dict(field.split("=", 1) for field in line.split()) for line in summaries
+                   if line.startswith("event=tool ")]
+    assert {item["batch"] for item in tool_events} == {batches[0]["batch"]}
+    assert {item["iteration"] for item in tool_events} == {"2"}
+    assert len({item["call_id"] for item in tool_events}) == 2
+    details = [record.getMessage() for record in caplog.records
+               if record.name == "custom_components.special_agent.trace"]
+    inputs = [json.loads(line.split(" payload=", 1)[1]) for line in details
+              if line.startswith("event=tool_input ")]
+    outputs = [json.loads(line.split(" payload=", 1)[1]) for line in details
+               if line.startswith("event=tool_output ")]
+    assert {item["query"] for item in inputs} == {"room 0", "room 1"}
+    assert {item["index"] for item in outputs} == {0, 1}
+    assert all(item["password"] == "[redacted]" for item in inputs)
+    assert all(item["token"] == "[redacted]" for item in outputs)
+    assert "PRIVATE" not in caplog.text
+    assert all("PRIVATE_RESULT_TOKEN" in item["output"] for item in result.messages)
+
+
+async def test_skipped_tools_keep_call_correlation_and_explain_serial_requirement(monkeypatch, caplog):
+    monkeypatch.setattr(performance, "_enabled", False)
+    monkeypatch.setattr(activity_log, "_TRACE_ENABLED", True)
+    lookup = SimpleNamespace(name="lookup", func=AsyncMock(return_value={"ok": True}),
+                             validate=None, can_run_parallel=True)
+    confirm = SimpleNamespace(name="confirm", func=AsyncMock(), validate=None, can_run_parallel=False)
+    calls = [SimpleNamespace(name="lookup", arguments='{"query":"duplicate"}', call_id="dup"),
+             SimpleNamespace(name="lookup", arguments='{"query":"new"}', call_id="valid"),
+             SimpleNamespace(name="confirm", arguments='{"question":"Proceed?"}', call_id="serial")]
+    tried = {("lookup", json.dumps({"query": "duplicate"}, sort_keys=True))}
+    result = await validate_and_execute_tools(calls, {"lookup": lookup, "confirm": confirm}, tried, None, iteration=3)
+
+    lookup.func.assert_awaited_once_with(query="new")
+    confirm.func.assert_not_awaited()
+    assert len(result.messages) == 3
+    summaries = [record.getMessage() for record in caplog.records
+                 if record.name == "custom_components.special_agent.activity"]
+    skipped = [dict(field.split("=", 1) for field in line.split()) for line in summaries
+               if "phase=skipped" in line]
+    assert {item["status"] for item in skipped} == {"not_parallel", "duplicate"}
+    assert {item["call_id"] for item in skipped} == {
+        activity_log.device_correlation("dup"), activity_log.device_correlation("serial"),
+    }
+    assert any("mode=single" in line and "function_count=3" in line and "tool_count=1" in line
+               for line in summaries)
+    assert "event=tool_skipped" in caplog.text and "cannot run in parallel" in caplog.text
+
+
+async def test_cancelled_tool_finishes_its_correlated_activity(monkeypatch, caplog):
+    monkeypatch.setattr(performance, "_enabled", False)
+    spec = SimpleNamespace(name="lookup", func=AsyncMock(side_effect=asyncio.CancelledError()),
+                           validate=None, can_run_parallel=True)
+    call = SimpleNamespace(name="lookup", arguments="{}", call_id="cancelled")
+    with pytest.raises(asyncio.CancelledError):
+        await validate_and_execute_tools([call], {"lookup": spec}, set(), None, iteration=4)
+    lines = [record.getMessage() for record in caplog.records
+             if record.name == "custom_components.special_agent.activity"
+             and record.getMessage().startswith("event=tool ")]
+    assert len(lines) == 2
+    assert "phase=finished" in lines[1] and "status=cancelled" in lines[1]
+    assert "call_id=" + activity_log.device_correlation("cancelled") in lines[1]

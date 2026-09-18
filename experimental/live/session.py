@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Awaitable, Callable
 
 from .backend import BackendError
-from utils.logging import activity, begin_job, end_job
+from utils.logging import activity, begin_job, end_job, trace_detail
 
 LOG = logging.getLogger(__name__ + ".activity")
 LOG.setLevel(logging.INFO)
@@ -60,6 +60,8 @@ class LiveSession:
         self._closed = asyncio.Event()
         self._worker: asyncio.Task | None = None
         self._close_lock = asyncio.Lock()
+        activity("live_session", logger=LOG, session=self.id[:10], phase="created",
+                 source="gpt_live", route="delegation_only")
 
     def mark_activity(self, at=None):
         """Preserve the latest speech/work time, including queued audible playback."""
@@ -81,7 +83,8 @@ class LiveSession:
         # Upstream delegation identifiers are opaque input; hash before logging.
         activity("delegation", logger=LOG, session=self.id[:10],
                  job=hashlib.sha256(str(job.id).encode()).hexdigest()[:10],
-                 phase=phase, status=job.status, **fields)
+                 source="gpt_live", route="delegation", phase=phase,
+                 status=fields.pop("status", job.status), **fields)
 
     def snapshot(self):
         return {"state": self.state, "error": self.error, "finalized": self.finalized,
@@ -99,6 +102,8 @@ class LiveSession:
         if kind == "session.started":
             self.state = "active"
             self.mark_activity()
+            activity("live_session", logger=LOG, session=self.id[:10], phase="started",
+                     source="gpt_live", route="delegation_only")
         elif kind in ("session.input_transcript.delta", "session.output_transcript.delta"):
             delta = event.get("delta", "")
             if not isinstance(delta, str) or not delta:
@@ -123,7 +128,7 @@ class LiveSession:
                                   "The test session has too many pending tasks. Please start a new session.")
                 return
             self.jobs[job_id] = Job(job_id)
-            self.log_job(self.jobs[job_id], "queued")
+            self.log_job(self.jobs[job_id], "queued", remaining=self._queue.qsize() + 1)
             self._queue.put_nowait(job_id)
             self.mark_activity()
             if self._worker is None or self._worker.done():
@@ -134,23 +139,39 @@ class LiveSession:
                 self.finalized, self.state = True, "closed"
                 self._closed.set()
                 self._skip_queued()
+                activity("live_session", logger=LOG, session=self.id[:10], phase="closed",
+                         source="gpt_live", status="finalized")
         elif kind == "error":
             self.fail("GPT-Live rejected a session event. See the API event code in the server log.")
 
     def fail(self, message):
         self.error, self.state = message, "error"
         self._skip_queued()
+        activity("live_session", logger=LOG, session=self.id[:10], phase="failed",
+                 source="gpt_live", status="error")
 
     async def append(self, kind, job_id, content):
+        fields = {"session": self.id[:10], "job": hashlib.sha256(str(job_id).encode()).hexdigest()[:10],
+                  "source": "gpt_live", "mode": "background_context" if kind == "session.thinking.append" else "commentary"}
         if self.state in ("closing", "closed", "error"):
+            activity("live_delivery", logger=LOG, phase="skipped", reason=self.state, **fields)
             return
+        # A thinking.append event carries a previous backend result quietly; it
+        # is not the Live model's private reasoning or proof of spoken playback.
+        trace_detail("live_delivery", payload={"content": content}, phase="sending", **fields)
+        activity("live_delivery", logger=LOG, phase="sending", **fields)
+        chunks_sent = 0
         for chunk in commentary_chunks(content):
             try:
                 await self.send({"type": kind, "event_id": uuid.uuid4().hex,
                                  "delegation_id": job_id, "content": chunk})
-            except Exception:
+                chunks_sent += 1
+            except Exception as error:
+                activity("live_delivery", logger=LOG, phase="failed", error_type=type(error).__name__,
+                         message_count=chunks_sent, **fields)
                 self.fail("Backend update could not be delivered to the live conversation.")
                 return
+        activity("live_delivery", logger=LOG, phase="sent", message_count=chunks_sent, **fields)
 
     def _history(self):
         # Retain recent role-labelled context without sending an entire long session every turn.
@@ -167,12 +188,16 @@ class LiveSession:
             job = self.jobs[await self._queue.get()]
             token = begin_job(self.id[:10], hashlib.sha256(str(job.id).encode()).hexdigest()[:10])
             job_started = time.monotonic()
+            terminal_status = None
             try:
                 if self.state in ("closing", "closed", "error"):
                     job.status = "not_started"
                     continue
                 # Delegation is the trigger. A debounce alone NEVER starts backend work.
-                deadline = time.monotonic() + self.context_timeout
+                context_started = time.monotonic()
+                deadline = context_started + self.context_timeout
+                if not self._pending_text.strip() or context_started - self.last_input_at < self.settle_seconds:
+                    self.log_job(job, "context_wait", reason="transcript_settle")
                 while time.monotonic() < deadline:
                     if self._pending_text.strip() and time.monotonic() - self.last_input_at >= self.settle_seconds:
                         break
@@ -182,6 +207,7 @@ class LiveSession:
                     continue
                 if not self._pending_text.strip() or time.monotonic() - self.last_input_at < self.settle_seconds:
                     job.status = "needs_context"
+                    self.log_job(job, "context_timeout", elapsed_ms=round((time.monotonic() - context_started) * 1000))
                     self.mark_activity()
                     await self.append("session.commentary.append", job.id,
                                       "I don't have a clear request yet. Please repeat what you would like me to do.")
@@ -192,6 +218,10 @@ class LiveSession:
                     continue
                 job.request, self._pending_text = self._pending_text.strip(), ""
                 history = self._history()
+                self.log_job(job, "context_ready", message_count=len(history),
+                             elapsed_ms=round((time.monotonic() - context_started) * 1000))
+                trace_detail("delegation_request", payload={"request": job.request, "history": history},
+                             source="gpt_live", route="delegation")
                 job.status = "running"
                 started = time.monotonic()
                 self.log_job(job, "started")
@@ -209,16 +239,25 @@ class LiveSession:
                 finally:
                     job.duration_ms = round((time.monotonic() - started) * 1000)
                     self.mark_activity()
+                self.log_job(job, "result_received", elapsed_ms=job.duration_ms)
+                trace_detail("delegation_result", payload={"result": job.result},
+                             source="gpt_live", route="delegation", status=job.status)
                 # A later delegation may correct this one. Keep the old result visible, but quiet.
                 kind = "session.thinking.append" if not self._queue.empty() else "session.commentary.append"
                 report = job.result if len(job.result) <= 4000 else job.result[:3500] + "\n[Result truncated; ask a narrower follow-up for more detail.]"
                 await self.append(kind, job.id, report)
+            except asyncio.CancelledError:
+                terminal_status = "cancelled"
+                self.log_job(job, "interrupted", status=terminal_status,
+                             reason="action_outcome_unconfirmed" if job.status == "running" else "worker_cancelled")
+                raise
             finally:
                 # Success, ordinary failure and clarification all get fresh grace.
                 self.mark_activity()
                 self._queue.task_done()
                 try:
-                    self.log_job(job, "finished", elapsed_ms=round((time.monotonic() - job_started) * 1000))
+                    self.log_job(job, "finished", status=terminal_status or job.status,
+                                 elapsed_ms=round((time.monotonic() - job_started) * 1000))
                 finally:
                     end_job(token)
 
@@ -226,7 +265,7 @@ class LiveSession:
         while not self._queue.empty():
             job = self.jobs[self._queue.get_nowait()]
             job.status = "not_started"
-            self.log_job(job, "finished")
+            self.log_job(job, "finished", reason=self.state)
             self._queue.task_done()
 
     async def close(self, timeout=12):
@@ -235,12 +274,17 @@ class LiveSession:
                 return
             self.state = "closing"
             self._skip_queued()
+            activity("live_session", logger=LOG, session=self.id[:10], phase="closing",
+                     source="gpt_live", remaining=sum(job.status == "running" for job in self.jobs.values()),
+                     reason="running_actions_continue")
             try:
                 await self.send({"type": "session.close"})
                 await asyncio.wait_for(self._closed.wait(), timeout)
             except (Exception, asyncio.TimeoutError):
                 self.state = "error"
                 self.error = "Session finalization was not confirmed; final usage is unknown."
+                activity("live_session", logger=LOG, session=self.id[:10], phase="close_unconfirmed",
+                         source="gpt_live", status="error")
             # An in-flight HA HTTP request is allowed to finish. Closing audio isn't tool cancellation.
 
     async def drain(self):
