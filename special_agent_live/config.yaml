@@ -1,5 +1,5 @@
 name: Special Agent Live
-version: "0.1.6"
+version: "0.1.7"
 slug: special_agent_live
 description: GPT-Live audio bridge for a Home Assistant Voice Preview Edition
 url: https://github.com/cliffmu/special_agent/tree/codex/gpt-live-test
@@ -30,6 +30,7 @@ options:
   agent_model: gpt-5.6-terra
   reasoning_effort: low
   fast_mode: false
+  trace_logging: false
   idle_timeout: 30
   max_duration: 0
 schema:
@@ -48,5 +49,6 @@ schema:
   agent_model: list(gpt-5.6-terra|gpt-5.6-luna|gpt-5.6-sol|gpt-6-astra|gpt-5|gpt-5-mini|gpt-5-nano)
   reasoning_effort: list(none|minimal|low|medium|high|xhigh|max)
   fast_mode: bool
+  trace_logging: bool
   idle_timeout: int(10,600)
   max_duration: int(0,1800)
