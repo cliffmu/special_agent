@@ -485,7 +485,7 @@ def main():
                               ha_agent_id=os.getenv("HA_AGENT_ID", "conversation.special_agent"),
                               device_id=os.getenv("VOICE_DEVICE_ID", "primary"),
                               ha_device_id=os.getenv("HA_DEVICE_ID", ""))
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     # Access logs include query strings, so disable them to keep the device token private.
     web.run_app(create_app(settings), host=settings.bind, port=settings.port, access_log=None)
 

@@ -174,7 +174,7 @@ def page(epoch, cursor, records=(), *, reset=False, has_more=False):
 
 
 def forwarded(caplog):
-    return [entry.getMessage() for entry in caplog.records
+    return [getattr(entry, "special_agent_activity", entry.getMessage()) for entry in caplog.records
             if entry.name == "experimental.live.backend.home_assistant"]
 
 

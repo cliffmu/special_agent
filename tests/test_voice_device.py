@@ -421,7 +421,7 @@ async def test_live_job_and_ha_activity_share_safe_ids_and_report_outcomes(monke
                                       "delegation": {"id": "PRIVATE_JOB_ID", "target": "client"}})
             await asyncio.wait_for(requests.get(), 2)
             await asyncio.wait_for(device.session.drain(), 2)
-            events = [dict(field.split("=", 1) for field in record.getMessage().split())
+            events = [dict(field.split("=", 1) for field in getattr(record, "special_agent_activity", record.getMessage()).split())
                       for record in caplog.records if record.name.startswith("experimental.live.")
                       and record.name.endswith(".activity")]
             delegation = [event for event in events if event["event"] == "delegation"]

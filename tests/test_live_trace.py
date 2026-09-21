@@ -1,6 +1,7 @@
 """Live trace correlation, delivery and opt-in payload relay without paid APIs."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from experimental.live.backend import BackendResult, HomeAssistantBackend
+from experimental.live import session as session_module
 from experimental.live.session import LiveSession
 from utils import logging as log
 
@@ -21,8 +23,16 @@ def trace_settings():
 
 
 def lines(caplog, event):
-    return [record.getMessage() for record in caplog.records
-            if record.getMessage().startswith(f"event={event} ")]
+    return [raw_line(record) for record in caplog.records
+            if raw_line(record).startswith(f"event={event} ")]
+
+
+def raw_line(record):
+    return getattr(record, "special_agent_activity", record.getMessage())
+
+
+def transcript_text(line):
+    return json.loads(line.split(" payload=", 1)[1])["text"]
 
 
 def delegate(job_id="PRIVATE_JOB"):
@@ -188,7 +198,7 @@ async def test_payload_relay_requires_opt_in_and_retains_trace_correlations(capl
         assert await backend._poll_activity_page() is False
         assert queries == [{"cursor": "0", "limit": "200", "detail": "true"}]
         assert backend.activity_cursor == 1
-        assert any(record.name == "experimental.live.backend.home_assistant" and record.getMessage() == detail_line
+        assert any(record.name == "experimental.live.backend.home_assistant" and raw_line(record) == detail_line
                    for record in caplog.records)
     else:
         with pytest.raises(ValueError, match="Invalid activity record"):
@@ -196,3 +206,209 @@ async def test_payload_relay_requires_opt_in_and_retains_trace_correlations(capl
         assert queries == [{"cursor": "0", "limit": "200"}]
         assert backend.activity_cursor == 0
         assert not any(record.name == "experimental.live.backend.home_assistant" for record in caplog.records)
+
+
+async def test_smalltalk_groups_overlapping_speaker_fragments_after_display_pause(caplog, monkeypatch):
+    monkeypatch.setattr(session_module, "TRANSCRIPT_DISPLAY_PAUSE_SECONDS", 0.02)
+    log.configure_trace(enabled=True)
+    backend = SimpleNamespace(execute=AsyncMock())
+    session = LiveSession("upstream", AsyncMock(), backend)
+    fragments = [
+        ("input", "Hi ", 0, 100),
+        ("output", "Hello", 80, 200),
+        ("input", "there!", 100, 300),
+        ("output", ", Cliff.", 200, 450),
+    ]
+    for speaker, text, start, end in fragments:
+        await session.receive({"type": f"session.{speaker}_transcript.delta", "delta": text,
+                               "start_ms": start, "end_ms": end})
+    assert not lines(caplog, "live_transcript")
+    await asyncio.sleep(0.04)
+    captured = lines(caplog, "live_transcript")
+    assert [transcript_text(line) for line in captured] == ["Hi there!", "Hello, Cliff."]
+    assert "mode=user" in captured[0] and "start_ms=0" in captured[0] and "end_ms=300" in captured[0]
+    assert "mode=assistant" in captured[1] and "start_ms=80" in captured[1] and "end_ms=450" in captured[1]
+    assert all("phase=captured" in line and "reason=display_pause" in line
+               and f"session={session.id[:10]}" in line for line in captured)
+    assert [item["text"] for item in session.transcripts] == [item[1] for item in fragments]
+    backend.execute.assert_not_awaited()
+    assert session._pending_text == "Hi there!" and session.state == "connecting"
+    await session.receive({"type": "session.closed"})
+    assert len(lines(caplog, "live_transcript")) == 2
+
+
+async def test_paused_transcript_continuation_is_logged_once_without_replaying_prefix(caplog, monkeypatch):
+    monkeypatch.setattr(session_module, "TRANSCRIPT_DISPLAY_PAUSE_SECONDS", 0.02)
+    log.configure_trace(enabled=True)
+    session = LiveSession("upstream", AsyncMock(), SimpleNamespace(execute=AsyncMock()))
+    first = {"type": "session.output_transcript.delta", "delta": "The story begins",
+             "event_id": "fragment-1"}
+    await session.receive(first)
+    await asyncio.sleep(0.04)
+    await session.receive(first)  # Provider event replay must not repeat its text.
+    await session.receive({"type": "session.output_transcript.delta", "delta": " with a fox."})
+    await session.receive({"type": "session.closed"})
+    await asyncio.sleep(0.04)
+    captured = lines(caplog, "live_transcript")
+    assert [transcript_text(line) for line in captured] == ["The story begins", " with a fox."]
+    assert "reason=session_closed" in captured[1]
+    assert not session._trace_transcripts
+
+
+async def test_delegation_flush_and_actual_live_reply_have_distinct_transcript_blocks(caplog):
+    log.configure_trace(enabled=True)
+    backend = SimpleNamespace(execute=AsyncMock(return_value=BackendResult("Backend result")))
+    session = LiveSession("upstream", AsyncMock(), backend, settle_seconds=0)
+    await session.receive(transcript("Check "))
+    await session.receive(transcript("the lamp."))
+    await session.receive(delegate())
+    await session.drain()
+    captured = lines(caplog, "live_transcript")
+    assert len(captured) == 1 and transcript_text(captured[0]) == "Check the lamp."
+    assert "reason=delegation_dispatch" in captured[0]
+    assert "job=-" in captured[0]
+    # The backend result is not presented as a transcript of Live's spoken reply.
+    await session.receive({"type": "session.output_transcript.delta", "delta": "Your lamp "})
+    await session.receive({"type": "session.output_transcript.delta", "delta": "is on."})
+    await session.receive({"type": "session.closed"})
+    captured = lines(caplog, "live_transcript")
+    assert [transcript_text(line) for line in captured] == ["Check the lamp.", "Your lamp is on."]
+    assert "mode=assistant" in captured[1]
+    backend.execute.assert_awaited_once()
+
+
+@pytest.mark.parametrize("boundary", ["closed", "error", "close", "close_timeout"])
+async def test_transcript_end_paths_flush_once_and_cancel_pending_display_timer(caplog, monkeypatch, boundary):
+    monkeypatch.setattr(session_module, "TRANSCRIPT_DISPLAY_PAUSE_SECONDS", 0.02)
+    log.configure_trace(enabled=True)
+
+    async def send(event):
+        if boundary != "close_timeout" and event["type"] == "session.close":
+            await session.receive({"type": "session.closed"})
+
+    session = LiveSession("upstream", send, SimpleNamespace(execute=AsyncMock()))
+    await session.receive({"type": "session.output_transcript.delta", "delta": "A short reply."})
+    if boundary == "closed":
+        await session.receive({"type": "session.closed"})
+    elif boundary == "error":
+        await session.receive({"type": "error"})
+    else:
+        await session.close(timeout=0.001)
+    assert not session._trace_transcripts
+    await session.receive({"type": "session.output_transcript.delta", "delta": "Late provider fragment."})
+    assert not session._trace_transcripts
+    await asyncio.sleep(0.04)
+    captured = lines(caplog, "live_transcript")
+    assert len(captured) == 1 and transcript_text(captured[0]) == "A short reply."
+    assert "phase=captured" in captured[0]
+    assert "phase=completed" not in captured[0] and "phase=delivered" not in captured[0]
+
+
+async def test_trace_off_does_not_buffer_or_emit_transcripts_and_drops_pending_details(caplog, monkeypatch):
+    monkeypatch.setattr(session_module, "TRANSCRIPT_DISPLAY_PAUSE_SECONDS", 0.02)
+    session = LiveSession("upstream", AsyncMock(), SimpleNamespace(execute=AsyncMock()))
+    await session.receive(transcript("PRIVATE_BEFORE_TRACE"))
+    assert not session._trace_transcripts
+    log.configure_trace(enabled=True)
+    await session.receive(transcript("PRIVATE_PENDING"))
+    log.configure_trace(enabled=False)
+    await session.receive(transcript("PRIVATE_AFTER_TRACE"))
+    assert not session._trace_transcripts
+    await asyncio.sleep(0.04)
+    assert not lines(caplog, "live_transcript")
+    log.configure_trace(enabled=True)
+    await session.receive({"type": "session.output_transcript.delta", "delta": "Visible now."})
+    await session.receive({"type": "session.closed"})
+    assert [transcript_text(line) for line in lines(caplog, "live_transcript")] == ["Visible now."]
+    assert "PRIVATE" not in caplog.text
+
+
+async def test_transcript_buffer_is_bounded_and_later_continuation_survives(caplog):
+    log.configure_trace(enabled=True)
+    session = LiveSession("upstream", AsyncMock(), SimpleNamespace(execute=AsyncMock()))
+    await session.receive({"type": "session.output_transcript.delta", "delta": "x" * 16000 + "The ending."})
+    assert len(session._trace_transcripts["assistant"]["text"]) < 16000
+    await session.receive({"type": "session.closed"})
+    captured = lines(caplog, "live_transcript")
+    assert len(captured) == 2 and "reason=buffer_limit" in captured[0]
+    assert "[truncated]" in transcript_text(captured[0])
+    assert transcript_text(captured[1]) == "The ending."
+
+
+async def test_transcript_redaction_sees_complete_fragmented_secret(caplog):
+    log.configure_trace(enabled=True)
+    session = LiveSession("upstream", AsyncMock(), SimpleNamespace(execute=AsyncMock()))
+    await session.receive(transcript("Remember password=\"private"))
+    await session.receive(transcript("-password\" for later."))
+    await session.receive({"type": "session.closed"})
+    captured = lines(caplog, "live_transcript")
+    assert len(captured) == 1 and "[redacted]" in transcript_text(captured[0])
+    assert "private-password" not in caplog.text
+    assert log.is_trace_line(captured[0])
+
+
+@pytest.mark.parametrize("prefix,continuation", [
+    ("Remember password=", "SAMPLE_SECRET_VALUE for later."),
+    ('Remember password="private ', 'SAMPLE_SECRET_VALUE" for later.'),
+    ("Remember pass", "word=SAMPLE_SECRET_VALUE for later."),
+    ("Use sk-", "SAMPLE_SECRET_VALUE for later."),
+    ("Use Bearer ", "SAMPLE_SECRET_VALUE for later."),
+    ("Visit https://host/", "SAMPLE_SECRET_VALUE for later."),
+    ("Token eyJheader", ".SAMPLE_SECRET_VALUE.signature for later."),
+])
+async def test_paused_transcript_secrets_keep_redaction_context(caplog, monkeypatch, prefix, continuation):
+    monkeypatch.setattr(session_module, "TRANSCRIPT_DISPLAY_PAUSE_SECONDS", 0.01)
+    log.configure_trace(enabled=True)
+    backend = SimpleNamespace(execute=AsyncMock())
+    session = LiveSession("upstream", AsyncMock(), backend)
+    await session.receive(transcript(prefix))
+    await asyncio.sleep(0.025)
+    assert len(lines(caplog, "live_transcript")) == 1
+    await session.receive(transcript(continuation))
+    await session.receive({"type": "session.closed"})
+    captured = lines(caplog, "live_transcript")
+    assert len(captured) == 2
+    assert "SAMPLE_SECRET_VALUE" not in caplog.text
+    assert "[redacted]" in " ".join(transcript_text(line) for line in captured)
+    assert " for later." in transcript_text(captured[-1])
+    assert all(log.is_trace_line(line) for line in captured)
+    assert [item["text"] for item in session.transcripts] == [prefix, continuation]
+    assert session._pending_text == prefix + continuation
+    assert not session._trace_redactors
+    backend.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("prefix,continuation", [
+    ("password=", "SAMPLE_SECRET_VALUE finished."),
+    ('password="', 'SAMPLE_SECRET_VALUE" finished.'),
+    ("sk-", "SAMPLE_SECRET_VALUE finished."),
+    ("https://host/", "SAMPLE_SECRET_VALUE finished."),
+])
+async def test_secret_at_transcript_buffer_boundary_is_redacted(caplog, prefix, continuation):
+    log.configure_trace(enabled=True)
+    session = LiveSession("upstream", AsyncMock(), SimpleNamespace(execute=AsyncMock()))
+    first = "x" * (16000 - len(prefix) - 1) + " " + prefix
+    full_text = first + continuation
+    await session.receive({"type": "session.output_transcript.delta", "delta": full_text})
+    assert len(lines(caplog, "live_transcript")) == 1
+    await session.receive({"type": "session.closed"})
+    captured = lines(caplog, "live_transcript")
+    assert len(captured) == 2 and "reason=buffer_limit" in captured[0]
+    assert "SAMPLE_SECRET_VALUE" not in caplog.text
+    assert "finished." in transcript_text(captured[-1])
+    assert session.transcripts[-1]["text"] == full_text
+    assert all(log.is_trace_line(line) for line in captured)
+
+
+async def test_transcript_secret_context_is_independent_between_speakers(caplog):
+    log.configure_trace(enabled=True)
+    session = LiveSession("upstream", AsyncMock(), SimpleNamespace(execute=AsyncMock()))
+    await session.receive(transcript("password="))
+    session._flush_transcripts("display_pause")
+    await session.receive({"type": "session.output_transcript.delta", "delta": "Other speaker's clear response."})
+    await session.receive(transcript("SAMPLE_SECRET_VALUE"))
+    await session.receive({"type": "session.closed"})
+    captured = lines(caplog, "live_transcript")
+    assert "SAMPLE_SECRET_VALUE" not in caplog.text
+    assert any(transcript_text(line) == "Other speaker's clear response." for line in captured)
+    assert transcript_text(captured[-1]) == "[redacted]"

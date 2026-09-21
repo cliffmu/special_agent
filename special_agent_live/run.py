@@ -98,7 +98,7 @@ def settings_from_options(options: dict, environment: dict) -> DeviceSettings:
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         options = json.loads(OPTIONS_FILE.read_text())
     except (OSError, ValueError):

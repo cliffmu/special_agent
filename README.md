@@ -75,6 +75,22 @@ the bridge can provide it as background context rather than interrupting with
 stale commentary. The protocol name `session.thinking.append` means **context we
 send to Live**; it is not a feed of Live's private reasoning.
 
+**What runs in parallel:** Within one agent round, eligible tool calls run together.
+The agent waits for **all tools in that batch** before sending their observations
+back to the model. For example, a 1-second device search and an 8-second music
+search produce an approximately 8-second batch. The first result appears in the
+Log immediately, followed by `Agent waiting`; it does not start another model
+call on its own. `Agent observation` records appear when the whole batch is ready.
+Tools marked as requiring a separate call are skipped if mixed with other calls;
+the model gets an explanation so it can request them in a later round.
+
+Live can keep listening and speaking while the agent runs. Delegations from the
+same Voice device are serialized, while different devices can work concurrently.
+Queued delegation notices can be combined/superseded to include newer speech;
+that does not cancel an already-running action. When a newer delegation is queued,
+an older result goes to Live as background context. Intermediate tool results are
+relayed to the **Log**, while Live receives the completed agent response.
+
 | File | Responsibility |
 | --- | --- |
 | `experimental/live/server.py`, `device_server.py` | Connect browser/hardware audio to Live; configure the voice session and backend. |
@@ -85,9 +101,22 @@ send to Live**; it is not a feed of Live's private reasoning.
 | `utils/llm_client.py` | Send Responses API requests; record model decisions, usage, and available summaries. |
 | `utils/response_utils.py` | Validate and execute tool batches; send observations back to the model. |
 | `tool_specs/`, `utils/service_verification.py` | Perform individual tasks and verify device commands against HA state. |
-| `utils/logging.py` | Correlation IDs, concise activity, optional redacted payloads, and bounded replay buffers. |
+| `utils/logging.py`, `utils/log_presentation.py` | Capture/redact/replay events; present a readable label and summary before technical details. |
 
 ### Read the activity timeline
+
+Each record begins with its action: `User message [Live]`, `Live response`,
+`Agent tools available`, `Agent round`, `Tool call`, `Tool returned`,
+`Agent waiting`, `Agent observation`, or `Agent response`. Tool names are shown
+as friendly labels. Read the left side for the story; scroll right past ` | `
+for the original event fields and bounded JSON payload. These raw fields remain
+searchable and the authenticated replay endpoint keeps its structured format.
+
+Live speech transcripts are grouped separately for each speaker, including
+conversation that needs no tools. A short display pause flushes pending text;
+delegation and session closure also flush it. This is display grouping, not a
+signal that a spoken turn or physical playback has finished. Continuation blocks
+contain only newly received fragments, with their source timing alongside them.
 
 Every delegated request carries the same `session=` and `job=` from Live into
 HA. HA adds `request=` for its request; `iteration=` identifies a model loop,
@@ -133,13 +162,28 @@ still needed for HA tool/model payloads. Full trace support requires integration
 **0.3.5+** and Live app **0.1.7+** together. Update each separately, restart Home
 Assistant after updating the integration, and restart the Live app after saving
 its trace setting. The app release includes an immutable, hash-verified bridge
-runtime with matching trace support.
+runtime with matching trace support. Readable labels, Live transcript blocks and
+explicit parallel progress require integration **0.3.6+** and Live **0.1.8+**.
 
-Example **illustrative** tool pair (actual IDs, tool order and values vary):
+Illustrative sequence (actual wording, tools, order and values vary; technical
+details are shortened here):
 
 ```text
-event=tool_input request=5af31b42ce session=7d9002a14b job=921c39da80 tool=control_device call_id=1f382ceb03 iteration=1 payload={"entity_id":"light.example","service":"turn_on","data":{"brightness_pct":40}}
-event=tool_output request=5af31b42ce session=7d9002a14b job=921c39da80 tool=control_device call_id=1f382ceb03 iteration=1 payload={"accepted":true,"verification":"verified"}
+User message [Live]: Are the office lights on? | session=... start_ms=...
+Live response: I'll check. | session=... mode=assistant
+Agent request: Are the office lights on? | job=...
+Agent tools available: Search Devices, Get Entity State, ... | payload=...
+Agent round: Asking the model what to do next | iteration=1 ...
+Tool call [Search Devices]: query="office lights" | call_id=... payload=...
+Tool call [Search Devices]: query="office lamps" | call_id=... payload=...
+Tool returned [Search Devices]: ... | elapsed_ms=120 ...
+Agent waiting: 1 of 2 tools finished; waiting for 1 | batch=...
+Tool returned [Search Devices]: ... | elapsed_ms=640 ...
+Agent observation [Search Devices]: ... | payload=...
+Agent observation [Search Devices]: ... | payload=...
+Agent round: Asking the model what to do next | iteration=2 ...
+Agent response: The office lights are on. | job=...
+Live response: Your office lights are on. | session=...
 ```
 
 Detailed payloads use single-line JSON, redact recognized credentials/URLs and
@@ -153,6 +197,9 @@ With detailed tracing enabled, the Agent model request asks for
 `reasoning.summary="auto"`. Logs show returned summary text when available, plus
 observable tool choices and outcomes. These are summaries, not hidden internal
 reasoning. GPT Live does not provide its private thought stream through this bridge.
+`Agent reasoning summary` appears only with provider-supplied text; if no summary
+is returned, the Log says so. Application decisions such as waiting for a tool
+batch are reported as execution status, never invented first-person thoughts.
 See [OpenAI reasoning summaries](https://developers.openai.com/api/docs/guides/reasoning)
 and [GPT Live delegation](https://developers.openai.com/api/docs/guides/live-delegation).
 

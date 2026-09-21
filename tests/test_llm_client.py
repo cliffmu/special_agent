@@ -78,9 +78,9 @@ async def test_sdk_sends_explicit_tier_preserves_strict_and_reports_responses_us
         "prompt_tokens": 120, "completion_tokens": 30,
     }
     assert result.reasoning_count == 1 and result.final_text == "PRIVATE_RESPONSE"
-    lines = [record.getMessage() for record in caplog.records
+    lines = [getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
              if record.name == "custom_components.special_agent.activity"
-             and record.getMessage().startswith("event=model ")]
+             and getattr(record, "special_agent_activity", record.getMessage()).startswith("event=model ")]
     assert len(lines) == 2
     assert "phase=sent" in lines[0] and "phase=received" in lines[1]
     assert f"effective_tier={effective_tier}" in lines[1]
@@ -119,6 +119,23 @@ async def test_cancelled_llm_request_logs_completion_without_retry(caplog):
         await call_llm(SimpleNamespace(responses=SimpleNamespace(create=create)), [], [], "gpt-5", "low", 0)
     create.assert_awaited_once()
     assert "phase=failed" in caplog.text and "status=cancelled" in caplog.text
+
+
+async def test_large_tool_catalog_is_complete_across_readable_records(monkeypatch, caplog):
+    monkeypatch.setattr(activity_log, "_TRACE_ENABLED", True)
+    response = SimpleNamespace(id="response_catalog", output=[], usage=None)
+    client = SimpleNamespace(responses=SimpleNamespace(create=AsyncMock(return_value=response)))
+    tools = [{"type": "function", "name": f"lookup_{index}", "parameters": {"type": "object"}}
+             for index in range(43)]
+    await call_llm(client, [], tools, "gpt-5.6-terra", "low", 0)
+    records = [record for record in caplog.records
+               if getattr(record, "special_agent_activity", "").startswith("event=agent_tools ")]
+    names = [name for record in records
+             for name in json.loads(record.special_agent_activity.split(" payload=", 1)[1])["tools"]]
+    assert names == [tool["name"] for tool in tools] + ["web_search"]
+    assert len(records) == 3
+    assert records[1].getMessage().startswith("Agent tools available (continued):")
+    assert "[truncated]" not in "".join(record.special_agent_activity for record in records)
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -165,7 +182,7 @@ async def test_model_trace_explains_provider_tools_and_summaries_with_call_corre
         activity_log.end_request(token)
 
     assert payloads[0]["reasoning"] == ({"effort": "low", "summary": "auto"} if enabled else {"effort": "low"})
-    summaries = [record.getMessage() for record in caplog.records
+    summaries = [getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
                  if record.name == "custom_components.special_agent.activity"]
     assert any("event=model_builtin_tool" in line and "tool=web_search" in line for line in summaries)
     assert any("reasoning_count=1" in line and "web_search_count=1" in line for line in summaries)
@@ -175,11 +192,13 @@ async def test_model_trace_explains_provider_tools_and_summaries_with_call_corre
     assert {field["call_id"] for field in fields} == {activity_log.device_correlation("call_trace")}
     assert len({field["request"] for field in fields}) == 1 and fields[0]["request"] != "-"
     assert {field["iteration"] for field in fields} == {"1"}
-    details = "\n".join(record.getMessage() for record in caplog.records
+    details = "\n".join(getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
                         if record.name == "custom_components.special_agent.trace")
     assert bool(details) is enabled
     if enabled:
         assert "I checked the forecast." in details and "forecast tomorrow" in details
         assert "local weather" in details and "sunny" in details
+        assert 'event=agent_tools ' in details and '"tools":["lookup","web_search"]' in details
+        assert 'event=agent_reasoning ' in details
     assert "PRIVATE" not in caplog.text
     assert "call_trace" not in caplog.text and "resp_trace" not in caplog.text

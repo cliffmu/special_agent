@@ -9,6 +9,8 @@ from collections import deque
 from contextvars import ContextVar
 from threading import Lock
 
+from .log_presentation import format_activity_line
+
 _LOGGER = logging.getLogger("custom_components.special_agent")
 _PLACEHOLDER_RE = re.compile(r"%\([^)]+\)|%[sdifr]")
 _ACTIVITY_LOGGER = logging.getLogger("custom_components.special_agent.activity")
@@ -28,7 +30,7 @@ _FIELD_NAMES = frozenset({
     "verification", "verified_steps", "completed_steps", "total_steps", "device",
     "route", "call_id", "response_id", "batch", "mode", "message_count", "decision",
     "reasoning_count", "web_search_count", "reason", "remaining", "prompt_kind", "detail",
-    "captured_at_ms",
+    "captured_at_ms", "start_ms", "end_ms",
 })
 _ATOM = re.compile(r"[A-Za-z0-9_.:-]{1,100}\Z")
 
@@ -165,7 +167,12 @@ def activity(event, *, logger=None, **safe_values):
     _ACTIVITY_BUFFER.append(line)
     if _TRACE_ENABLED:
         _TRACE_BUFFER.append(line)
-    (logger if logger is not None else _ACTIVITY_LOGGER).info("%s", line)
+    emit_activity_line(line, logger=logger if logger is not None else _ACTIVITY_LOGGER)
+
+
+def emit_activity_line(line, *, logger):
+    """Present a sanitized record without changing its machine-readable replay."""
+    logger.info("%s", format_activity_line(line), extra={"special_agent_activity": line})
 
 
 _SECRET_KEY = re.compile(
@@ -183,6 +190,71 @@ _SECRET_ASSIGNMENT = re.compile(
     r"token|authorization|password|passwd|secret|cookie)\b[\"']?\s*[:=]\s*"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
 )
+
+# Transcript display blocks can end in the middle of a credential. Match open
+# quoted assignments and token prefixes before a later block completes them.
+_OPEN_SECRET_QUOTE = re.compile(
+    r"(?is)\b(api[_-]?key|(?:access|refresh|auth|device|supervisor)[_-]?token|"
+    r"token|authorization|password|passwd|secret|cookie)\b[\"']?\s*[:=]\s*"
+    r"([\"'])(?:(?!\2).)*\Z"
+)
+_FRAGMENT_SECRET_TEXT = re.compile(
+    r"(?i)\b(?:sk[-_][a-z0-9_-]*|Bearer\s+[^\s,;\"']*|"
+    r"eyJ[a-z0-9_.-]*|(?:https?|wss?)://[^\s<>\"']*)"
+)
+
+
+class TraceTextRedactor:
+    """Keep bounded credential context across one speaker's display blocks.
+
+    The retained tail is diagnostic state only. An unfinished sensitive value
+    uses a short synthetic prefix, so arbitrarily long secrets remain masked
+    without retaining them or changing application transcripts.
+    """
+
+    def __init__(self):
+        self._context = ""
+
+    @staticmethod
+    def _redact(text):
+        text = _OPEN_SECRET_QUOTE.sub(lambda match: match[1] + "=[redacted]", text)
+        text = _FRAGMENT_SECRET_TEXT.sub("[redacted]", text)
+        return _SECRET_ASSIGNMENT.sub(lambda match: match[1] + "=[redacted]", text)
+
+    @staticmethod
+    def _continuation_context(text):
+        opened = _OPEN_SECRET_QUOTE.search(text)
+        if opened:
+            return opened[1] + "=" + opened[2] + "redacted"
+        assignments = list(_SECRET_ASSIGNMENT.finditer(text))
+        if assignments and assignments[-1].end() == len(text):
+            assignment = assignments[-1]
+            value = re.split(r"[:=]", assignment[0], maxsplit=1)[1].lstrip()
+            if not (len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]):
+                return assignment[1] + "=redacted"
+        tokens = list(_FRAGMENT_SECRET_TEXT.finditer(text))
+        if tokens and tokens[-1].end() == len(text):
+            token = tokens[-1][0].lower()
+            if token.startswith("bearer"):
+                return "Bearer " if token.strip() == "bearer" else "Bearer redacted"
+            if token.startswith("sk"):
+                return "sk-redacted"
+            if token.startswith("eyj"):
+                return "eyJredacted.redacted.redacted"
+            return "https://redacted.invalid/"
+        # Keep split labels/schemes recognizable, including a long whitespace
+        # gap between a secret label and its assignment separator.
+        return re.sub(r"\s+", " ", text)[-256:]
+
+    def redact(self, text):
+        previous = self._redact(self._context)
+        combined = self._context + text
+        sanitized = self._redact(combined)
+        self._context = self._continuation_context(combined)
+        shared = 0
+        while shared < min(len(previous), len(sanitized)) and previous[shared] == sanitized[shared]:
+            shared += 1
+        return sanitized[shared:] or ("[redacted]" if text else "")
 
 
 def _trace_payload(value, depth=0, budget=None):
@@ -246,7 +318,7 @@ def trace_detail(event, *, payload, logger=None, **safe_values):
         return
     line = _activity_line(event, safe_values) + " payload=" + _encode_trace_payload(payload)
     _TRACE_BUFFER.append(line)
-    (logger if logger is not None else _TRACE_LOGGER).info("%s", line)
+    emit_activity_line(line, logger=logger if logger is not None else _TRACE_LOGGER)
 
 
 def is_trace_line(line):

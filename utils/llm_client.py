@@ -115,6 +115,17 @@ async def call_llm(
     reasoning = {"effort": effort}
     if log.trace_enabled():
         reasoning["summary"] = "auto"
+    if depth == 0:
+        available_tools = [
+            tool.get("name") if tool.get("type") == "function" else tool.get("type")
+            for tool in tools_with_search
+        ]
+        # Keep the whole catalog visible without exceeding trace payload bounds.
+        for offset in range(0, len(available_tools), 20):
+            log.trace_detail("agent_tools", payload={"tools": available_tools[offset:offset + 20]},
+                             phase="available" if offset == 0 else "continued",
+                             tool_count=len(available_tools),
+                             remaining=max(0, len(available_tools) - offset - 20), **fields)
     log.activity("model", phase="sent", message_count=len(input_messages),
                  tool_count=len(tools_with_search), **fields)
     try:
@@ -193,8 +204,17 @@ async def call_llm(
                  if getattr(item, "type", None) == "reasoning"
                  for summary in (getattr(item, "summary", None) or [])
                  if getattr(summary, "type", None) == "summary_text"]
-    log.trace_detail("model_output", payload={"text": final_text, "reasoning_summaries": summaries},
+    for summary in summaries:
+        if summary:
+            log.trace_detail("agent_reasoning", payload={"summary": summary},
+                             response_id=response_id, **fields)
+    if log.trace_enabled() and not any(summaries):
+        log.activity("agent_reasoning", status="unavailable", reason="no_summary_returned",
                      response_id=response_id, **fields)
+    if final_text:
+        log.trace_detail("model_text", payload={"text": final_text},
+                         decision="call_tools" if function_calls else "final_text",
+                         response_id=response_id, **fields)
     return LLMResponse(
         output=response_output,
         function_calls=function_calls,

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import aiohttp
-from utils.logging import activity, is_trace_line, job_correlation, trace_detail
+from utils.logging import activity, emit_activity_line, is_trace_line, job_correlation, trace_detail
 
 LOG = logging.getLogger(__name__ + ".activity")
 LOG.setLevel(logging.INFO)
@@ -260,7 +260,7 @@ class HomeAssistantBackend:
             if record["cursor"] > seen:
                 # The HA endpoint owns sanitization; this format check adds a
                 # second boundary. Do not recapture forwarded records via activity().
-                HA_ACTIVITY_LOG.info("%s", record["line"])
+                emit_activity_line(record["line"], logger=HA_ACTIVITY_LOG)
                 seen = record["cursor"]
         self.activity_cursor, self.activity_epoch = cursor, epoch
         return has_more

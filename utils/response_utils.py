@@ -259,9 +259,11 @@ async def validate_and_execute_tools(
     mode = "parallel" if len(tasks_to_run) > 1 else "single" if tasks_to_run else "none"
     log.activity("tool_batch", phase="started", mode=mode,
                  function_count=requested_count, tool_count=len(tasks_to_run), **batch_fields)
+    completed_tools = 0
     
     async def execute_tool(call, spec, args, parallel_group=None):
         """Execute a single tool and return (call, spec, args, result, is_error)"""
+        nonlocal completed_tools
         call_name = spec.name
         
         # Manually track tool execution to include parallel_group
@@ -284,8 +286,9 @@ async def validate_and_execute_tools(
             else:
                 call_args = args
                 result = await spec.func(**call_args)
-            log.trace_detail("tool_result", payload=result, phase="returned", **call_fields(call))
             status = _tool_activity_status(result)
+            log.trace_detail("tool_result", payload=result, phase="returned", status=status,
+                             elapsed_ms=round((time.perf_counter() - start_mono) * 1000), **call_fields(call))
             if isinstance(result, dict) and isinstance(result.get("verification"), str) and result["verification"] in {"verified", "failed", "unverified", "not_applicable"}:
                 verification = result["verification"]
             return (call, spec, args, result, False)
@@ -295,6 +298,9 @@ async def validate_and_execute_tools(
         except Exception as err:
             status = "error"
             error_type = type(err).__name__
+            log.trace_detail("tool_result", payload={"error": f"Tool failed: {err}"},
+                             phase="returned", status=status, error_type=error_type,
+                             elapsed_ms=round((time.perf_counter() - start_mono) * 1000), **call_fields(call))
             return (call, spec, args, f"Error: Tool failed: {err}", True)
         finally:
             fields = {**call_fields(call), "phase": "finished", "status": status, "mode": mode,
@@ -304,6 +310,15 @@ async def validate_and_execute_tools(
             if verification:
                 fields["verification"] = verification
             log.activity("tool", **fields)
+            if status != "cancelled":
+                completed_tools += 1
+                if mode == "parallel":
+                    remaining = len(tasks_to_run) - completed_tools
+                    log.activity("tool_batch", phase="progress", mode=mode,
+                                 status="waiting" if remaining else "completed",
+                                 completed_steps=completed_tools, total_steps=len(tasks_to_run), remaining=remaining,
+                                 decision="wait_for_all_tools" if remaining else "process_results",
+                                 **call_fields(call))
             # Track tool execution with parallel_group if applicable
             if perf.is_enabled():
                 end_mono = time.perf_counter()

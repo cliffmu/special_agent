@@ -142,7 +142,7 @@ async def test_request_activity_finishes_and_resets_context_on_failure(
     monkeypatch.setattr(conversation_entity, "_async_process", AsyncMock(side_effect=failure))
     with pytest.raises(type(failure)):
         await conversation_entity.async_process(user_input())
-    lines = [record.getMessage() for record in caplog.records
+    lines = [getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
              if record.name == "custom_components.special_agent.activity"]
     assert len(lines) == 2
     fields = [dict(field.split("=", 1) for field in line.split()) for line in lines]
@@ -152,7 +152,7 @@ async def test_request_activity_finishes_and_resets_context_on_failure(
     assert int(fields[1]["elapsed_ms"]) >= 0
     assert "PRIVATE_EXCEPTION" not in caplog.text
     activity_log.activity("outside")
-    assert "request=-" in caplog.records[-1].getMessage()
+    assert "request=-" in getattr(caplog.records[-1], "special_agent_activity", caplog.records[-1].getMessage())
 
 
 @pytest.fixture
@@ -242,9 +242,9 @@ async def test_loop_trace_covers_tool_round_and_final_response_without_session_h
     else:
         assert result == "The room is ready." and call.await_count == 2
     save.assert_called_once()
-    lines = [record.getMessage() for record in caplog.records
+    lines = [getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
              if record.name == "custom_components.special_agent.activity"
-             and record.getMessage().startswith("event=agent_loop ")]
+             and getattr(record, "special_agent_activity", record.getMessage()).startswith("event=agent_loop ")]
     assert "phase=started" in lines[0] and "phase=session_loaded" in lines[1]
     assert "phase=finished" in lines[-1] and "status=completed" in lines[-1]
     if tool_speaks:
@@ -273,9 +273,9 @@ async def test_cancelled_loop_logs_terminal_phase_and_preserves_cancellation(
         monkeypatch.setattr(agent_core, "validate_and_execute_tools", cancelled)
     with pytest.raises(asyncio.CancelledError):
         await agent_core.plan_execute("Check my room", [])
-    lines = [record.getMessage() for record in caplog.records
+    lines = [getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
              if record.name == "custom_components.special_agent.activity"
-             and record.getMessage().startswith("event=agent_loop ")]
+             and getattr(record, "special_agent_activity", record.getMessage()).startswith("event=agent_loop ")]
     assert "phase=finished" in lines[-1] and "status=cancelled" in lines[-1]
     assert prepared_loop[1].call_count == 0
 

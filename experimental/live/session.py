@@ -12,10 +12,11 @@ from dataclasses import asdict, dataclass
 from typing import Awaitable, Callable
 
 from .backend import BackendError
-from utils.logging import activity, begin_job, end_job, trace_detail
+from utils.logging import TraceTextRedactor, activity, begin_job, end_job, trace_detail, trace_enabled
 
 LOG = logging.getLogger(__name__ + ".activity")
 LOG.setLevel(logging.INFO)
+TRANSCRIPT_DISPLAY_PAUSE_SECONDS = 1.0
 
 
 def commentary_chunks(text: str):
@@ -51,6 +52,8 @@ class LiveSession:
         self.playback_until = self.created_at
         self.last_input_at = 0.0
         self.transcripts: deque[dict] = deque(maxlen=120)
+        self._trace_transcripts = {}
+        self._trace_redactors = {}
         self.jobs: dict[str, Job] = {}
         self.conversation_id = None
         self.settle_seconds, self.context_timeout = settle_seconds, context_timeout
@@ -92,6 +95,64 @@ class LiveSession:
                 "transcripts": list(self.transcripts),
                 "tasks": [asdict(job) for job in self.jobs.values()]}
 
+    def _record_transcript(self, role, delta, event):
+        """Group exact deltas for display, independently for overlapping speakers.
+
+        A display pause is not an API turn boundary and never dispatches work.
+        Captured text does not prove that audio reached the physical speaker.
+        """
+        if not trace_enabled():
+            self._flush_transcripts("trace_disabled")
+            return
+        if self.state in ("closed", "error"):
+            return  # A late provider delta must not restart a finished display timer.
+        block = self._trace_transcripts.setdefault(role, {"text": "", "timer": None})
+        if block["timer"] is not None:
+            block["timer"].cancel()
+        timings = {key: event[key] for key in ("start_ms", "end_ms")
+                   if type(event.get(key)) in (int, float)}
+        for key, value in timings.items():
+            if key == "end_ms" or key not in block:
+                block[key] = value
+        # Bound diagnostic memory independently of the existing history deque.
+        # Oversized blocks use normal trace truncation; later fragments still
+        # form a fresh block rather than disappearing after the limit is reached.
+        while delta:
+            remaining = 16000 - len(block["text"])
+            block["text"] += delta[:remaining]
+            delta = delta[remaining:]
+            if len(block["text"]) == 16000:
+                self._flush_transcript(role, "buffer_limit")
+                if not delta:
+                    return
+                block = {"text": "", "timer": None, **timings}
+                self._trace_transcripts[role] = block
+        if block["text"]:
+            block["timer"] = asyncio.get_running_loop().call_later(
+                TRANSCRIPT_DISPLAY_PAUSE_SECONDS, self._flush_transcript, role, "display_pause")
+
+    def _flush_transcript(self, role, reason):
+        block = self._trace_transcripts.pop(role, None)
+        if block is None:
+            return
+        if block["timer"] is not None:
+            block["timer"].cancel()
+        if block["text"]:
+            redactor = self._trace_redactors.setdefault(role, TraceTextRedactor())
+            safe_text = redactor.redact(block["text"])
+            trace_detail("live_transcript", payload={"text": safe_text}, source="gpt_live",
+                         mode=role, phase="captured", reason=reason,
+                         # Overlap means a transcript cannot be assigned to the
+                         # job that happens to trigger this flush or its timer.
+                         session=self.id[:10], job="-", logger=LOG,
+                         **{key: block[key] for key in ("start_ms", "end_ms") if key in block})
+
+    def _flush_transcripts(self, reason):
+        for role in list(self._trace_transcripts):
+            self._flush_transcript(role, reason)
+        if reason in {"trace_disabled", "session_closed", "session_error", "close_unconfirmed"}:
+            self._trace_redactors.clear()
+
     async def receive(self, event: dict):
         event_id = event.get("event_id")
         if event_id and event_id in self._event_ids:
@@ -111,6 +172,7 @@ class LiveSession:
             role = "user" if kind == "session.input_transcript.delta" else "assistant"
             self.transcripts.append({"role": role, "text": delta,
                                      "start_ms": event.get("start_ms"), "end_ms": event.get("end_ms")})
+            self._record_transcript(role, delta, event)
             now = time.monotonic()
             self.mark_activity(now)
             if role == "user":
@@ -136,6 +198,7 @@ class LiveSession:
         elif kind in ("session.usage.updated", "session.closed"):
             self.usage = event.get("usage", self.usage)  # Cumulative, never sum snapshots.
             if kind == "session.closed":
+                self._flush_transcripts("session_closed")
                 self.finalized, self.state = True, "closed"
                 self._closed.set()
                 self._skip_queued()
@@ -145,6 +208,7 @@ class LiveSession:
             self.fail("GPT-Live rejected a session event. See the API event code in the server log.")
 
     def fail(self, message):
+        self._flush_transcripts("session_error")
         self.error, self.state = message, "error"
         self._skip_queued()
         activity("live_session", logger=LOG, session=self.id[:10], phase="failed",
@@ -217,6 +281,7 @@ class LiveSession:
                     job.status = "superseded"
                     continue
                 job.request, self._pending_text = self._pending_text.strip(), ""
+                self._flush_transcripts("delegation_dispatch")
                 history = self._history()
                 self.log_job(job, "context_ready", message_count=len(history),
                              elapsed_ms=round((time.monotonic() - context_started) * 1000))
@@ -272,6 +337,7 @@ class LiveSession:
         async with self._close_lock:
             if self.finalized:
                 return
+            self._flush_transcripts("session_closing")
             self.state = "closing"
             self._skip_queued()
             activity("live_session", logger=LOG, session=self.id[:10], phase="closing",
@@ -281,6 +347,7 @@ class LiveSession:
                 await self.send({"type": "session.close"})
                 await asyncio.wait_for(self._closed.wait(), timeout)
             except (Exception, asyncio.TimeoutError):
+                self._flush_transcripts("close_unconfirmed")
                 self.state = "error"
                 self.error = "Session finalization was not confirmed; final usage is unknown."
                 activity("live_session", logger=LOG, session=self.id[:10], phase="close_unconfirmed",

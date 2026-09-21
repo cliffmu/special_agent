@@ -299,7 +299,7 @@ def main():
     settings = Settings(**vars(args), api_key=os.getenv("OPENAI_API_KEY", ""),
                         ha_url=os.getenv("HA_URL", ""), ha_token=os.getenv("HA_TOKEN", ""),
                         ha_agent_id=os.getenv("HA_AGENT_ID", "conversation.special_agent"))
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         app = create_app(settings)
     except ValueError as error:

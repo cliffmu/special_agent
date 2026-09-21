@@ -339,7 +339,7 @@ async def test_ha_transport_timeout_logs_timing_and_type_without_private_details
     with pytest.raises(BackendError) as error:
         await backend.execute("PRIVATE_REQUEST", [], None)
     assert error.value.uncertain
-    messages = [record.getMessage() for record in caplog.records
+    messages = [getattr(record, "special_agent_activity", record.getMessage()) for record in caplog.records
                 if record.name == "experimental.live.backend.activity"]
     assert len(messages) == 2 and "phase=sent" in messages[0]
     assert "phase=failed" in messages[1] and "status=error" in messages[1]

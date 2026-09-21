@@ -44,11 +44,47 @@ def test_activity_allowlist_drops_payloads_and_redacts_unsafe_values(caplog):
                  result="PRIVATE_RESULT", api_key="PRIVATE_API_KEY", model="sk-private-model-value",
                  error_type="ValueError\nPRIVATE_EXCEPTION", function_names=["registered_tool", PrivateObject()],
                  total_tokens=10**1000)
-    line = caplog.records[-1].getMessage()
+    line = getattr(caplog.records[-1], "special_agent_activity", caplog.records[-1].getMessage())
     assert "tool=registered_tool" in line and "elapsed_ms=12" in line
     assert "function_names=registered_tool,redacted" in line
     assert "model=redacted" in line and "total_tokens=redacted" in line
     assert "PRIVATE" not in line and "sk-" not in line and "\n" not in line
+
+
+def test_readable_message_keeps_sanitized_raw_replay_and_one_physical_line(monkeypatch, caplog):
+    monkeypatch.setattr(log, "_TRACE_ENABLED", True)
+    monkeypatch.setattr(log, "_TRACE_BUFFER", log.ActivityBuffer(line_limit=8192))
+    log.trace_detail("tool_input", payload={"query": "office\nlights", "api_key": "PRIVATE_KEY"},
+                     tool="search_devices", phase="started")
+    record = caplog.records[-1]
+    assert record.getMessage().startswith("Tool call [Search Devices]:")
+    assert "\n" not in record.getMessage() and "PRIVATE_KEY" not in record.getMessage()
+    raw = record.special_agent_activity
+    assert raw in record.getMessage()
+    assert log.read_activity(detail=True)["records"][0]["line"] == raw
+    assert log.is_trace_line(raw)
+
+
+@pytest.mark.parametrize("prefix,ending", [
+    ("password=", " Done."), ('password="', '" Done.'),
+    ("Bearer ", " Done."), ("https://host/", " Done."), ("sk-", " Done."),
+    ("eyJheader.", ".signature Done."),
+])
+def test_streamed_trace_redaction_retains_bounded_context_for_long_secrets(prefix, ending):
+    redactor = log.TraceTextRedactor()
+    redactor.redact(prefix)
+    for _ in range(10):
+        output = redactor.redact("SAMPLE_SECRET_VALUE" * 1000)
+        assert "SAMPLE_SECRET_VALUE" not in output
+        assert len(redactor._context) <= 256
+        assert "SAMPLE_SECRET_VALUE" not in redactor._context
+    assert redactor.redact(ending).endswith(" Done.")
+
+
+def test_streamed_trace_redaction_preserves_ordinary_fragments_exactly():
+    redactor = log.TraceTextRedactor()
+    fragments = ["Hello there", ", welcome ", "to the office.", " A second sentence."]
+    assert [redactor.redact(fragment) for fragment in fragments] == fragments
 
 
 async def test_activity_context_is_isolated_across_parallel_requests_and_child_tasks(caplog):
@@ -75,13 +111,13 @@ async def test_activity_context_is_isolated_across_parallel_requests_and_child_t
     second = asyncio.create_task(request("second"))
     release.set()
     await asyncio.gather(first, second)
-    lines = [dict(field.split("=", 1) for field in record.getMessage().split())
+    lines = [dict(field.split("=", 1) for field in getattr(record, "special_agent_activity", record.getMessage()).split())
              for record in caplog.records if record.name == log._ACTIVITY_LOGGER.name]
     first_ids = {item["request"] for item in lines if item.get("tool") == "first"}
     second_ids = {item["request"] for item in lines if item.get("tool") == "second"}
     assert len(first_ids) == len(second_ids) == 1 and first_ids != second_ids
     log.activity("outside")
-    assert "request=-" in caplog.records[-1].getMessage()
+    assert "request=-" in getattr(caplog.records[-1], "special_agent_activity", caplog.records[-1].getMessage())
 
 
 def test_activity_buffer_pagination_and_overflow():
@@ -173,7 +209,7 @@ def test_trace_redacts_nested_credentials_encoded_json_and_media(detailed_trace,
                "text": "password=SECRET_7 Bearer SECRET_8 sk-private-token https://host/?token=SECRET_9",
                "jwt": "eyJheader.payload.signature", "instructions": "SECRET_10"}
     log.trace_detail("tool_output", payload=payload)
-    line = caplog.records[-1].getMessage()
+    line = getattr(caplog.records[-1], "special_agent_activity", caplog.records[-1].getMessage())
     assert "light.example" in line and '"brightness_pct":40' in line
     assert "SECRET_" not in line and "eyJheader" not in line
     assert log.is_trace_line(line)
