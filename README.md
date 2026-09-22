@@ -480,10 +480,25 @@ one second, then say **“Say hello in one short sentence.”** Stop with the ce
 button or physical mute. Once that works, say **“Okay Nabu”** or press the button
 and ask “Run the demo task.” While it works, ask “Tell me a joke.” Both speech
 input and playback remain active during the backend task.
-The bridge retains up to two seconds of startup microphone audio and paces it
-to Live after session creation, so normal connection setup does not lose the
-first words. A slow connection or stalled audio ends the attempt instead of
-accumulating a delayed recording; wake it again once connectivity is restored.
+The bridge source allows up to five seconds for startup and retains the initial
+microphone audio until Live is ready. It then sends every sample in order at
+normal speed, preserving the first words. The startup delay is measured once;
+subsequent audio has a separate two-second stall allowance beyond that delay.
+This prevents a slow connection from being mistaken for a stalled conversation.
+It does not remove the initial connection latency. A startup beyond the bounded
+window or a later transport stall still ends the attempt cleanly.
+
+This startup fix is included in **Live app 0.1.9+**. Update the Live app; updating
+only the HACS integration or restarting an older app does not install the bridge
+change. The firmware protocol is unchanged, so this fix does not require
+reflashing Voice PE.
+
+If the chime plays and the blue ring immediately goes out, inspect the Live app
+Log around that wake. `mic_backlog` before `Live session: started`, followed by
+zero audio usage and no jobs, identifies an audio buffer overflow during startup.
+The updated bridge logs startup timing and buffer counts without recording audio,
+so connection setup can be distinguished from later microphone or speaker stalls.
+The idle timeout applies to an active conversation and does not fix this failure.
 
 Saying **“stop”** stops the current spoken response while the session keeps
 listening, so the ring can remain animated. The center button or physical mute

@@ -27,8 +27,13 @@ from utils.logging import activity, begin_device, configure_trace, end_device
 
 LOG = logging.getLogger(__name__)
 LIVE_URL = "wss://api.openai.com/v1/live/sessions"
-# Allow ordinary 512-byte firmware frames to reach the 64,000-byte (2 s) bound.
-# A separate packet limit still bounds queue bookkeeping for tiny fragments.
+# Connection setup has a separate, bounded budget from a stalled live stream.
+MIC_BYTES_PER_SECOND = 32000
+MIC_STARTUP_SECONDS = 5
+MIC_STARTUP_BYTES = MIC_BYTES_PER_SECOND * MIC_STARTUP_SECONDS
+MIC_STARTUP_PACKETS = 512
+MIC_STREAM_SECONDS = 2
+MIC_STREAM_BYTES = MIC_BYTES_PER_SECOND * MIC_STREAM_SECONDS
 MIC_QUEUE_PACKETS = 256
 SAFE_LIVE_ERROR_CODES = frozenset({
     "authentication_error", "credit_balance_exhausted", "insufficient_quota",
@@ -76,8 +81,9 @@ class VoiceDevice:
         self.session = None
         self.runner = None
         self.stop = asyncio.Event()
-        self.mic = asyncio.Queue(maxsize=MIC_QUEUE_PACKETS)
-        self.mic_bytes = 0
+        self.reset_microphone()
+        self.wake_at = None
+        self.capture_stage = "idle"
         self.accept_audio = False
         self.play_audio = False
         self.completed = set()
@@ -89,12 +95,25 @@ class VoiceDevice:
         self.device_hash = VoiceRegistration(settings.device_id, settings.device_token,
                                               settings.room, settings.ha_device_id).device_hash
 
+    def reset_microphone(self):
+        """Give each wake its own bounded recording and startup deadline."""
+        self.mic = asyncio.Queue(maxsize=MIC_STARTUP_PACKETS + MIC_QUEUE_PACKETS)
+        self.mic_bytes = 0
+        self.mic_first_at = None
+        self.mic_byte_limit = MIC_STARTUP_BYTES
+        self.mic_packet_limit = MIC_STARTUP_PACKETS
+        self.wake_at = time.monotonic()
+        self.capture_stage = "cloud_connect"
+
     def record_stop(self, reason):
         """Keep the first fixed reason code; never include device or API payloads."""
         if self.stop_reason is None:
             self.stop_reason = self.last_stop_reason = reason
             self.last_stop_at = time.monotonic()
-            LOG.info("Voice session stopping: device=%s reason=%s", self.device_hash, reason)
+            LOG.info("Voice session stopping: device=%s reason=%s stage=%s wake_elapsed_ms=%s "
+                     "queued_audio_ms=%s queued_packets=%s", self.device_hash, reason, self.capture_stage,
+                     round((self.last_stop_at - self.wake_at) * 1000) if self.wake_at is not None else 0,
+                     round(self.mic_bytes / MIC_BYTES_PER_SECOND * 1000), self.mic.qsize())
 
     def stop_for(self, reason):
         self.record_stop(reason)
@@ -120,12 +139,16 @@ class VoiceDevice:
     async def receive(self, message):
         if message.type == aiohttp.WSMsgType.BINARY:
             if self.accept_audio:
-                if len(message.data) > 8192 or self.mic.full() or self.mic_bytes + len(message.data) > 64000:
+                if (len(message.data) > 8192 or self.mic.qsize() >= self.mic_packet_limit
+                        or self.mic_bytes + len(message.data) > self.mic_byte_limit):
                     # Never build an unbounded delayed recording or replay stale microphone data.
                     self.stop_for("mic_packet_oversized" if len(message.data) > 8192 else "mic_backlog")
                     self.restart = self.accept_audio = False
                 else:
-                    self.mic.put_nowait((time.monotonic(), message.data))
+                    now = time.monotonic()
+                    if self.mic_first_at is None:
+                        self.mic_first_at = now
+                    self.mic.put_nowait((now, message.data))
                     self.mic_bytes += len(message.data)
             return
         if message.type != aiohttp.WSMsgType.TEXT:
@@ -140,15 +163,13 @@ class VoiceDevice:
             if self.runner is None or self.runner.done():
                 self.stop = asyncio.Event()
                 self.stop_reason = None
-                self.mic = asyncio.Queue(maxsize=MIC_QUEUE_PACKETS)
-                self.mic_bytes = 0
+                self.reset_microphone()
                 self.accept_audio = True
                 self.runner = asyncio.create_task(self.run_sessions())
             elif self.stop.is_set():
                 # Firmware emits interrupt then wake when starting over during playback.
                 self.restart = True
-                self.mic = asyncio.Queue(maxsize=MIC_QUEUE_PACKETS)
-                self.mic_bytes = 0
+                self.reset_microphone()
                 self.accept_audio = True
             elif self.accept_audio and self.session and self.session.state == "active":
                 # A repeated wake starts the firmware's no-speech watchdog even
@@ -178,12 +199,16 @@ class VoiceDevice:
     async def run_session(self):
         session, cloud, tasks = None, None, []
         microphone, stop = self.mic, self.stop
+        wake_at = self.wake_at
+        startup_deadline = wake_at + MIC_STARTUP_SECONDS
         speaker = asyncio.Queue(maxsize=16)
         stage = "cloud_connect"
+        self.capture_stage = stage
         try:
             cloud = await asyncio.wait_for(self.http.ws_connect(
                 LIVE_URL, headers={"Authorization": f"Bearer {self.settings.api_key}"},
-                heartbeat=20, max_msg_size=2**20), 15)
+                heartbeat=20, max_msg_size=2**20), max(0, startup_deadline - time.monotonic()))
+            connected_at = time.monotonic()
             send_lock = asyncio.Lock()
 
             async def send(event):
@@ -243,22 +268,42 @@ class VoiceDevice:
             reader = asyncio.create_task(read_cloud(), name="cloud_reader")
             tasks.append(reader)
             stage = "cloud_start"
-            await send({"type": "session.start", "event_id": uuid.uuid4().hex, "session": {
+            self.capture_stage = stage
+            await asyncio.wait_for(send({"type": "session.start", "event_id": uuid.uuid4().hex, "session": {
                 "model": "gpt-live-1", "instructions": voice_instructions(self.settings.backend, self.settings.room),
                 "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": "marin"}},
-                "delegation": {"type": "client"}}})
+                "delegation": {"type": "client"}}}), max(0, startup_deadline - time.monotonic()))
             ready = asyncio.create_task(started.wait(), name="cloud_ready")
             stopped = asyncio.create_task(self.stop.wait(), name="stop_waiter")
             tasks.extend((ready, stopped))
-            done, _ = await asyncio.wait((ready, reader, stopped), timeout=15, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait((ready, reader, stopped),
+                                        timeout=max(0, startup_deadline - time.monotonic()),
+                                        return_when=asyncio.FIRST_COMPLETED)
             self.inspect_tasks(done)
             if not done:
                 self.record_stop("cloud_start_timeout")
             if not started.is_set() or reader.done() or self.stop.is_set():
                 return
+            ready_at = time.monotonic()
+            if ready_at > startup_deadline:
+                self.record_stop("cloud_start_timeout")
+                return
+            # Real-time pacing retains the initial setup delay. Freeze that debt
+            # once; later transport stalls get only the ordinary 2 s headroom.
+            startup_bytes, startup_packets = self.mic_bytes, microphone.qsize()
+            startup_age = ready_at - self.mic_first_at if self.mic_first_at is not None else 0
+            microphone_age_limit = max(startup_age, startup_bytes / MIC_BYTES_PER_SECOND) + MIC_STREAM_SECONDS
+            self.mic_byte_limit = startup_bytes + MIC_STREAM_BYTES
+            self.mic_packet_limit = startup_packets + MIC_QUEUE_PACKETS
+            LOG.info("Voice session ready: device=%s wake_to_ready_ms=%s cloud_connect_ms=%s "
+                     "cloud_start_ms=%s queued_audio_ms=%s queued_packets=%s", self.device_hash,
+                     round((ready_at - wake_at) * 1000), round((connected_at - wake_at) * 1000),
+                     round((ready_at - connected_at) * 1000),
+                     round(startup_bytes / MIC_BYTES_PER_SECOND * 1000), startup_packets)
             self.accept_audio = True
             self.play_audio = True
             stage = "device_control"
+            self.capture_stage = stage
             await self.control("ack")
             # Never send replying/thinking/listening per utterance: upstream phase changes
             # can gate capture or flush playback. The device stays duplex until session end.
@@ -277,7 +322,7 @@ class VoiceDevice:
                         return
                     if microphone is self.mic:
                         self.mic_bytes -= len(pcm)
-                    if time.monotonic() - received_at > 2:
+                    if time.monotonic() - received_at > microphone_age_limit:
                         self.stop_for("mic_stale")
                         return
                     for chunk in converter.feed(pcm):
@@ -314,6 +359,7 @@ class VoiceDevice:
                         self.stop_for("idle_timeout")
 
             stage = "streaming"
+            self.capture_stage = stage
             pump = asyncio.create_task(send_microphone(), name="microphone")
             playback = asyncio.create_task(play_speaker(), name="speaker")
             monitor = asyncio.create_task(limits(), name="limits")

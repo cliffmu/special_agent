@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import struct
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from experimental.live import device_server
+from experimental.live.audio import AudioPacer, PCM16Resampler
 from experimental.live.backend import BackendError, BackendResult
 
 
@@ -215,24 +217,190 @@ async def test_startup_buffers_one_hundred_firmware_frames_before_live_is_ready(
         await socket.close()
 
 
-async def test_startup_still_stops_when_pcm_exceeds_two_second_byte_bound(monkeypatch):
+async def test_startup_still_stops_when_pcm_exceeds_five_second_byte_bound(monkeypatch):
     async with harness(monkeypatch) as (client, cloud):
         socket = await client.ws_connect("/voice", params={"token": TOKEN})
         await socket.send_json({"type": "wake"})
         await asyncio.wait_for(cloud.starts.get(), 2)
-        for _ in range(125):
+        for _ in range(312):
             await socket.send_bytes(b"\0" * 512)
+        await socket.send_bytes(b"\0" * 256)
         await socket.send_json({"type": "start"})
         await control(socket, "hello")
         device = cloud.devices[-1]
-        assert device.mic_bytes == 64000 and device.mic.qsize() == 125
+        assert device.mic_bytes == 160000 and device.mic.qsize() == 313
         assert not device.stop.is_set()
 
         await socket.send_bytes(b"\0" * 512)
         await asyncio.wait_for(asyncio.shield(device.runner), 2)
         assert device.last_stop_reason == "mic_backlog"
-        assert device.mic_bytes == 64000 and not device.accept_audio
+        assert device.mic_bytes == 160000 and not device.accept_audio
         assert device.session.finalized
+        await socket.close()
+
+
+async def test_slow_start_preserves_first_words_and_continuous_audio_without_stale_cutoff(monkeypatch, caplog):
+    async with harness(monkeypatch) as (client, cloud):
+        caplog.set_level(logging.INFO, logger=device_server.__name__)
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        frames = [struct.pack("<256h", *([i] * 256)) for i in range(280)]
+        for frame in frames[:200]:
+            await socket.send_bytes(frame)
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        device = cloud.devices[-1]
+        assert device.mic_bytes == 102400  # 3.2 s, above the old startup byte limit.
+        # Reproduce 3.2 s of real startup capture without a slow test setup.
+        # Both the oldest frame and later paced frames must survive the age guard.
+        first_at = time.monotonic() - 3.2
+        device.mic_first_at = first_at
+        for index in range(200):
+            _, frame = device.mic.get_nowait()
+            device.mic.put_nowait((first_at + index * 0.016, frame))
+        await upstream.send_json({"type": "session.started", "session": {"id": "slow-start"}})
+        await control(socket, "ack")
+        await control(socket, "phase")
+        assert device.mic_byte_limit == 102400 + 64000
+
+        async def keep_talking():
+            pacer = AudioPacer()
+            for frame in frames[200:]:
+                await pacer.wait_for_chunk(768)
+                await socket.send_bytes(frame)
+
+        producer = asyncio.create_task(keep_talking())
+        expected = b"".join(PCM16Resampler().feed(b"".join(frames)))
+        received = bytearray()
+        try:
+            while len(received) < len(expected):
+                event = await cloud.next_event("session.input_audio.append")
+                received.extend(base64.b64decode(event["audio"]))
+            await producer
+            assert bytes(received) == expected
+            assert device.last_stop_reason is None and device.accept_audio
+            assert device.mic_byte_limit == 102400 + 64000  # Never extends with new input.
+            assert "queued_audio_ms=3200 queued_packets=200" in caplog.text
+            assert "wake_to_ready_ms=" in caplog.text and "cloud_connect_ms=" in caplog.text
+            assert "cloud_start_ms=" in caplog.text
+        finally:
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+            await socket.close()
+
+
+@pytest.mark.parametrize("startup_bytes", [0, 96000])
+async def test_active_backlog_keeps_only_fixed_two_second_headroom(monkeypatch, startup_bytes):
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    async def blocked_pacing(self, byte_count):
+        entered.set()
+        await gate.wait()
+
+    monkeypatch.setattr(device_server.AudioPacer, "wait_for_chunk", blocked_pacing)
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        for offset in range(0, startup_bytes, 8000):
+            await socket.send_bytes(b"\0" * min(8000, startup_bytes - offset))
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        await upstream.send_json({"type": "session.started"})
+        await control(socket, "ack")
+        await control(socket, "phase")
+        if not startup_bytes:
+            await socket.send_bytes(b"\0\0")
+        await asyncio.wait_for(entered.wait(), 2)
+        device = cloud.devices[-1]
+        assert device.mic_byte_limit == startup_bytes + 64000
+        # The pump cannot drain while blocked. Startup debt is a fixed allowance,
+        # so a later additional two-second stall still closes this session.
+        remaining = device.mic_byte_limit - device.mic_bytes
+        for offset in range(0, remaining, 8000):
+            await socket.send_bytes(b"\0" * min(8000, remaining - offset))
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        assert not device.stop.is_set() and device.mic_bytes == device.mic_byte_limit
+        await socket.send_bytes(b"\0\0")
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "mic_backlog" and device.session.finalized
+        await socket.close()
+
+
+async def test_startup_grace_does_not_hide_later_stale_audio(monkeypatch):
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    async def blocked_pacing(self, byte_count):
+        entered.set()
+        await gate.wait()
+
+    monkeypatch.setattr(device_server.AudioPacer, "wait_for_chunk", blocked_pacing)
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
+        await socket.send_bytes(b"\0\0")
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        device = cloud.devices[-1]
+        first_at = time.monotonic() - 3
+        device.mic_first_at = first_at
+        _, frame = device.mic.get_nowait()
+        device.mic.put_nowait((first_at, frame))
+        await upstream.send_json({"type": "session.started"})
+        await control(socket, "ack")
+        await control(socket, "phase")
+        await asyncio.wait_for(entered.wait(), 2)
+        device.mic.put_nowait((time.monotonic() - 6, b"\0\0"))
+        device.mic_bytes += 2
+        gate.set()
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "mic_stale" and device.session.finalized
+        assert sum(event["type"] == "session.input_audio.append" for _, event in cloud.received) == 1
+        await socket.close()
+
+
+async def test_cloud_start_deadline_is_bounded_even_without_microphone_input(monkeypatch):
+    monkeypatch.setattr(device_server, "MIC_STARTUP_SECONDS", 0.1)
+    async with harness(monkeypatch) as (client, cloud):
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        await asyncio.wait_for(cloud.starts.get(), 2)
+        device = cloud.devices[-1]
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "cloud_start_timeout"
+        assert device.session.finalized and not device.accept_audio
+        assert not any(event["type"] == "session.input_audio.append" for _, event in cloud.received)
+        await socket.close()
+
+
+async def test_cancel_during_cloud_connect_is_not_revived_and_connection_is_bounded(monkeypatch):
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def blocked_connect(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(device_server, "MIC_STARTUP_SECONDS", 0.2)
+    async with harness(monkeypatch) as (client, cloud):
+        http = client.server.app[device_server.HTTP]
+        monkeypatch.setattr(http, "ws_connect", blocked_connect)
+        socket = await client.ws_connect("/voice", params={"token": TOKEN})
+        await socket.send_json({"type": "wake"})
+        await asyncio.wait_for(entered.wait(), 2)
+        await socket.send_json({"type": "button_cancel"})
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        device = cloud.devices[-1]
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert cancelled.is_set() and not cloud.connections
+        assert device.last_stop_reason == "device_control_button_cancel"
+        assert not device.accept_audio and device.session is None
         await socket.close()
 
 
@@ -314,6 +482,7 @@ async def test_restart_preserves_new_microphone_while_previous_usage_is_pending(
         await control(socket, "hello")
         assert not previous.finalized and cloud.starts.empty()
         assert device.mic_bytes == 6
+        assert device.mic_byte_limit == 160000 and device.mic_packet_limit == 512
 
         cloud.close_gate.set()
         upstream, _ = await asyncio.wait_for(cloud.starts.get(), 2)
@@ -321,12 +490,36 @@ async def test_restart_preserves_new_microphone_while_previous_usage_is_pending(
         await upstream.send_json({"type": "session.started", "session": {"id": "live-device-2"}})
         await control(socket, "ack")
         assert (await control(socket, "phase"))["value"] == "listening"
+        assert device.mic_byte_limit == 64006 and device.mic_packet_limit == 257
         microphone = await cloud.next_event("session.input_audio.append")
         assert base64.b64decode(microphone["audio"]) == struct.pack("<4h", 0, 200, 400, 600)
         assert not any(connection is previous_cloud and event["type"] == "session.input_audio.append"
                        for connection, event in cloud.received)
         await socket.close()
         await asyncio.wait_for(device.runner, 2)
+
+
+async def test_queued_restart_deadline_includes_wait_for_previous_finalization(monkeypatch):
+    async with harness(monkeypatch) as (client, cloud):
+        socket, _, _ = await ready_device(client, cloud)
+        device = cloud.devices[-1]
+        cloud.close_gate = asyncio.Event()
+        await socket.send_json({"type": "interrupt"})
+        await control(socket, "phase")
+        await cloud.next_event("session.close")
+        await socket.send_json({"type": "wake"})
+        await socket.send_bytes(b"\0\0")
+        await socket.send_json({"type": "start"})
+        await control(socket, "hello")
+        # Prior-session finalization used up the new wake's startup allowance.
+        device.wake_at -= device_server.MIC_STARTUP_SECONDS + 1
+        cloud.close_gate.set()
+        await asyncio.wait_for(asyncio.shield(device.runner), 2)
+        assert device.last_stop_reason == "cloud_connect_timeout"
+        assert len(cloud.connections) == 1 and cloud.starts.empty()
+        assert not device.accept_audio
+        assert not any(event["type"] == "session.input_audio.append" for _, event in cloud.received)
+        await socket.close()
 
 
 async def test_missing_final_usage_prevents_queued_automatic_restart(monkeypatch):
