@@ -38,7 +38,7 @@ configuration:
     description: Your available conversation agent entity ID, for example conversation.special_agent. Used by the home-assistant backend.
   agent_model:
     name: Agent model
-    description: Model used by your Python Special Agent for tools and delegated requests from all registered devices. Live speech continues to use gpt-live-1. Requires Special Agent 0.3.3 or newer. Save and restart to apply.
+    description: Model used by your Python Special Agent for tools and delegated requests from all registered devices. New setups default to gpt-6-sol. Live speech continues to use gpt-live-1. Save and restart to apply.
   reasoning_effort:
     name: Thinking effort
     description: More thinking can improve difficult requests but take longer. Start with low. Unsupported model/effort combinations use low. Save and restart to apply.

@@ -6,16 +6,32 @@ from dataclasses import dataclass
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 import tarfile
 
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
 from special_agent_live import install_source, run
+from special_agent.utils.constants import AGENT_MODELS, DEFAULT_AGENT_MODEL
 
 
 def valid_options(**changes):
     return {"api_key": "test-openai-key", "device_token": "test_device_token_" * 3, **changes}
+
+
+def test_addon_model_dropdown_matches_agent_models_and_default():
+    config = (Path(__file__).resolve().parents[1] / "special_agent_live" / "config.yaml").read_text()
+    default = re.search(r"^  agent_model: ([^\n]+)$", config, re.MULTILINE)
+    choices = re.search(r"^  agent_model: list\(([^)]+)\)$", config, re.MULTILINE)
+    assert default and default.group(1) == DEFAULT_AGENT_MODEL == "gpt-6-sol"
+    assert choices and tuple(choices.group(1).split("|")) == AGENT_MODELS
+
+
+@pytest.mark.parametrize("model", ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"))
+def test_addon_accepts_gpt_6_model_options(model):
+    settings = run.settings_from_options(valid_options(agent_model=model), {})
+    assert settings.agent_model == model
 
 
 def test_home_assistant_options_use_supervisor_proxy_and_preserve_agent_identity():

@@ -169,7 +169,7 @@ def prepared_loop(monkeypatch):
 
 
 @pytest.mark.parametrize("config,model,effort,fast", [
-    ({}, "gpt-5.6-terra", "low", False),
+    ({}, "gpt-6-sol", "low", False),
     ({"agent_model": "gpt-5", "reasoning_effort": "minimal"}, "gpt-5", "minimal", False),
     ({"agent_model": "gpt-6-astra", "reasoning_effort": "max", "fast_mode": True}, "gpt-6-astra", "max", True),
 ])

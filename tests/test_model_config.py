@@ -67,7 +67,7 @@ def config_flow(monkeypatch):
     return module
 
 
-async def test_new_setup_has_all_models_and_standard_terra_defaults(config_flow):
+async def test_new_setup_has_all_models_and_sol_defaults(config_flow):
     flow = config_flow.SpecialAgentConfigFlow()
     form = await flow.async_step_user()
     schema = form["data_schema"]
@@ -75,8 +75,10 @@ async def test_new_setup_has_all_models_and_standard_terra_defaults(config_flow)
     assert (data["agent_model"], data["reasoning_effort"], data["fast_mode"]) == (
         DEFAULT_AGENT_MODEL, "low", False,
     )
+    assert DEFAULT_AGENT_MODEL == "gpt-6-sol"
     assert set(AGENT_MODELS) == {
-        "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra",
+        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol",
         "gpt-5", "gpt-5-mini", "gpt-5-nano",
     }
     for model in AGENT_MODELS:
@@ -143,6 +145,8 @@ def test_supported_reasoning_efforts_and_invalid_model_switches(model):
         supported = {"none", "low", "medium", "high", "xhigh", "max"}
     elif model == "gpt-6-astra":
         supported = {"low", "medium", "high", "xhigh", "max"}
+    elif model.startswith("gpt-6"):
+        supported = {"none", "low", "medium", "high", "xhigh", "max"}
     for effort in supported:
         assert normalize_reasoning_effort(model, effort) == effort
     for effort in {"none", "minimal", "xhigh", "max", "invalid"} - supported:

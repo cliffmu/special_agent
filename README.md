@@ -16,21 +16,21 @@ For Voice PE, open **Settings → Apps → Special Agent Live → Configuration*
 select **Agent model**, **Thinking effort**, and **Fast mode**. Save and restart
 the app to apply changes. Use integration **0.3.3+** and Live app **0.1.6+** together. They apply to this bridge's delegated requests; the integration's
 other conversations retain their own settings. New app setups default to
-**gpt-5.6-terra / low / Fast off**. Legacy options without these fields inherit
+**gpt-6-sol / low / Fast off**. Legacy options without these fields inherit
 the integration until the new controls are saved.
 
 The integration's defaults remain available at **Settings → Devices & services →
-Special Agent → Configure**. Existing installations keep their saved model.
-Terra is a balanced starting point for tool use; try Luna for lower cost and
-compare accuracy on your routines. Sol and Astra are options for harder requests.
-A newer small model is not automatically more reliable on every task.
-[Model documentation](https://developers.openai.com/api/docs/models/gpt-5.6-terra).
+Special Agent → Configure**. New integration setups default to **gpt-6-sol**;
+existing installations keep their saved model. Integration **0.3.7+** and Live
+app **0.1.10+** include gpt-6-astra, gpt-6-sol, and gpt-6-luna alongside the
+earlier choices.
 
 Fast mode explicitly requests OpenAI Fast processing; off explicitly requests the
 standard tier, even if the API project enables Fast. Fast currently costs **2×**
-standard token rates for these four models. It can shorten model processing, but
-cannot speed up an external device or service call. Logs show the requested and
-actual tier (5.6 may report `priority` for Fast, or `default` if downgraded).
+standard token rates for supported GPT-5.6 and GPT-6 models. It can shorten
+model processing, but cannot speed up an external device or service call. Logs
+show the requested and actual tier (5.6 may report `priority` for Fast, or
+`default` if downgraded).
 [Fast mode](https://developers.openai.com/api/docs/guides/fast-mode).
 This setting affects delegated Python-agent work; Live speech still uses
 `gpt-live-1`. Unsupported reasoning choices use `low` for that model, and logs

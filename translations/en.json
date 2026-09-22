@@ -20,7 +20,7 @@
         "data_description": {
           "openai_api_key": "Leave blank in Configure to keep the saved key.",
           "spotify_client_secret": "Leave blank to keep the saved secret.",
-          "agent_model": "Model used by the Python agent for delegated work. Terra is a balanced starting point; Luna costs less; Sol and Astra offer more capability. Live speech keeps its separate voice model.",
+          "agent_model": "Model used by the Python agent for delegated work. New setups default to GPT-6 Sol. Live speech keeps its separate voice model.",
           "reasoning_effort": "Low is recommended for voice latency. An effort unsupported by the selected model is saved as low.",
           "fast_mode": "Requests OpenAI Fast processing at higher token rates (currently 2x for the new models). Off explicitly requests standard processing. This cannot speed up external tools.",
           "session_timeout_minutes": "Controls stored Python-agent conversation context. The Voice listening idle timeout is set separately in the Special Agent Live app.",
@@ -54,7 +54,7 @@
         "data_description": {
           "openai_api_key": "Leave blank in Configure to keep the saved key.",
           "spotify_client_secret": "Leave blank to keep the saved secret.",
-          "agent_model": "Model used by the Python agent for delegated work. Terra is a balanced starting point; Luna costs less; Sol and Astra offer more capability. Live speech keeps its separate voice model.",
+          "agent_model": "Model used by the Python agent for delegated work. New setups default to GPT-6 Sol. Live speech keeps its separate voice model.",
           "reasoning_effort": "Low is recommended for voice latency. An effort unsupported by the selected model is saved as low.",
           "fast_mode": "Requests OpenAI Fast processing at higher token rates (currently 2x for the new models). Off explicitly requests standard processing. This cannot speed up external tools.",
           "session_timeout_minutes": "Controls stored Python-agent conversation context. The Voice listening idle timeout is set separately in the Special Agent Live app.",

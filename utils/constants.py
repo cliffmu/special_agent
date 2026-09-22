@@ -1,6 +1,6 @@
 """Shared defaults for model selection, device filtering and ranking."""
 
-DEFAULT_AGENT_MODEL = "gpt-5.6-terra"
+DEFAULT_AGENT_MODEL = "gpt-6-sol"
 DEFAULT_TRACE_LOGGING = False
 AGENT_MODELS = (
     "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
