@@ -10,9 +10,9 @@ from pathlib import Path
 import tarfile
 from urllib.request import urlopen
 
-REVISION = "11ca606f9bfb8fae62da39178a3e4cf6c84489b9"
+REVISION = "e075c21d922fabf93df13a183c137cfb6a8bca22"
 # Verify the immutable tar bytes; gzip encoding can vary across archive servers.
-SOURCE_TAR_SHA256 = "03d634457df26deb61306d6b05be7c61cd29e10d778b5b8d9f3750df4a980b5e"
+SOURCE_TAR_SHA256 = "9fc4396a07ae72549bff71ed2646789ddb1ab8f24cd62aa8e007a1db31758db5"
 SOURCE_URL = f"https://codeload.github.com/cliffmu/special_agent/tar.gz/{REVISION}"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_SOURCE_TAR_BYTES = 32 * 1024 * 1024
