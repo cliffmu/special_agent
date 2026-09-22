@@ -3,7 +3,8 @@
 DEFAULT_AGENT_MODEL = "gpt-5.6-terra"
 DEFAULT_TRACE_LOGGING = False
 AGENT_MODELS = (
-    "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra",
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+    "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol",
     "gpt-5", "gpt-5-mini", "gpt-5-nano",
 )
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -13,8 +14,10 @@ def normalize_reasoning_effort(model: str, effort: str) -> str:
     """Keep a model change compatible with an effort saved for another model."""
     if model.startswith("gpt-5.6"):
         supported = {"none", "low", "medium", "high", "xhigh", "max"}
-    elif model.startswith("gpt-6"):
+    elif model == "gpt-6-astra":
         supported = {"low", "medium", "high", "xhigh", "max"}
+    elif model.startswith("gpt-6"):
+        supported = {"none", "low", "medium", "high", "xhigh", "max"}
     else:
         supported = {"minimal", "low", "medium", "high"}
     return effort if effort in supported else "low"
